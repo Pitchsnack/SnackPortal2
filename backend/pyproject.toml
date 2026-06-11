@@ -1,0 +1,78 @@
+[project]
+name = "snackportal2-backend"
+version = "0.0.0"
+description = "SnackPortal2 backend — Build Phase 1 scaffolding (no business logic, no contract behavior)."
+requires-python = ">=3.8"
+# Runtime dependencies are added per build phase, kept minimal and vendor-neutral.
+#   - shared/ remains pure standard library (vendor-neutral leaf).
+#   - Build Phase 3 adds portable JWT/JWKS validation (used only by the auth_router
+#     SignatureVerifier provider under auth_router/adapters/providers; not a cloud SDK).
+#   - Build Phase 4 adds a portable PostgreSQL driver, used ONLY by the database
+#     drivers confined to database_router/adapters/providers/** (tenant serving) and
+#     control_plane/adapters/providers/** (Control-DB persistence + verification probe).
+#     Standard PostgreSQL only; not exercised by the stdlib test suite.
+dependencies = [
+  "pyjwt>=2",
+  "cryptography",
+  "psycopg[binary]>=3",
+]
+
+[project.optional-dependencies]
+dev = [
+  "ruff",
+  "mypy",
+  "pytest",
+  "import-linter",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py38"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]
+
+[tool.mypy]
+python_version = "3.8"
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+# --- Dependency boundaries (governance: dependency DAG, rules 1-2) ------------
+[tool.importlinter]
+root_packages = [
+  "shared",
+  "api_gateway",
+  "auth_router",
+  "database_router",
+  "control_plane",
+  "import_service",
+  "lineage_service",
+]
+
+[[tool.importlinter.contracts]]
+name = "shared is a dependency leaf (must not import any service)"
+type = "forbidden"
+source_modules = ["shared"]
+forbidden_modules = [
+  "api_gateway",
+  "auth_router",
+  "database_router",
+  "control_plane",
+  "import_service",
+  "lineage_service",
+]
+
+[[tool.importlinter.contracts]]
+name = "services are mutually independent (no service imports another)"
+type = "independence"
+modules = [
+  "api_gateway",
+  "auth_router",
+  "database_router",
+  "control_plane",
+  "import_service",
+  "lineage_service",
+]

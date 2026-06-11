@@ -1,0 +1,6 @@
+# SnackPortal2 — secret-scan configuration (governance: secret hygiene, D-14).
+# Build Phase 1 ships references only; no secret values may ever be committed.
+title = "SnackPortal2 gitleaks config"
+
+[extend]
+useDefault = true

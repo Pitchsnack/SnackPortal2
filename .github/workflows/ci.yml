@@ -1,0 +1,39 @@
+name: ci
+# Build Phase 1 — VALIDATION ONLY. No deployment, release, provisioning, or
+# infrastructure automation is defined here (explicitly out of scope).
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dev tooling
+        run: pip install .[dev]
+      - name: Lint (ruff)
+        run: ruff check .
+      - name: Format check (ruff)
+        run: ruff format --check .
+      - name: Type-check (mypy)
+        run: mypy .
+      - name: Import boundaries + cycle detection (import-linter)
+        run: lint-imports
+      - name: Architecture tests (vendor/DB containment, traceability, hygiene)
+        run: pytest tests/architecture
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Secret scan (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
