@@ -11,6 +11,7 @@ Tenant-resident data provenance (IC-004; D-22-D-25; D-08 retention mechanism). O
   values; chain segmentation metadata (archival-ready). Operational audit is DISTINCT from
   lineage (IC-002). No service imports (runs on injected sessions; Standard D).
 """
+
 from __future__ import annotations
 
 GOVERNING_CONTRACTS = ["IC-004", "IC-002", "IC-005", "D-22", "D-23", "D-24", "D-25", "D-14"]

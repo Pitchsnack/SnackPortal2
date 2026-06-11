@@ -1,4 +1,5 @@
 """Lineage write path: append-only chain + tamper-evident marker + audit (IC-004; D-22/23)."""
+
 from __future__ import annotations
 
 import pathlib
@@ -15,9 +16,15 @@ from shared.lineage import LineageIntent  # noqa: E402
 
 def _intent(target: str, op: str = "created") -> LineageIntent:
     return LineageIntent(
-        event_type="import", occurred_at="2026-06-06T00:00:00Z", actor_ref="user1",
-        source_ref="global:GlobalStartupDirectory:g1", target_ref=target, operation=op,
-        schema_version="1", derivation_ref="job1", correlation_id="c",
+        event_type="import",
+        occurred_at="2026-06-06T00:00:00Z",
+        actor_ref="user1",
+        source_ref="global:GlobalStartupDirectory:g1",
+        target_ref=target,
+        operation=op,
+        schema_version="1",
+        derivation_ref="job1",
+        correlation_id="c",
     )
 
 
@@ -60,9 +67,11 @@ def test_emit_audits_lineage_written() -> None:
 
 
 if __name__ == "__main__":
-    _h.run([
-        test_emit_appends_a_per_tenant_chain,
-        test_marker_binds_content_tamper_evident,
-        test_emit_runs_only_on_the_provided_session,
-        test_emit_audits_lineage_written,
-    ])
+    _h.run(
+        [
+            test_emit_appends_a_per_tenant_chain,
+            test_marker_binds_content_tamper_evident,
+            test_emit_runs_only_on_the_provided_session,
+            test_emit_audits_lineage_written,
+        ]
+    )

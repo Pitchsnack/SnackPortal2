@@ -1,4 +1,5 @@
 """Provenance graph: ancestor/descendant traversal + bounds (PRD-P6-R2 G; §12)."""
+
 from __future__ import annotations
 
 import pathlib
@@ -19,11 +20,21 @@ def _chain():
     s = prov.open_session(tenant_id="t1", correlation_id="c")
 
     def _e(target, op, parent):
-        return emit.emit(s, LineageIntent(
-            event_type="import" if parent is None else "transform", occurred_at="T",
-            actor_ref="u", source_ref="g", target_ref=target, operation=op,
-            schema_version="1", derivation_ref="job1", parent_lineage_ref=parent, correlation_id="c",
-        ))
+        return emit.emit(
+            s,
+            LineageIntent(
+                event_type="import" if parent is None else "transform",
+                occurred_at="T",
+                actor_ref="u",
+                source_ref="g",
+                target_ref=target,
+                operation=op,
+                schema_version="1",
+                derivation_ref="job1",
+                parent_lineage_ref=parent,
+                correlation_id="c",
+            ),
+        )
 
     root = _e("t1:c:1", "created", None)
     child = _e("t1:c:2", "derived", root)

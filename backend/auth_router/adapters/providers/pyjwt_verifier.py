@@ -5,6 +5,7 @@ adapters/providers containment zone, and never eagerly (so the stdlib test suite
 which uses a test verifier, does not require PyJWT). Validation *policy* stays in
 auth_router.jwt_validation; this adapter performs the signature check only.
 """
+
 from __future__ import annotations
 
 import json

@@ -5,6 +5,7 @@ The SecretStore is the ONLY path to a secret value. Descriptors are references
 contracts. No resolution logic is implemented in Build Phase 1 — concrete
 providers live only under `**/adapters/providers/**`.
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod

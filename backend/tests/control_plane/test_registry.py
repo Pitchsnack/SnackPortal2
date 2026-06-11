@@ -1,4 +1,5 @@
 """Tenant registry: references-only, idempotent register, lifecycle gating (no Ready in P2)."""
+
 from __future__ import annotations
 
 import pathlib
@@ -21,9 +22,13 @@ def _registry():
 
 def _register(reg, tid="t1"):
     return reg.register_tenant(
-        tenant_id=tid, organization_ref="org", expected_schema_version="1",
-        database_association_ref=SecretRef(f"tenant/{tid}/db", "1"), federation_config_ref="fed",
-        actor="op", correlation_id="c",
+        tenant_id=tid,
+        organization_ref="org",
+        expected_schema_version="1",
+        database_association_ref=SecretRef(f"tenant/{tid}/db", "1"),
+        federation_config_ref="fed",
+        actor="op",
+        correlation_id="c",
     )
 
 
@@ -32,9 +37,13 @@ def test_register_yields_registered_and_is_idempotent() -> None:
     rec = _register(reg)
     assert rec.lifecycle_state is TenantLifecycleState.REGISTERED
     again = reg.register_tenant(
-        tenant_id="t1", organization_ref="changed", expected_schema_version="9",
-        database_association_ref=SecretRef("z", "9"), federation_config_ref="z",
-        actor="op", correlation_id="c2",
+        tenant_id="t1",
+        organization_ref="changed",
+        expected_schema_version="9",
+        database_association_ref=SecretRef("z", "9"),
+        federation_config_ref="z",
+        actor="op",
+        correlation_id="c2",
     )
     assert again.created_at == rec.created_at  # idempotent by tenant_id
 
@@ -71,9 +80,11 @@ def test_phase2_lifecycle_transitions() -> None:
 
 
 if __name__ == "__main__":
-    _h.run([
-        test_register_yields_registered_and_is_idempotent,
-        test_registry_stores_references_only,
-        test_phase2_cannot_reach_ready_or_verify,
-        test_phase2_lifecycle_transitions,
-    ])
+    _h.run(
+        [
+            test_register_yields_registered_and_is_idempotent,
+            test_registry_stores_references_only,
+            test_phase2_cannot_reach_ready_or_verify,
+            test_phase2_lifecycle_transitions,
+        ]
+    )

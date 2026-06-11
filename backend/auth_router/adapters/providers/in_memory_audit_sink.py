@@ -3,6 +3,7 @@
 Reuses the shared OperationalAudit port (auth audit is operational audit, never
 lineage). Records carry references only — no JWT contents, secrets, or credentials.
 """
+
 from __future__ import annotations
 
 from typing import List

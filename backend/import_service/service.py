@@ -9,6 +9,7 @@ checkpoint. Job state, checkpoints, and the idempotency ledger are tenant-reside
 through the session — never the control DB or the queue). Performs NO authentication,
 authorization, routing, credential resolution, lineage persistence, or hash-chaining.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -50,8 +51,10 @@ class ImportService:
     def start_import(self, req: ImportRequest) -> ImportStatus:
         self._emit_audit(req, "ImportRequested", "success")
         session = self._provider.open_session(
-            tenant_id=req.tenant_id, correlation_id=req.correlation_id,
-            principal_ref=req.actor_ref, lane=Lane.BULK,
+            tenant_id=req.tenant_id,
+            correlation_id=req.correlation_id,
+            principal_ref=req.actor_ref,
+            lane=Lane.BULK,
         )
         try:
             job_id, resuming, replay = self._begin_job(session, req)
@@ -72,9 +75,7 @@ class ImportService:
             session.close()
 
     def get_status(self, *, tenant_id: str, operation_key: str, correlation_id: str) -> Optional[ImportStatus]:
-        session = self._provider.open_session(
-            tenant_id=tenant_id, correlation_id=correlation_id, lane=Lane.BULK
-        )
+        session = self._provider.open_session(tenant_id=tenant_id, correlation_id=correlation_id, lane=Lane.BULK)
         try:
             session.begin()
             idem = session.get(IDEM_TABLE, {"operation_key": operation_key})
@@ -84,9 +85,14 @@ class ImportService:
         if not idem:
             return None
         return ImportStatus(
-            import_id=idem["job_id"], tenant_id=tenant_id, state=idem.get("status", "in_progress"),
-            applied_count=int(idem.get("applied", 0)), noop_count=int(idem.get("noop", 0)),
-            rejected_count=int(idem.get("rejected", 0)), last_error_summary="", correlation_id=correlation_id,
+            import_id=idem["job_id"],
+            tenant_id=tenant_id,
+            state=idem.get("status", "in_progress"),
+            applied_count=int(idem.get("applied", 0)),
+            noop_count=int(idem.get("noop", 0)),
+            rejected_count=int(idem.get("rejected", 0)),
+            last_error_summary="",
+            correlation_id=correlation_id,
         )
 
     # -- internals -------------------------------------------------------------
@@ -96,23 +102,44 @@ class ImportService:
         idem = session.get(IDEM_TABLE, {"operation_key": req.operation_key})
         if idem and idem.get("status") == "applied":
             session.commit()
-            return idem["job_id"], False, ImportStatus(
-                import_id=idem["job_id"], tenant_id=req.tenant_id, state="applied",
-                applied_count=int(idem.get("applied", 0)), noop_count=int(idem.get("noop", 0)),
-                rejected_count=int(idem.get("rejected", 0)), last_error_summary="",
-                correlation_id=req.correlation_id,
+            return (
+                idem["job_id"],
+                False,
+                ImportStatus(
+                    import_id=idem["job_id"],
+                    tenant_id=req.tenant_id,
+                    state="applied",
+                    applied_count=int(idem.get("applied", 0)),
+                    noop_count=int(idem.get("noop", 0)),
+                    rejected_count=int(idem.get("rejected", 0)),
+                    last_error_summary="",
+                    correlation_id=req.correlation_id,
+                ),
             )
         if idem:
             session.commit()
             return idem["job_id"], True, None  # resume an incomplete import
         job_id = uuid.uuid4().hex
-        session.upsert(JOB_TABLE, {"job_id": job_id}, {
-            "job_id": job_id, "operation_key": req.operation_key, "tenant_id": req.tenant_id,
-            "state": "in_progress", "correlation_id": req.correlation_id,
-        })
-        session.upsert(IDEM_TABLE, {"operation_key": req.operation_key}, {
-            "operation_key": req.operation_key, "job_id": job_id, "status": "in_progress",
-        })
+        session.upsert(
+            JOB_TABLE,
+            {"job_id": job_id},
+            {
+                "job_id": job_id,
+                "operation_key": req.operation_key,
+                "tenant_id": req.tenant_id,
+                "state": "in_progress",
+                "correlation_id": req.correlation_id,
+            },
+        )
+        session.upsert(
+            IDEM_TABLE,
+            {"operation_key": req.operation_key},
+            {
+                "operation_key": req.operation_key,
+                "job_id": job_id,
+                "status": "in_progress",
+            },
+        )
         session.commit()
         return job_id, False, None
 
@@ -137,7 +164,7 @@ class ImportService:
 
     def _apply_batches(self, session, req, job_id, valid, start_seq):
         applied = noop = 0
-        batches = [valid[i:i + self._batch_size] for i in range(0, len(valid), self._batch_size)]
+        batches = [valid[i : i + self._batch_size] for i in range(0, len(valid), self._batch_size)]
         for seq, batch in enumerate(batches, start=1):
             if seq < start_seq:
                 continue  # already committed in a prior run (resume)
@@ -146,15 +173,22 @@ class ImportService:
                 b_applied = self._apply_one_batch(session, req, job_id, seq, batch)
             except Exception:
                 session.rollback()  # atomic: tenant data + lineage + checkpoint all reverted
-                session.begin()     # mark the import failed (separate txn, same session)
-                session.upsert(IDEM_TABLE, {"operation_key": req.operation_key}, {
-                    "operation_key": req.operation_key, "job_id": job_id, "status": "failed",
-                })
+                session.begin()  # mark the import failed (separate txn, same session)
+                session.upsert(
+                    IDEM_TABLE,
+                    {"operation_key": req.operation_key},
+                    {
+                        "operation_key": req.operation_key,
+                        "job_id": job_id,
+                        "status": "failed",
+                    },
+                )
                 session.commit()
-                raise _ImportFailed("batch", self._failed_status(req, job_id, applied, noop, 0))
+                # Failure surfaces as a status DTO; the batch exception is not chained.
+                raise _ImportFailed("batch", self._failed_status(req, job_id, applied, noop, 0)) from None
             session.commit()
             applied += b_applied
-            noop += (len(batch) - b_applied)
+            noop += len(batch) - b_applied
         return applied, noop
 
     def _apply_one_batch(self, session, req, job_id, seq, batch) -> int:
@@ -166,49 +200,93 @@ class ImportService:
             if changed:
                 b_applied += 1
             # Attributable lineage reflecting the de-duplication outcome (D-20), in this txn.
-            self._lineage.emit(session, LineageIntent(
-                event_type="import", occurred_at=now_iso(), actor_ref=req.actor_ref,
-                source_ref=rec.source_ref,
-                target_ref=f"{req.tenant_id}:{req.target_table}:{rec.natural_key}",
-                operation="created" if changed else "noop", schema_version=self._schema_version,
-                derivation_ref=job_id, correlation_id=req.correlation_id,
-            ))
-        session.append(CHECKPOINT_TABLE, {
-            "job_id": job_id, "batch_seq": seq, "last_offset": seq * self._batch_size,
-            "applied_count": b_applied, "status": "applied", "updated_at": now_iso(),
-        })
+            self._lineage.emit(
+                session,
+                LineageIntent(
+                    event_type="import",
+                    occurred_at=now_iso(),
+                    actor_ref=req.actor_ref,
+                    source_ref=rec.source_ref,
+                    target_ref=f"{req.tenant_id}:{req.target_table}:{rec.natural_key}",
+                    operation="created" if changed else "noop",
+                    schema_version=self._schema_version,
+                    derivation_ref=job_id,
+                    correlation_id=req.correlation_id,
+                ),
+            )
+        session.append(
+            CHECKPOINT_TABLE,
+            {
+                "job_id": job_id,
+                "batch_seq": seq,
+                "last_offset": seq * self._batch_size,
+                "applied_count": b_applied,
+                "status": "applied",
+                "updated_at": now_iso(),
+            },
+        )
         return b_applied
 
     def _finalize(self, session, req, job_id, applied, noop, rejected) -> ImportStatus:
         session.begin()
-        session.upsert(JOB_TABLE, {"job_id": job_id}, {
-            "job_id": job_id, "operation_key": req.operation_key, "tenant_id": req.tenant_id,
-            "state": "applied", "correlation_id": req.correlation_id,
-        })
-        session.upsert(IDEM_TABLE, {"operation_key": req.operation_key}, {
-            "operation_key": req.operation_key, "job_id": job_id, "status": "applied",
-            "applied": applied, "noop": noop, "rejected": rejected,
-        })
+        session.upsert(
+            JOB_TABLE,
+            {"job_id": job_id},
+            {
+                "job_id": job_id,
+                "operation_key": req.operation_key,
+                "tenant_id": req.tenant_id,
+                "state": "applied",
+                "correlation_id": req.correlation_id,
+            },
+        )
+        session.upsert(
+            IDEM_TABLE,
+            {"operation_key": req.operation_key},
+            {
+                "operation_key": req.operation_key,
+                "job_id": job_id,
+                "status": "applied",
+                "applied": applied,
+                "noop": noop,
+                "rejected": rejected,
+            },
+        )
         session.commit()
         self._emit_audit(req, "ImportCompleted", "success")
         return ImportStatus(
-            import_id=job_id, tenant_id=req.tenant_id, state="applied", applied_count=applied,
-            noop_count=noop, rejected_count=rejected, last_error_summary="",
+            import_id=job_id,
+            tenant_id=req.tenant_id,
+            state="applied",
+            applied_count=applied,
+            noop_count=noop,
+            rejected_count=rejected,
+            last_error_summary="",
             correlation_id=req.correlation_id,
         )
 
     def _failed_status(self, req, job_id, applied, noop, rejected) -> ImportStatus:
         return ImportStatus(
-            import_id=job_id, tenant_id=req.tenant_id, state="failed", applied_count=applied,
-            noop_count=noop, rejected_count=rejected, last_error_summary="batch_failed",
+            import_id=job_id,
+            tenant_id=req.tenant_id,
+            state="failed",
+            applied_count=applied,
+            noop_count=noop,
+            rejected_count=rejected,
+            last_error_summary="batch_failed",
             correlation_id=req.correlation_id,
         )
 
     def _emit_audit(self, req: ImportRequest, action: str, outcome: str) -> None:
-        self._audit.initiate(OperationalAuditEvent(
-            actor_ref=req.actor_ref, action=action, correlation_id=req.correlation_id,
-            outcome=outcome, target_ref=req.tenant_id,
-        ))
+        self._audit.initiate(
+            OperationalAuditEvent(
+                actor_ref=req.actor_ref,
+                action=action,
+                correlation_id=req.correlation_id,
+                outcome=outcome,
+                target_ref=req.tenant_id,
+            )
+        )
 
 
 class _ImportFailed(Exception):

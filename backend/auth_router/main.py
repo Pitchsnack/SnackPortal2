@@ -4,6 +4,7 @@ Assembles the two-stage authenticator. Tests/dev inject a control-plane read dou
 a stdlib verifier; production injects the PyJWT verifier + HTTP read client (under
 adapters/providers). Liveness is static and non-disclosing. No DB access, no routing.
 """
+
 from __future__ import annotations
 
 from typing import Dict, Optional

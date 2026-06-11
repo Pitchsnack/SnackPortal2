@@ -3,6 +3,7 @@
 Pure stdlib (`csv`); portable ingestion only (no provider bulk-load). Yields raw records
 with an origin reference; never writes tenant data.
 """
+
 from __future__ import annotations
 
 import csv

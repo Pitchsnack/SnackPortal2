@@ -1,4 +1,5 @@
 """Bootstrap framework: DB-free Phase 0; gated Phase 1; Phase-0 closure + break-glass."""
+
 from __future__ import annotations
 
 import os
@@ -58,8 +59,10 @@ def test_phase0_closed_and_break_glass_disabled_on_transition() -> None:
 
 
 if __name__ == "__main__":
-    _h.run([
-        test_phase0_is_db_free_identity_check,
-        test_phase1_requires_identity_store_and_schema,
-        test_phase0_closed_and_break_glass_disabled_on_transition,
-    ])
+    _h.run(
+        [
+            test_phase0_is_db_free_identity_check,
+            test_phase1_requires_identity_store_and_schema,
+            test_phase0_closed_and_break_glass_disabled_on_transition,
+        ]
+    )

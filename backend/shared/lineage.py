@@ -7,6 +7,7 @@ cryptographic hash-chaining (D-23) — which it owns; `import_service` never has
 persists lineage (E5). No payloads, PII, or secrets appear in this port: every outward
 pointer is a reference (D-22).
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -18,14 +19,14 @@ from shared.session import RoutedTenantSession
 
 @dataclass(frozen=True)
 class LineageIntent:
-    event_type: str            # "import" (D-22)
+    event_type: str  # "import" (D-22)
     occurred_at: str
-    actor_ref: str             # identity reference, never a token/credential
-    source_ref: str            # global record reference + key — never the payload/credentials
-    target_ref: str            # the affected tenant record (in the active tenant DB)
-    operation: str             # "created" | "updated" | "noop"
+    actor_ref: str  # identity reference, never a token/credential
+    source_ref: str  # global record reference + key — never the payload/credentials
+    target_ref: str  # the affected tenant record (in the active tenant DB)
+    operation: str  # "created" | "updated" | "noop"
     schema_version: str
-    derivation_ref: Optional[str] = None      # import job id
+    derivation_ref: Optional[str] = None  # import job id
     parent_lineage_ref: Optional[str] = None
     correlation_id: Optional[str] = None
 

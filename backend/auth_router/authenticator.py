@@ -4,6 +4,7 @@ Audits successful/failed authentication, tenant switch, carrier mismatch, and
 membership/tenant-access failures. Never audits JWT contents, secrets, or credentials.
 Internal (platform-issuer) and federated identities use the SAME flow (no special path).
 """
+
 from __future__ import annotations
 
 import base64
@@ -72,13 +73,23 @@ class Authenticator:
             return None
 
     def _ok(self, cid: str, principal: Optional[str], tenant: Optional[str], action: str) -> None:
-        self._audit.initiate(OperationalAuditEvent(
-            actor_ref=principal or "<unknown>", action=action,
-            correlation_id=cid, outcome="success", target_ref=tenant,
-        ))
+        self._audit.initiate(
+            OperationalAuditEvent(
+                actor_ref=principal or "<unknown>",
+                action=action,
+                correlation_id=cid,
+                outcome="success",
+                target_ref=tenant,
+            )
+        )
 
     def _deny(self, cid: str, principal: Optional[str], tenant: Optional[str], action: str, code: str) -> None:
-        self._audit.initiate(OperationalAuditEvent(
-            actor_ref=principal or "<unauthenticated>", action=action,
-            correlation_id=cid, outcome="denied:" + code, target_ref=tenant,
-        ))
+        self._audit.initiate(
+            OperationalAuditEvent(
+                actor_ref=principal or "<unauthenticated>",
+                action=action,
+                correlation_id=cid,
+                outcome="denied:" + code,
+                target_ref=tenant,
+            )
+        )

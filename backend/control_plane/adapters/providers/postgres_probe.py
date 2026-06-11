@@ -9,6 +9,7 @@ The per-tenant credential is resolved in-memory at probe time via the SecretStor
 (D-14) and never returned. The database driver import is confined to this provider
 zone (Driver Containment Standard). Not exercised by the stdlib unit suite.
 """
+
 from __future__ import annotations
 
 from typing import Optional

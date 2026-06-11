@@ -11,6 +11,7 @@ the association is a reference (D-14).
 This service is additive: the Phase-2 TenantRegistry is unchanged; this is the
 Phase-4-authorized writer of Verifying/Ready/Failed.
 """
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -105,8 +106,11 @@ class TenantLifecycleService:
         )
         self._store.put_tenant(updated)
         self._audit.record(
-            actor=actor, tenant_id=tenant_id, action="ReassociateDatabase",
-            from_state=rec.lifecycle_state.value, to_state=TenantLifecycleState.VERIFYING.value,
+            actor=actor,
+            tenant_id=tenant_id,
+            action="ReassociateDatabase",
+            from_state=rec.lifecycle_state.value,
+            to_state=TenantLifecycleState.VERIFYING.value,
             correlation_id=correlation_id,
         )
         return updated
@@ -129,7 +133,11 @@ class TenantLifecycleService:
         updated = replace(rec, lifecycle_state=to_state, updated_at=now_iso())
         self._store.put_tenant(updated)
         self._audit.record(
-            actor=actor, tenant_id=rec.tenant_id, action=action,
-            from_state=rec.lifecycle_state.value, to_state=to_state.value, correlation_id=correlation_id,
+            actor=actor,
+            tenant_id=rec.tenant_id,
+            action=action,
+            from_state=rec.lifecycle_state.value,
+            to_state=to_state.value,
+            correlation_id=correlation_id,
         )
         return updated

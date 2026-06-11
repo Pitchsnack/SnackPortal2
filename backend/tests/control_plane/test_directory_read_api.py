@@ -3,6 +3,7 @@
 Global reference data only — never tenant-owned records. Includes a best-effort real-HTTP
 round-trip against the import_service directory client (closes R-P5-04 end to end).
 """
+
 from __future__ import annotations
 
 import pathlib
@@ -20,10 +21,14 @@ from control_plane.records import DirectoryKind, DirectoryRecord  # noqa: E402
 def _store():
     store = InMemoryControlStore()
     for i in range(1, 6):
-        store.put_directory_record(DirectoryRecord(
-            directory=DirectoryKind.STARTUP, record_id=f"g{i}", display_name=f"S{i}",
-            attributes={"sector": "ai"},
-        ))
+        store.put_directory_record(
+            DirectoryRecord(
+                directory=DirectoryKind.STARTUP,
+                record_id=f"g{i}",
+                display_name=f"S{i}",
+                attributes={"sector": "ai"},
+            )
+        )
     return store
 
 
@@ -32,7 +37,7 @@ def test_directory_record_lookup() -> None:
     view = svc.directory_record("startup", "g1")
     assert view["record_id"] == "g1" and view["directory"] == "GlobalStartupDirectory"
     assert svc.directory_record("startup", "nope") is None
-    assert svc.directory_record("bogus", "g1") is None       # unknown kind -> None
+    assert svc.directory_record("bogus", "g1") is None  # unknown kind -> None
 
 
 def test_directory_cursor_pagination() -> None:
@@ -82,9 +87,11 @@ def test_directory_http_roundtrip_best_effort() -> None:
 
 
 if __name__ == "__main__":
-    _h.run([
-        test_directory_record_lookup,
-        test_directory_cursor_pagination,
-        test_dispatcher_directory_routes,
-        test_directory_http_roundtrip_best_effort,
-    ])
+    _h.run(
+        [
+            test_directory_record_lookup,
+            test_directory_cursor_pagination,
+            test_dispatcher_directory_routes,
+            test_directory_http_roundtrip_best_effort,
+        ]
+    )

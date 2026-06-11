@@ -5,6 +5,7 @@ Database drivers are permitted only within the enumerated provider-zone allow-se
 (Driver Containment Standard, PRD-P4-R2 C): the Database Router's serving zone and the
 Control Plane's persistence/verification zone. Forbidden everywhere else.
 """
+
 from __future__ import annotations
 
 import pathlib
@@ -18,8 +19,8 @@ DB_PREFIXES = ["psycopg2", "psycopg", "asyncpg", "sqlalchemy", "databases", "aio
 
 # Per-owning-service provider zones permitted to import a database driver (PRD-P4-R2 C).
 DB_PROVIDER_ZONES = (
-    "database_router/adapters/providers/",   # tenant-DB serving + tenant-credential resolution
-    "control_plane/adapters/providers/",     # Control-DB persistence + tenant-DB verification probe
+    "database_router/adapters/providers/",  # tenant-DB serving + tenant-credential resolution
+    "control_plane/adapters/providers/",  # Control-DB persistence + tenant-DB verification probe
 )
 
 
@@ -32,9 +33,7 @@ def test_vendor_imports_only_in_providers() -> None:
         rp = _scan.relposix(f)
         for mod in _scan.imported_modules(f):
             if _matches(mod, VENDOR_PREFIXES):
-                assert "/adapters/providers/" in ("/" + rp), (
-                    f"vendor import '{mod}' outside adapters/providers: {rp}"
-                )
+                assert "/adapters/providers/" in ("/" + rp), f"vendor import '{mod}' outside adapters/providers: {rp}"
 
 
 def test_db_drivers_only_in_permitted_provider_zones() -> None:

@@ -6,6 +6,7 @@ session (no cross-tenant search expressible). All filters are parameterized by t
 session provider (injection-safe). Distinct entry point from `LineageQuery` for the §13
 search surface; both share the same read seam.
 """
+
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
@@ -46,8 +47,7 @@ class LineageSearch:
         n = max(1, min(int(limit), self._page_limit_max))
         session = self._open(ctx)
         try:
-            rows = session.page(LINEAGE_TABLE, where, order_by="seq",
-                                descending=True, after=after, limit=n)
+            rows = session.page(LINEAGE_TABLE, where, order_by="seq", descending=True, after=after, limit=n)
         finally:
             session.close()
         items = [LineageRecordView.from_row(r) for r in rows]
@@ -56,6 +56,7 @@ class LineageSearch:
 
     def _open(self, ctx: RequestContext) -> LineageReadSession:
         return self._provider.open_read_session(
-            tenant_id=ctx.active_tenant_id, correlation_id=ctx.correlation_id,
+            tenant_id=ctx.active_tenant_id,
+            correlation_id=ctx.correlation_id,
             principal_ref=ctx.principal_ref,
         )

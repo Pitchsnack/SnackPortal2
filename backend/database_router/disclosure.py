@@ -6,6 +6,7 @@ secret state, or internal failure reasons. Unknown/unauthorized collapse to
 not_found upstream (auth_router + control-plane read API); the router applies the
 authorized-member mapping for the single active tenant it was handed.
 """
+
 from __future__ import annotations
 
 from typing import Optional

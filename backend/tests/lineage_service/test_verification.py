@@ -1,4 +1,5 @@
 """Chain verification + tamper detection + continuity (PRD-P6-R2 E; §11)."""
+
 from __future__ import annotations
 
 import pathlib
@@ -18,11 +19,20 @@ def _setup(n: int = 4):
     emit = LineageEmit(_doubles.FakeKeyStore())
     s = prov.open_session(tenant_id="t1", correlation_id="c")
     for i in range(1, n + 1):
-        emit.emit(s, LineageIntent(
-            event_type="import", occurred_at="T%d" % i, actor_ref="user1",
-            source_ref="g:%d" % i, target_ref="t1:tenant_copy:%d" % i, operation="created",
-            schema_version="1", derivation_ref="job1", correlation_id="c",
-        ))
+        emit.emit(
+            s,
+            LineageIntent(
+                event_type="import",
+                occurred_at="T%d" % i,
+                actor_ref="user1",
+                source_ref="g:%d" % i,
+                target_ref="t1:tenant_copy:%d" % i,
+                operation="created",
+                schema_version="1",
+                derivation_ref="job1",
+                correlation_id="c",
+            ),
+        )
     return prov
 
 

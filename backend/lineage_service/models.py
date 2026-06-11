@@ -5,10 +5,11 @@ Every field is a **reference, code, count, or hash** — never a payload, PII, o
 (D-22). `LineageRecordView` is the read projection of the D-22 core plus the integrity /
 segmentation columns needed for verification and archival.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, List, Mapping, Optional
 
 # Tenant-DB logical table names (the lineage chain + its segment summary).
 LINEAGE_TABLE = "lineage"
@@ -18,6 +19,7 @@ SEGMENT_TABLE = "lineage_segment"
 @dataclass(frozen=True)
 class LineageRecordView:
     """Read projection of one lineage record (references only)."""
+
     lineage_id: str
     seq: int
     segment_id: int
@@ -60,6 +62,7 @@ class LineageRecordView:
 @dataclass(frozen=True)
 class Page:
     """Expand-only keyset page. `next_cursor` is the `seq` to pass as `after` for more."""
+
     items: List[LineageRecordView]
     next_cursor: Optional[int] = None
 
@@ -67,15 +70,17 @@ class Page:
 @dataclass(frozen=True)
 class VerificationFinding:
     """A non-sensitive verification observation, located by reference (hashes/seq/ids)."""
-    kind: str          # "ok" | "marker_mismatch" | "broken_link" | "seq_gap"
+
+    kind: str  # "ok" | "marker_mismatch" | "broken_link" | "seq_gap"
     seq: Optional[int] = None
     lineage_id: Optional[str] = None
-    detail: str = ""   # non-sensitive (no payloads/secrets)
+    detail: str = ""  # non-sensitive (no payloads/secrets)
 
 
 @dataclass(frozen=True)
 class VerificationReport:
     """Evidence of a tenant-scoped chain verification (E4 / IC-002 audit input)."""
+
     tenant_id: str
     scanned: int
     ok: bool
@@ -87,6 +92,7 @@ class VerificationReport:
 @dataclass(frozen=True)
 class ProvenanceNode:
     """A node in the per-tenant provenance graph (references only)."""
+
     lineage_id: str
     seq: int
     event_type: str
@@ -98,10 +104,11 @@ class ProvenanceNode:
 @dataclass(frozen=True)
 class ProvenanceGraphResult:
     """A bounded, read-only ancestry/descendant view rooted at one record (D-25)."""
+
     root_lineage_id: str
-    direction: str     # "ancestors" | "descendants"
+    direction: str  # "ancestors" | "descendants"
     nodes: List[ProvenanceNode]
-    truncated: bool = False   # depth/node limit reached
+    truncated: bool = False  # depth/node limit reached
 
 
 @dataclass(frozen=True)
@@ -110,6 +117,7 @@ class RetentionPolicy:
 
     Values derive from the named D-08 regime; **None means unconfigured → retain-all.**
     """
+
     regime_code: Optional[str] = None
     retention_floor_days: Optional[int] = None
     retention_ceiling_days: Optional[int] = None
@@ -120,19 +128,21 @@ class RetentionPolicy:
 @dataclass(frozen=True)
 class RetentionDecision:
     """Outcome of a retention evaluation. In Build Phase 6 the action is always `retain`."""
+
     tenant_id: str
-    action: str                 # "retain" (expiry disabled until D-08 values approved)
+    action: str  # "retain" (expiry disabled until D-08 values approved)
     policy_configured: bool
-    eligible_count: int = 0     # records eligible for expiry — 0 by safe default
+    eligible_count: int = 0  # records eligible for expiry — 0 by safe default
     detail: str = ""
 
 
 @dataclass(frozen=True)
 class SegmentInfo:
     """Read-only summary of one integrity-chain segment (archival-ready; D-24/D-25)."""
+
     segment_id: int
     first_seq: int
     last_seq: int
-    opening_prev_marker: str    # prev_marker of the segment's first record
-    closing_marker: str         # integrity_marker of the segment's last record
+    opening_prev_marker: str  # prev_marker of the segment's first record
+    closing_marker: str  # integrity_marker of the segment's last record
     count: int

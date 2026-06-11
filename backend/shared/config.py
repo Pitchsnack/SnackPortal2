@@ -5,6 +5,7 @@ secret values — those are resolved via the SecretStore port at use time (D-14)
 Per-service config schemas live in their service; only the loader mechanism is
 cross-cutting. No concrete loading is implemented in Build Phase 1.
 """
+
 from __future__ import annotations
 
 from typing import Optional, Protocol

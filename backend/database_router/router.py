@@ -10,6 +10,7 @@ This service performs NO authentication, authorization, import, or lineage. It d
 not import auth_router or control_plane (transport ports only). The single active
 tenant is taken from the signed claim resolved by Phase 3 — never re-derived.
 """
+
 from __future__ import annotations
 
 from typing import Optional
@@ -45,16 +46,14 @@ class DatabaseRouter:
         bulk_pool: Optional[ConnectionPoolManager] = None,
     ) -> None:
         self._resolver = resolver
-        self._pool = pool                 # interactive lane (Build Phase 4 default)
-        self._bulk_pool = bulk_pool        # separate bounded capacity for heavy workloads (D-13)
+        self._pool = pool  # interactive lane (Build Phase 4 default)
+        self._bulk_pool = bulk_pool  # separate bounded capacity for heavy workloads (D-13)
         self._secrets = secret_store
         self._factory = connection_factory
         self._audit = audit
 
     # -- public API ------------------------------------------------------------
-    def route(
-        self, ctx: RequestContext, *, bootstrap_phase0: bool = False, lane: Lane = Lane.INTERACTIVE
-    ) -> RouteResult:
+    def route(self, ctx: RequestContext, *, bootstrap_phase0: bool = False, lane: Lane = Lane.INTERACTIVE) -> RouteResult:
         target = self._determine_target(ctx, bootstrap_phase0)
         if target is RoutingTarget.CONTROL:
             self._ok(ctx, None, "RouteControl")
@@ -121,25 +120,40 @@ class DatabaseRouter:
             raise
         except Exception:
             # Secret-missing / driver / capacity / unreachable — surfaced as a
-            # non-leaking 'unavailable' (never reveal secret state or DB topology).
-            raise unavailable("connection_unavailable")
+            # non-leaking 'unavailable' (never reveal or chain secret state / topology).
+            raise unavailable("connection_unavailable") from None
 
     # -- audit (references only; never secrets/credentials) --------------------
     def _ok(self, ctx: RequestContext, tenant_id: Optional[str], action: str) -> None:
-        self._audit.initiate(OperationalAuditEvent(
-            actor_ref=ctx.principal_ref or "<unknown>", action=action,
-            correlation_id=ctx.correlation_id, outcome="success", target_ref=tenant_id,
-        ))
+        self._audit.initiate(
+            OperationalAuditEvent(
+                actor_ref=ctx.principal_ref or "<unknown>",
+                action=action,
+                correlation_id=ctx.correlation_id,
+                outcome="success",
+                target_ref=tenant_id,
+            )
+        )
 
     def _denied(self, ctx: RequestContext, tenant_id: Optional[str], code: str) -> None:
-        self._audit.initiate(OperationalAuditEvent(
-            actor_ref=ctx.principal_ref or "<unknown>", action="RouteDenied",
-            correlation_id=ctx.correlation_id, outcome="denied:" + code, target_ref=tenant_id,
-        ))
+        self._audit.initiate(
+            OperationalAuditEvent(
+                actor_ref=ctx.principal_ref or "<unknown>",
+                action="RouteDenied",
+                correlation_id=ctx.correlation_id,
+                outcome="denied:" + code,
+                target_ref=tenant_id,
+            )
+        )
 
     def _anomaly(self, ctx: RequestContext, tenant_id: Optional[str]) -> None:
         # Cross-tenant-adjacent anomaly (D-30 L4) — no secrets, no topology.
-        self._audit.initiate(OperationalAuditEvent(
-            actor_ref=ctx.principal_ref or "<unknown>", action="IsolationAnomaly",
-            correlation_id=ctx.correlation_id, outcome="anomaly:tenant_binding", target_ref=tenant_id,
-        ))
+        self._audit.initiate(
+            OperationalAuditEvent(
+                actor_ref=ctx.principal_ref or "<unknown>",
+                action="IsolationAnomaly",
+                correlation_id=ctx.correlation_id,
+                outcome="anomaly:tenant_binding",
+                target_ref=tenant_id,
+            )
+        )

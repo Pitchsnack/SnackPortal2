@@ -1,4 +1,5 @@
 """Tenant Credential Secret Resolution Standard (PRD-P4-R2 D; D-14)."""
+
 from __future__ import annotations
 
 import os
@@ -7,19 +8,18 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import _h  # noqa: E402
-
-from shared.context import RequestContext  # noqa: E402
-from shared.secrets import SecretRef, SecretValue  # noqa: E402
-
-from database_router.adapters.providers.env_tenant_secret_store import EnvTenantSecretStore  # noqa: E402
-from database_router.models import RoutingDenied  # noqa: E402
-from doubles import (  # noqa: E402
+from _db_doubles import (  # noqa: E402
     FakeAudit,
     FakeConnectionFactory,
     FakeRoutingRead,
     FakeSecretStore,
     make_router,
 )
+
+from database_router.adapters.providers.env_tenant_secret_store import EnvTenantSecretStore  # noqa: E402
+from database_router.models import RoutingDenied  # noqa: E402
+from shared.context import RequestContext  # noqa: E402
+from shared.secrets import SecretRef, SecretValue  # noqa: E402
 
 
 def _ctx(tenant_id="t1"):
@@ -48,8 +48,8 @@ def test_credential_not_re_resolved_on_pooled_reuse() -> None:
     router, secrets, _, _ = _wire()
     r = router.route(_ctx())
     router.release(r)
-    router.route(_ctx())                          # reuses the pooled connection
-    assert len(secrets.resolved) == 1             # resolved only when a connection is created
+    router.route(_ctx())  # reuses the pooled connection
+    assert len(secrets.resolved) == 1  # resolved only when a connection is created
 
 
 def test_credential_never_in_result_or_audit() -> None:
@@ -71,9 +71,7 @@ def test_missing_secret_denies_without_leak() -> None:
     secrets = FakeSecretStore()
     secrets.set_missing("tenant/t1/db")
     audit = FakeAudit()
-    router, _, _, _ = make_router(
-        read=read, secret_store=secrets, factory=FakeConnectionFactory(), audit=audit
-    )
+    router, _, _, _ = make_router(read=read, secret_store=secrets, factory=FakeConnectionFactory(), audit=audit)
     try:
         router.route(_ctx())
         assert False, "missing secret must deny"
@@ -99,11 +97,13 @@ def test_tenant_secret_store_is_allow_listed_to_tenant_refs() -> None:
 
 
 if __name__ == "__main__":
-    _h.run([
-        test_credential_resolved_at_connect_time,
-        test_credential_not_re_resolved_on_pooled_reuse,
-        test_credential_never_in_result_or_audit,
-        test_secret_value_repr_is_redacted,
-        test_missing_secret_denies_without_leak,
-        test_tenant_secret_store_is_allow_listed_to_tenant_refs,
-    ])
+    _h.run(
+        [
+            test_credential_resolved_at_connect_time,
+            test_credential_not_re_resolved_on_pooled_reuse,
+            test_credential_never_in_result_or_audit,
+            test_secret_value_repr_is_redacted,
+            test_missing_secret_denies_without_leak,
+            test_tenant_secret_store_is_allow_listed_to_tenant_refs,
+        ]
+    )

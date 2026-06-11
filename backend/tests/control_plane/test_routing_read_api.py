@@ -5,6 +5,7 @@ version (never credentials), tenant-state stays minimal (least disclosure), unkn
 tenants get a consistent 404, and — best-effort — the real HTTP transport round-trips
 against the database_router routing-read client (closes O-2).
 """
+
 from __future__ import annotations
 
 import pathlib
@@ -27,11 +28,18 @@ from shared.secrets import SecretRef  # noqa: E402
 
 def _store_with_ready_tenant():
     store = InMemoryControlStore()
-    store.put_tenant(TenantRecord(
-        tenant_id="t1", organization_ref="org", lifecycle_state=TenantLifecycleState.READY,
-        expected_schema_version="1", database_association_ref=SecretRef("tenant/t1/db", "1"),
-        federation_config_ref="fed", created_at="t", updated_at="t",
-    ))
+    store.put_tenant(
+        TenantRecord(
+            tenant_id="t1",
+            organization_ref="org",
+            lifecycle_state=TenantLifecycleState.READY,
+            expected_schema_version="1",
+            database_association_ref=SecretRef("tenant/t1/db", "1"),
+            federation_config_ref="fed",
+            created_at="t",
+            updated_at="t",
+        )
+    )
     store.put_membership(MembershipRecord(principal_ref="u", tenant_id="t1", role=Role.TENANT_ADMIN))
     return store
 
@@ -58,7 +66,7 @@ def test_dispatcher_paths_and_consistent_denial() -> None:
     status, body = disp.handle("GET", "/internal/routing/tenants/t1")
     assert status == 200 and body["tenant_id"] == "t1"
     status, _ = disp.handle("GET", "/internal/routing/tenants/nope")
-    assert status == 404                                   # unknown -> consistent 404
+    assert status == 404  # unknown -> consistent 404
     status, body = disp.handle("GET", "/tenants/t1/state")
     assert status == 200 and body["ready"] is True
     status, body = disp.handle("GET", "/membership?p=u&t=t1")
@@ -89,7 +97,7 @@ def test_http_transport_roundtrip_best_effort() -> None:
         assert view.tenant_id == "t1" and view.ready is True
         assert view.database_association_ref == SecretRef("tenant/t1/db", "1")
         assert view.expected_schema_version == "1"
-        assert client.get_routing_view("nope") is None      # 404 -> None
+        assert client.get_routing_view("nope") is None  # 404 -> None
     except OSError:
         return  # loopback networking blocked; transport check skipped
     finally:
@@ -98,9 +106,11 @@ def test_http_transport_roundtrip_best_effort() -> None:
 
 
 if __name__ == "__main__":
-    _h.run([
-        test_routing_view_exposes_reference_not_credentials,
-        test_tenant_state_is_minimal_no_association,
-        test_dispatcher_paths_and_consistent_denial,
-        test_http_transport_roundtrip_best_effort,
-    ])
+    _h.run(
+        [
+            test_routing_view_exposes_reference_not_credentials,
+            test_tenant_state_is_minimal_no_association,
+            test_dispatcher_paths_and_consistent_denial,
+            test_http_transport_roundtrip_best_effort,
+        ]
+    )

@@ -8,6 +8,7 @@ routes to a fresh pool once the new view is observed.
 Baseline invalidation is pull-based (short TTL re-read); `invalidate()` provides
 the optional push hook. The clock is injectable for deterministic tests. Stdlib only.
 """
+
 from __future__ import annotations
 
 import time

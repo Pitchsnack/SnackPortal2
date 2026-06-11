@@ -1,4 +1,5 @@
 """Membership (1:N, roles stored not evaluated) + federation config (storage only)."""
+
 from __future__ import annotations
 
 import pathlib
@@ -31,8 +32,11 @@ def test_membership_is_storage_only() -> None:
 
 def test_federation_storage_only() -> None:
     f = FederationStore(InMemoryControlStore())
-    f.put(FederationConfig(tenant_id="t1", oidc_issuer="iss", oidc_audience="aud",
-                           jwks_ref="oidc/jwks@1", claim_to_tenant_rule="claim.tenant"))
+    f.put(
+        FederationConfig(
+            tenant_id="t1", oidc_issuer="iss", oidc_audience="aud", jwks_ref="oidc/jwks@1", claim_to_tenant_rule="claim.tenant"
+        )
+    )
     cfg = f.get("t1")
     assert cfg is not None and cfg.oidc_issuer == "iss" and cfg.jwks_ref == "oidc/jwks@1"
     for evaluative in ("validate", "verify_jwt", "authenticate"):
@@ -40,8 +44,10 @@ def test_federation_storage_only() -> None:
 
 
 if __name__ == "__main__":
-    _h.run([
-        test_one_user_many_tenants_and_master_agent_multi_assignment,
-        test_membership_is_storage_only,
-        test_federation_storage_only,
-    ])
+    _h.run(
+        [
+            test_one_user_many_tenants_and_master_agent_multi_assignment,
+            test_membership_is_storage_only,
+            test_federation_storage_only,
+        ]
+    )

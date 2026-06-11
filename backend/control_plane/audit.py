@@ -4,6 +4,7 @@ Append-only, references only. No lineage, no hash-chaining, no tenant-DB audit, 
 secrets/credentials. Records tenant registration, lifecycle changes, database
 association changes, and provisioning events. Stored in control-plane scope only.
 """
+
 from __future__ import annotations
 
 from typing import List, Optional

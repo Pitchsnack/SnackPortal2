@@ -6,10 +6,11 @@
   import of control_plane). Fail-closed semantics are enforced by callers.
 - JtiDenylistPort: DEFERRED — interface only; Phase 3 implements no storage.
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from typing import Optional
 
 from .models import FederationView, Role, TenantStateView
 

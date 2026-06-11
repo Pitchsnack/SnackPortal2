@@ -4,6 +4,7 @@ Provides an HS256 signature verifier, an in-memory control-plane read, and a JWT
 builder so the validation policy + tenant-context logic are exercised end-to-end
 without the production PyJWT/HTTP providers.
 """
+
 from __future__ import annotations
 
 import base64
@@ -54,8 +55,11 @@ def issuer_cfg(
     tenant_claim: str = "tenant",
 ) -> IssuerConfig:
     return IssuerConfig(
-        issuer=issuer, audience=audience, allowed_algs=allowed_algs or ["HS256"],
-        jwks={kid: secret}, tenant_claim=tenant_claim,
+        issuer=issuer,
+        audience=audience,
+        allowed_algs=allowed_algs or ["HS256"],
+        jwks={kid: secret},
+        tenant_claim=tenant_claim,
     )
 
 

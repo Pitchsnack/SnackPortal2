@@ -5,6 +5,7 @@ control_plane), no database driver, and no vendor identity SDK (Supabase/Lovable
 PyJWT (`jwt`) is the approved portable JWT library and is allowed (used only by the
 SignatureVerifier provider).
 """
+
 from __future__ import annotations
 
 import pathlib
@@ -16,8 +17,18 @@ import _scan  # noqa: E402
 AR = _scan.BACKEND_ROOT / "auth_router"
 FORBIDDEN_SERVICES = ["control_plane", "database_router", "import_service", "lineage_service", "api_gateway"]
 FORBIDDEN_LIBS = [
-    "psycopg2", "psycopg", "asyncpg", "sqlalchemy", "databases", "aiopg",
-    "supabase", "lovable", "boto3", "botocore", "azure", "google.cloud",
+    "psycopg2",
+    "psycopg",
+    "asyncpg",
+    "sqlalchemy",
+    "databases",
+    "aiopg",
+    "supabase",
+    "lovable",
+    "boto3",
+    "botocore",
+    "azure",
+    "google.cloud",
 ]
 
 

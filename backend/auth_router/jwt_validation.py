@@ -4,6 +4,7 @@ A vendor-neutral validation *policy* (parsing + alg allowlist + claim checks) th
 delegates ONLY the signature crypto to a SignatureVerifier port. No DB, no session
 store, no network beyond the (separately cached) JWKS the verifier was given.
 """
+
 from __future__ import annotations
 
 import base64
@@ -48,7 +49,8 @@ class JwtValidator:
             header = json.loads(_b64url_decode(h_b64))
             payload = json.loads(_b64url_decode(p_b64))
         except Exception:
-            raise unauthenticated("undecodable_token")
+            # Sanitized denial: never chain parse details of an untrusted token.
+            raise unauthenticated("undecodable_token") from None
 
         alg = header.get("alg")
         if not alg or str(alg).lower() == "none":
@@ -68,7 +70,8 @@ class JwtValidator:
         try:
             signature = _b64url_decode(s_b64)
         except Exception:
-            raise unauthenticated("bad_signature_encoding")
+            # Sanitized denial: never chain parse details of an untrusted token.
+            raise unauthenticated("bad_signature_encoding") from None
         if not self._verifier.verify_signature(signing_input, signature, key, alg):
             raise unauthenticated("bad_signature")
 

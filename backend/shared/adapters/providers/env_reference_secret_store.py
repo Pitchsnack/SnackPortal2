@@ -6,6 +6,7 @@ SDK, no tenant-credential resolution, no secret persistence. Vendor-neutral (pur
 config-selectable, and confined to the adapters/providers zone (F-1). Descriptors stay
 {store_ref, version}; the value is returned in-memory and never logged (D-14).
 """
+
 from __future__ import annotations
 
 import os

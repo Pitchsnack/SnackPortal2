@@ -11,6 +11,7 @@ driver); the suite uses the in-memory ControlStore. Stores references only — n
 credentials (D-14): the tenant database association is two columns
 ({store_ref, version}), never the secret value.
 """
+
 from __future__ import annotations
 
 from typing import List, Optional, Tuple
@@ -70,10 +71,15 @@ class PostgresControlStore(ControlStore):
                     updated_at = EXCLUDED.updated_at
                 """,
                 (
-                    record.tenant_id, record.organization_ref, record.lifecycle_state.value,
-                    record.expected_schema_version, record.database_association_ref.store_ref,
-                    record.database_association_ref.version, record.federation_config_ref,
-                    record.created_at, record.updated_at,
+                    record.tenant_id,
+                    record.organization_ref,
+                    record.lifecycle_state.value,
+                    record.expected_schema_version,
+                    record.database_association_ref.store_ref,
+                    record.database_association_ref.version,
+                    record.federation_config_ref,
+                    record.created_at,
+                    record.updated_at,
                 ),
             )
         self._conn.commit()
@@ -105,9 +111,7 @@ class PostgresControlStore(ControlStore):
             )
         self._conn.commit()
 
-    def list_memberships(
-        self, principal_ref: Optional[str] = None, tenant_id: Optional[str] = None
-    ) -> List[MembershipRecord]:
+    def list_memberships(self, principal_ref: Optional[str] = None, tenant_id: Optional[str] = None) -> List[MembershipRecord]:
         clauses, params = [], []
         if principal_ref is not None:
             clauses.append("principal_ref = %s")
@@ -118,10 +122,7 @@ class PostgresControlStore(ControlStore):
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         with self._conn.cursor() as cur:
             cur.execute("SELECT principal_ref, tenant_id, role FROM control_memberships" + where, params)
-            return [
-                MembershipRecord(principal_ref=r[0], tenant_id=r[1], role=Role(r[2]))
-                for r in cur.fetchall()
-            ]
+            return [MembershipRecord(principal_ref=r[0], tenant_id=r[1], role=Role(r[2])) for r in cur.fetchall()]
 
     # -- federation config ----------------------------------------------------
     def put_federation(self, config: FederationConfig) -> None:
@@ -135,8 +136,7 @@ class PostgresControlStore(ControlStore):
                        oidc_audience = EXCLUDED.oidc_audience,
                        jwks_ref = EXCLUDED.jwks_ref,
                        claim_to_tenant_rule = EXCLUDED.claim_to_tenant_rule""",
-                (config.tenant_id, config.oidc_issuer, config.oidc_audience,
-                 config.jwks_ref, config.claim_to_tenant_rule),
+                (config.tenant_id, config.oidc_issuer, config.oidc_audience, config.jwks_ref, config.claim_to_tenant_rule),
             )
         self._conn.commit()
 
@@ -150,9 +150,7 @@ class PostgresControlStore(ControlStore):
             r = cur.fetchone()
         if not r:
             return None
-        return FederationConfig(
-            tenant_id=r[0], oidc_issuer=r[1], oidc_audience=r[2], jwks_ref=r[3], claim_to_tenant_rule=r[4]
-        )
+        return FederationConfig(tenant_id=r[0], oidc_issuer=r[1], oidc_audience=r[2], jwks_ref=r[3], claim_to_tenant_rule=r[4])
 
     # -- global discovery platform --------------------------------------------
     def put_directory_record(self, record: DirectoryRecord) -> None:
@@ -176,9 +174,7 @@ class PostgresControlStore(ControlStore):
             r = cur.fetchone()
         if not r:
             return None
-        return DirectoryRecord(
-            directory=DirectoryKind(r[0]), record_id=r[1], display_name=r[2], attributes=dict(r[3] or {})
-        )
+        return DirectoryRecord(directory=DirectoryKind(r[0]), record_id=r[1], display_name=r[2], attributes=dict(r[3] or {}))
 
     def list_directory(self, directory: DirectoryKind) -> List[DirectoryRecord]:
         with self._conn.cursor() as cur:
@@ -189,7 +185,9 @@ class PostgresControlStore(ControlStore):
             )
             return [
                 DirectoryRecord(
-                    directory=DirectoryKind(r[0]), record_id=r[1], display_name=r[2],
+                    directory=DirectoryKind(r[0]),
+                    record_id=r[1],
+                    display_name=r[2],
                     attributes=dict(r[3] or {}),
                 )
                 for r in cur.fetchall()
@@ -202,8 +200,15 @@ class PostgresControlStore(ControlStore):
                 """INSERT INTO control_audit
                        (actor, tenant_id, action, from_state, to_state, ts, correlation_id)
                    VALUES (%s,%s,%s,%s,%s,%s,%s)""",
-                (record.actor, record.tenant_id, record.action, record.from_state,
-                 record.to_state, record.timestamp, record.correlation_id),
+                (
+                    record.actor,
+                    record.tenant_id,
+                    record.action,
+                    record.from_state,
+                    record.to_state,
+                    record.timestamp,
+                    record.correlation_id,
+                ),
             )
         self._conn.commit()
 
@@ -215,8 +220,13 @@ class PostgresControlStore(ControlStore):
             )
             return [
                 ControlAuditRecord(
-                    actor=r[0], tenant_id=r[1], action=r[2], from_state=r[3],
-                    to_state=r[4], timestamp=r[5], correlation_id=r[6],
+                    actor=r[0],
+                    tenant_id=r[1],
+                    action=r[2],
+                    from_state=r[3],
+                    to_state=r[4],
+                    timestamp=r[5],
+                    correlation_id=r[6],
                 )
                 for r in cur.fetchall()
             ]

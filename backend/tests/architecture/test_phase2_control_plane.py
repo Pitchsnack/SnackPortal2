@@ -7,6 +7,7 @@ and the tenant-DB verification probe) appear ONLY under
 `control_plane/adapters/providers/**` — the domain stays persistence-agnostic
 (Driver Containment Standard, PRD-P4-R2 C; E3/E4).
 """
+
 from __future__ import annotations
 
 import pathlib
@@ -19,8 +20,17 @@ CP = _scan.BACKEND_ROOT / "control_plane"
 
 # Forbidden anywhere in control_plane: runtime auth/tokens (Phase 3) + vendor/cloud SDKs.
 FORBIDDEN_IMPORT_PREFIXES = [
-    "jwt", "jose", "authlib", "oauthlib", "oidc",
-    "boto3", "botocore", "azure", "google.cloud", "supabase", "lovable",
+    "jwt",
+    "jose",
+    "authlib",
+    "oauthlib",
+    "oidc",
+    "boto3",
+    "botocore",
+    "azure",
+    "google.cloud",
+    "supabase",
+    "lovable",
 ]
 # Permitted ONLY under control_plane/adapters/providers/** (Control-DB + verification probe).
 DB_DRIVER_PREFIXES = ["psycopg2", "psycopg", "asyncpg", "sqlalchemy", "databases", "aiopg"]
@@ -36,16 +46,10 @@ def test_control_plane_imports_are_in_scope() -> None:
         rp = _scan.relposix(f)
         for mod in _scan.imported_modules(f):
             top = mod.split(".")[0]
-            assert top not in _scan.SERVICE_PACKAGES or top == "control_plane", (
-                f"{rp} imports another service '{mod}'"
-            )
-            assert not _matches(mod, FORBIDDEN_IMPORT_PREFIXES), (
-                f"{rp} imports out-of-scope module '{mod}'"
-            )
+            assert top not in _scan.SERVICE_PACKAGES or top == "control_plane", f"{rp} imports another service '{mod}'"
+            assert not _matches(mod, FORBIDDEN_IMPORT_PREFIXES), f"{rp} imports out-of-scope module '{mod}'"
             if _matches(mod, DB_DRIVER_PREFIXES):
-                assert rp.startswith(CP_PROVIDER_ZONE), (
-                    f"{rp} imports database driver '{mod}' outside {CP_PROVIDER_ZONE}"
-                )
+                assert rp.startswith(CP_PROVIDER_ZONE), f"{rp} imports database driver '{mod}' outside {CP_PROVIDER_ZONE}"
 
 
 def test_audit_has_no_lineage_or_hash_chaining() -> None:

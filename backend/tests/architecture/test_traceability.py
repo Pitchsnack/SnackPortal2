@@ -1,5 +1,6 @@
 """Every service package declares traceability metadata; not-yet-built services
 implement no behavior. Updated for Build Phase 2 (control_plane is now built)."""
+
 from __future__ import annotations
 
 import ast
@@ -37,9 +38,7 @@ def test_every_service_has_traceability() -> None:
 
         assert "IMPLEMENTS_BEHAVIOR" in consts, f"{svc}: IMPLEMENTS_BEHAVIOR missing"
         val = consts["IMPLEMENTS_BEHAVIOR"]
-        assert isinstance(val, ast.Constant) and isinstance(val.value, bool), (
-            f"{svc}: IMPLEMENTS_BEHAVIOR must be a bool"
-        )
+        assert isinstance(val, ast.Constant) and isinstance(val.value, bool), f"{svc}: IMPLEMENTS_BEHAVIOR must be a bool"
         if svc not in BUILT_SERVICES:
             assert val.value is False, f"{svc}: not yet built — IMPLEMENTS_BEHAVIOR must be False"
 

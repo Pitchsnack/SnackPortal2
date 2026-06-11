@@ -6,6 +6,7 @@ binds any future implementation: readiness is access-controlled and minimally
 disclosing and MUST NOT leak tenant or database existence/topology. No readiness
 logic exists in Build Phase 1.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -14,7 +15,7 @@ from enum import Enum
 
 class GlobalReadiness(Enum):
     READY = "ready"
-    DEGRADED = "degraded"      # observability-only; never denies healthy tenants (D-16)
+    DEGRADED = "degraded"  # observability-only; never denies healthy tenants (D-16)
     NOT_READY = "not_ready"
 
 
@@ -31,4 +32,4 @@ class LivenessReport:
 @dataclass(frozen=True)
 class ReadinessReport:
     state: GlobalReadiness
-    detail: str = ""           # non-sensitive only; no tenant/DB identifiers
+    detail: str = ""  # non-sensitive only; no tenant/DB identifiers

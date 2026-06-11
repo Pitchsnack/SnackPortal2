@@ -5,6 +5,7 @@ transport port + tenant-scoped cache) and applies readiness + schema-version
 gating. Returns a routable `TenantRoutingView` or raises a non-leaking RoutingDenied.
 Never hardcodes a database, never guesses a name, never spans tenants.
 """
+
 from __future__ import annotations
 
 from typing import Iterable
@@ -33,8 +34,8 @@ class RoutingResolver:
             try:
                 view = self._read.get_routing_view(tenant_id)
             except Exception:
-                # Fail closed; never reveal control-plane internals.
-                raise unavailable("control_plane_unavailable")
+                # Fail closed; never reveal (or chain) control-plane internals.
+                raise unavailable("control_plane_unavailable") from None
             if view is None:
                 # Unknown / unauthorized-to-know — consistent denial (no existence leak).
                 raise not_found("not_found")

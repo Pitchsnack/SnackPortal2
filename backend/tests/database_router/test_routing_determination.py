@@ -1,4 +1,5 @@
 """Routing Context Standard (PRD-P4-R2 H / PRD-P4-E1 §19): control-vs-tenant + bootstrap."""
+
 from __future__ import annotations
 
 import pathlib
@@ -6,17 +7,16 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import _h  # noqa: E402
-
-from shared.context import RequestContext  # noqa: E402
-
-from database_router.models import RoutingDenied, RoutingTarget  # noqa: E402
-from doubles import (  # noqa: E402
+from _db_doubles import (  # noqa: E402
     FakeAudit,
     FakeConnectionFactory,
     FakeRoutingRead,
     FakeSecretStore,
     make_router,
 )
+
+from database_router.models import RoutingDenied, RoutingTarget  # noqa: E402
+from shared.context import RequestContext  # noqa: E402
 
 
 def _wire():
@@ -71,9 +71,11 @@ def test_bootstrap_phase0_never_routes_a_tenant_database() -> None:
 
 
 if __name__ == "__main__":
-    _h.run([
-        test_tenant_request_routes_to_one_tenant_database,
-        test_control_request_routes_to_control_database,
-        test_null_tenant_non_control_is_forbidden,
-        test_bootstrap_phase0_never_routes_a_tenant_database,
-    ])
+    _h.run(
+        [
+            test_tenant_request_routes_to_one_tenant_database,
+            test_control_request_routes_to_control_database,
+            test_null_tenant_non_control_is_forbidden,
+            test_bootstrap_phase0_never_routes_a_tenant_database,
+        ]
+    )

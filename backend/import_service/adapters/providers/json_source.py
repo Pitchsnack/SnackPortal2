@@ -3,6 +3,7 @@
 Pure stdlib (`json`); portable ingestion only. Yields raw records with an origin
 reference; never writes tenant data.
 """
+
 from __future__ import annotations
 
 import json

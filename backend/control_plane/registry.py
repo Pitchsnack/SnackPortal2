@@ -6,6 +6,7 @@ tenant-DB connectivity + schema verification — Build Phase 4). **No tenant may
 Ready during Phase 2.** Verify/Activate/Reactivate/ReassociateDatabase are *defined but
 deferred* to Build Phase 4. Stores references only — never credentials (D-14).
 """
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -67,8 +68,12 @@ class TenantRegistry:
         )
         self._store.put_tenant(record)
         self._audit.record(
-            actor=actor, tenant_id=tenant_id, action="RegisterTenant",
-            from_state=None, to_state=TenantLifecycleState.REGISTERED.value, correlation_id=correlation_id,
+            actor=actor,
+            tenant_id=tenant_id,
+            action="RegisterTenant",
+            from_state=None,
+            to_state=TenantLifecycleState.REGISTERED.value,
+            correlation_id=correlation_id,
         )
         return record
 
@@ -77,22 +82,32 @@ class TenantRegistry:
 
     def mark_provisioning(self, tenant_id: str, *, actor: str, correlation_id: str) -> TenantRecord:
         return self._transition(
-            tenant_id, TenantLifecycleState.PROVISIONING,
-            {TenantLifecycleState.REGISTERED}, "MarkProvisioning", actor, correlation_id,
+            tenant_id,
+            TenantLifecycleState.PROVISIONING,
+            {TenantLifecycleState.REGISTERED},
+            "MarkProvisioning",
+            actor,
+            correlation_id,
         )
 
     def suspend_tenant(self, tenant_id: str, *, actor: str, correlation_id: str) -> TenantRecord:
         return self._transition(
-            tenant_id, TenantLifecycleState.SUSPENDED,
-            {TenantLifecycleState.REGISTERED, TenantLifecycleState.PROVISIONING}, "SuspendTenant",
-            actor, correlation_id,
+            tenant_id,
+            TenantLifecycleState.SUSPENDED,
+            {TenantLifecycleState.REGISTERED, TenantLifecycleState.PROVISIONING},
+            "SuspendTenant",
+            actor,
+            correlation_id,
         )
 
     def decommission_tenant(self, tenant_id: str, *, actor: str, correlation_id: str) -> TenantRecord:
         return self._transition(
-            tenant_id, TenantLifecycleState.DECOMMISSIONED,
+            tenant_id,
+            TenantLifecycleState.DECOMMISSIONED,
             {TenantLifecycleState.REGISTERED, TenantLifecycleState.PROVISIONING, TenantLifecycleState.SUSPENDED},
-            "DecommissionTenant", actor, correlation_id,
+            "DecommissionTenant",
+            actor,
+            correlation_id,
         )
 
     # ---------------- Phase 4 deferred operations (defined, not implemented) ----------------
@@ -129,7 +144,11 @@ class TenantRegistry:
         updated = replace(record, lifecycle_state=to_state, updated_at=now_iso())
         self._store.put_tenant(updated)
         self._audit.record(
-            actor=actor, tenant_id=tenant_id, action=action,
-            from_state=record.lifecycle_state.value, to_state=to_state.value, correlation_id=correlation_id,
+            actor=actor,
+            tenant_id=tenant_id,
+            action=action,
+            from_state=record.lifecycle_state.value,
+            to_state=to_state.value,
+            correlation_id=correlation_id,
         )
         return updated

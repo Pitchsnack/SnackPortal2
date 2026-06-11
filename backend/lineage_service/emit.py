@@ -14,6 +14,7 @@ Build Phase 6 additions (additive; Phase-5 callers unaffected):
   `UNIQUE(seq)` DB constraint is the fail-closed backstop (PRD-P6-R2 B / P6-OBS-2).
 - Optional `OperationalAudit` sink: emits `LineageWritten` (references only; ≠ lineage).
 """
+
 from __future__ import annotations
 
 import uuid
@@ -74,9 +75,7 @@ class LineageEmit(LineageEmitPort):
             "prev_marker": prev_marker,
         }
         key = self._chain_key(session.tenant_id)
-        row["integrity_marker"] = canonical.marker_for(
-            key, row, prev_marker, marker_version=canonical.CURRENT_MARKER_VERSION
-        )
+        row["integrity_marker"] = canonical.marker_for(key, row, prev_marker, marker_version=canonical.CURRENT_MARKER_VERSION)
 
         session.append(LINEAGE_TABLE, row)
         self._audit_written(session.tenant_id, intent, lineage_id)
@@ -92,8 +91,12 @@ class LineageEmit(LineageEmitPort):
         if self._audit is None:
             return
         # Operational audit (IC-002) — references only; DISTINCT from the lineage record.
-        self._audit.initiate(OperationalAuditEvent(
-            actor_ref=intent.actor_ref, action="LineageWritten",
-            correlation_id=intent.correlation_id or "", outcome="success",
-            target_ref=intent.target_ref,
-        ))
+        self._audit.initiate(
+            OperationalAuditEvent(
+                actor_ref=intent.actor_ref,
+                action="LineageWritten",
+                correlation_id=intent.correlation_id or "",
+                outcome="success",
+                target_ref=intent.target_ref,
+            )
+        )

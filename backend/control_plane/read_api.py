@@ -11,6 +11,7 @@ existence leak); **no credentials are ever returned** (the association is a
 distinct from tenant-state so the auth path never receives the association reference
 (least disclosure). The routing endpoint is internal/control-plane-scoped.
 """
+
 from __future__ import annotations
 
 from typing import Optional, Tuple
@@ -80,7 +81,7 @@ class ControlPlaneReadService:
         limit = max(1, min(limit, _MAX_PAGE))
         records = sorted(self._store.list_directory(kind), key=lambda r: r.record_id)
         offset = int(cursor) if (cursor or "").isdigit() else 0
-        page = records[offset:offset + limit]
+        page = records[offset : offset + limit]
         next_cursor = str(offset + limit) if offset + limit < len(records) else None
         return {"records": [self._directory_view(r) for r in page], "next_cursor": next_cursor}
 

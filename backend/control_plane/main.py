@@ -4,6 +4,7 @@ Wires the control-plane frameworks against the ControlStore port (default in-mem
 adapter) and the vendor-neutral env/file SecretStore provider for Bootstrap Phase 0.
 No tenant-database access, no routing, no runtime authentication.
 """
+
 from __future__ import annotations
 
 from typing import Dict

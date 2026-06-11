@@ -12,6 +12,7 @@ Caller-controlled transactions (begin/commit/rollback) are supported so a future
 import + lineage write can commit atomically on the single resolved connection
 (PRD-P4-R2 J; IC-003/IC-004). No credentials are held in these shapes.
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod

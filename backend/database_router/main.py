@@ -6,6 +6,7 @@ production injects the HTTP routing-read client + the psycopg connection factory
 (under adapters/providers) and a tenant-credential SecretStore provider. Liveness is
 static and non-disclosing. This is the ONLY service permitted to open tenant databases.
 """
+
 from __future__ import annotations
 
 from typing import Dict, Iterable, Optional
@@ -37,13 +38,9 @@ def build_router(
 ) -> DatabaseRouter:
     cache = RoutingViewCache(ttl_seconds=cache_ttl_seconds)
     resolver = RoutingResolver(read, cache, supported_schema_versions=supported_schema_versions)
-    pool = ConnectionPoolManager(
-        max_per_tenant=max_per_tenant, idle_timeout_seconds=idle_timeout_seconds
-    )
+    pool = ConnectionPoolManager(max_per_tenant=max_per_tenant, idle_timeout_seconds=idle_timeout_seconds)
     # Separate bounded capacity so bulk/import workloads cannot starve interactive traffic (D-13).
-    bulk_pool = ConnectionPoolManager(
-        max_per_tenant=bulk_max_per_tenant, idle_timeout_seconds=idle_timeout_seconds
-    )
+    bulk_pool = ConnectionPoolManager(max_per_tenant=bulk_max_per_tenant, idle_timeout_seconds=idle_timeout_seconds)
     return DatabaseRouter(
         resolver=resolver,
         pool=pool,

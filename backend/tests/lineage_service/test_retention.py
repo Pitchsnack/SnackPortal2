@@ -1,4 +1,5 @@
 """Retention framework: safe default retain-all; expiry disabled (PRD-P6-R2 E/F; §14)."""
+
 from __future__ import annotations
 
 import pathlib
@@ -36,8 +37,10 @@ def test_expiry_and_crypto_erase_disabled() -> None:
 
 
 if __name__ == "__main__":
-    _h.run([
-        test_default_retain_all,
-        test_configured_policy_still_retains_in_phase6,
-        test_expiry_and_crypto_erase_disabled,
-    ])
+    _h.run(
+        [
+            test_default_retain_all,
+            test_configured_policy_still_retains_in_phase6,
+            test_expiry_and_crypto_erase_disabled,
+        ]
+    )

@@ -1,4 +1,5 @@
 """Bootstrap SecretStore provider: trust-anchor resolution only; no leakage (H-2 / D-14)."""
+
 from __future__ import annotations
 
 import os
@@ -42,9 +43,11 @@ def test_secret_value_repr_is_redacted() -> None:
 
 
 if __name__ == "__main__":
-    _h.run([
-        test_resolves_trust_anchor_from_env,
-        test_rejects_non_trust_anchor_reference,
-        test_unresolved_reference_raises,
-        test_secret_value_repr_is_redacted,
-    ])
+    _h.run(
+        [
+            test_resolves_trust_anchor_from_env,
+            test_rejects_non_trust_anchor_reference,
+            test_unresolved_reference_raises,
+            test_secret_value_repr_is_redacted,
+        ]
+    )

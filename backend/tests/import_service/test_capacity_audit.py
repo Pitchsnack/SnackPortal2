@@ -1,4 +1,5 @@
 """Capacity (D-13) + audit (IC-003) + routing dependency: bulk lane, lifecycle events, status."""
+
 from __future__ import annotations
 
 import pathlib
@@ -6,19 +7,22 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import _h  # noqa: E402
-
-from shared.session import Lane  # noqa: E402
+from _import_doubles import FakeRoutedSessionProvider, make_service  # noqa: E402
 
 from import_service.models import ImportMode, ImportRequest, SourceDescriptor, SourceKind  # noqa: E402
-from doubles import FakeRoutedSessionProvider, make_service  # noqa: E402
+from shared.session import Lane  # noqa: E402
 
 _CSV = "record_id,display_name\n1,A\n2,B"
 
 
 def _req(op="op1", tenant="t1"):
     return ImportRequest(
-        tenant_id=tenant, source=SourceDescriptor(kind=SourceKind.CSV, ref="f", payload=_CSV),
-        mode=ImportMode.ASYNC, operation_key=op, correlation_id="c", actor_ref="user1",
+        tenant_id=tenant,
+        source=SourceDescriptor(kind=SourceKind.CSV, ref="f", payload=_CSV),
+        mode=ImportMode.ASYNC,
+        operation_key=op,
+        correlation_id="c",
+        actor_ref="user1",
     )
 
 
@@ -58,9 +62,11 @@ def test_get_status_reads_tenant_resident_state() -> None:
 
 
 if __name__ == "__main__":
-    _h.run([
-        test_import_always_uses_the_bulk_lane,
-        test_lifecycle_audit_events,
-        test_not_routable_tenant_propagates_denial,
-        test_get_status_reads_tenant_resident_state,
-    ])
+    _h.run(
+        [
+            test_import_always_uses_the_bulk_lane,
+            test_lifecycle_audit_events,
+            test_not_routable_tenant_propagates_denial,
+            test_get_status_reads_tenant_resident_state,
+        ]
+    )

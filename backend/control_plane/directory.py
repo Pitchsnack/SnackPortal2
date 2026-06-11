@@ -4,6 +4,7 @@ Global Startup / Investor directories. Global Record != Tenant Record. No tenant
 copies, no import processing, no synchronization, no lineage. Records carry stable
 identifiers for future IC-003 import / IC-004 lineage integration.
 """
+
 from __future__ import annotations
 
 from typing import Dict, List, Optional

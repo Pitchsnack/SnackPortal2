@@ -4,6 +4,7 @@ These checks encode the Build Phase 1 dependency/governance rules. They run unde
 pytest and also standalone (`python tests/architecture/test_*.py`) so they can be
 executed without third-party tooling.
 """
+
 from __future__ import annotations
 
 import ast

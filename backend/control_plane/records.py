@@ -4,6 +4,7 @@ References only; no credentials/secrets/payloads (D-14). Physical PostgreSQL
 persistence is provided behind the ControlStore port (Phase 2 default = in-memory;
 concrete PostgreSQL provider deferred).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -16,10 +17,10 @@ from shared.secrets import SecretRef
 class TenantLifecycleState(Enum):
     REGISTERED = "Registered"
     PROVISIONING = "Provisioning"
-    VERIFYING = "Verifying"        # set only in Build Phase 4 (needs tenant-DB)
-    READY = "Ready"                # set only in Build Phase 4 (needs verification)
+    VERIFYING = "Verifying"  # set only in Build Phase 4 (needs tenant-DB)
+    READY = "Ready"  # set only in Build Phase 4 (needs verification)
     SUSPENDED = "Suspended"
-    FAILED = "Failed"              # set only in Build Phase 4 (set by verify)
+    FAILED = "Failed"  # set only in Build Phase 4 (set by verify)
     DECOMMISSIONED = "Decommissioned"
 
 
@@ -31,7 +32,7 @@ class TenantRecord:
     organization_ref: str
     lifecycle_state: TenantLifecycleState
     expected_schema_version: str
-    database_association_ref: SecretRef       # reference {store_ref, version}; resolved in Phase 4
+    database_association_ref: SecretRef  # reference {store_ref, version}; resolved in Phase 4
     federation_config_ref: str
     created_at: str
     updated_at: str

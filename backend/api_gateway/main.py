@@ -4,6 +4,7 @@ Liveness is a static, non-disclosing placeholder. No app/router wiring, no auth,
 no tenant routing, no database access. Concrete wiring is deferred to a later
 build phase.
 """
+
 from __future__ import annotations
 
 from typing import Dict

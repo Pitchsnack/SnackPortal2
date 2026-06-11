@@ -5,6 +5,7 @@ A concrete Adapter implements a port for one backend and lives ONLY under
 `**/adapters/providers/**`. A ProviderRegistry binds a config-selected provider to
 a port at the composition root. No implementations exist in Build Phase 1.
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -18,9 +19,7 @@ class ProviderAdapter(ABC):
 
 class ProviderRegistry(ABC):
     @abstractmethod
-    def register(
-        self, port: str, provider_id: str, factory: Callable[..., ProviderAdapter]
-    ) -> None: ...
+    def register(self, port: str, provider_id: str, factory: Callable[..., ProviderAdapter]) -> None: ...
 
     @abstractmethod
     def resolve(self, port: str) -> ProviderAdapter: ...

@@ -1,4 +1,5 @@
 """Path/runner bootstrap for database_router behavior tests (stdlib; pytest or standalone)."""
+
 from __future__ import annotations
 
 import pathlib

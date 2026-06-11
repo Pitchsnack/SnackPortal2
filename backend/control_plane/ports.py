@@ -4,6 +4,7 @@ The control plane depends on this port; the concrete backend is selected at the
 composition root. Phase 2 default is an in-memory adapter (pure stdlib); a portable
 PostgreSQL provider is a deferred persistence-binding step. No tenant-DB access.
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -38,9 +39,7 @@ class ControlStore(ABC):
     @abstractmethod
     def put_membership(self, record: MembershipRecord) -> None: ...
     @abstractmethod
-    def list_memberships(
-        self, principal_ref: Optional[str] = None, tenant_id: Optional[str] = None
-    ) -> List[MembershipRecord]: ...
+    def list_memberships(self, principal_ref: Optional[str] = None, tenant_id: Optional[str] = None) -> List[MembershipRecord]: ...
 
     # --- federation config ---
     @abstractmethod

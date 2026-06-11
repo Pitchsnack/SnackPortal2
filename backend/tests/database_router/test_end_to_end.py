@@ -1,4 +1,5 @@
 """End-to-end Database Router flow: route -> transact -> release -> reuse, isolation kept."""
+
 from __future__ import annotations
 
 import pathlib
@@ -6,12 +7,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import _h  # noqa: E402
-
-from shared.context import RequestContext  # noqa: E402
-
-from database_router.main import liveness  # noqa: E402
-from database_router.models import RoutingTarget  # noqa: E402
-from doubles import (  # noqa: E402
+from _db_doubles import (  # noqa: E402
     FakeAudit,
     FakeConnectionFactory,
     FakeRoutingRead,
@@ -19,11 +15,13 @@ from doubles import (  # noqa: E402
     make_router,
 )
 
+from database_router.main import liveness  # noqa: E402
+from database_router.models import RoutingTarget  # noqa: E402
+from shared.context import RequestContext  # noqa: E402
+
 
 def _ctx(tenant_id=None, role="TENANT_ADMIN", principal="p"):
-    return RequestContext(
-        correlation_id="corr", active_tenant_id=tenant_id, principal_ref=principal, role=role
-    )
+    return RequestContext(correlation_id="corr", active_tenant_id=tenant_id, principal_ref=principal, role=role)
 
 
 def test_full_router_flow() -> None:
@@ -31,9 +29,7 @@ def test_full_router_flow() -> None:
     read.set_view("t1")
     read.set_view("t2")
     audit = FakeAudit()
-    router, _, pool, _ = make_router(
-        read=read, secret_store=FakeSecretStore(), factory=FakeConnectionFactory(), audit=audit
-    )
+    router, _, pool, _ = make_router(read=read, secret_store=FakeSecretStore(), factory=FakeConnectionFactory(), audit=audit)
 
     # Two tenants serve from physically separate, single-tenant-bound connections.
     r1 = router.route(_ctx("t1"))

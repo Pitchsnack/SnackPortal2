@@ -4,6 +4,7 @@ One principal -> many tenants (1:N). Roles stored, never evaluated. MASTER_AGENT
 hold many tenant assignments. No active-tenant selection, no authorization, no
 permission evaluation, no JWT — those are Build Phase 3 (IC-005).
 """
+
 from __future__ import annotations
 
 from typing import List

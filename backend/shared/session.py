@@ -11,6 +11,7 @@ The session exposes a small, portable **tabular** vocabulary (`upsert`/`append`/
 no credentials, payloads, or secrets appear in this port (D-14). There is no update/delete
 vocabulary: lineage tables are append-only (D-23) and tenant copies mutate via `upsert`.
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -20,7 +21,7 @@ from typing import Any, Dict, List, Optional
 
 class Lane(Enum):
     INTERACTIVE = "interactive"
-    BULK = "bulk"            # separate bounded capacity for heavy/import workloads (D-13)
+    BULK = "bulk"  # separate bounded capacity for heavy/import workloads (D-13)
 
 
 class RoutedTenantSession(ABC):

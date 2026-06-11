@@ -7,6 +7,7 @@ module derives read-only segment summaries (first/last seq, opening/closing mark
 and an `ArchivePrepared` signal — making the chain **archival-ready** without moving data
 (archival jobs are deferred per R1). No writes, no deletes: append-only is absolute (A/F).
 """
+
 from __future__ import annotations
 
 from typing import Optional
@@ -21,8 +22,7 @@ _COUNT_PAGE = 1000
 
 
 class Segmentation:
-    def __init__(self, provider: LineageReadSessionProvider, *,
-                 audit: Optional[OperationalAudit] = None) -> None:
+    def __init__(self, provider: LineageReadSessionProvider, *, audit: Optional[OperationalAudit] = None) -> None:
         self._provider = provider
         self._audit = audit
 
@@ -78,8 +78,7 @@ class Segmentation:
         total = 0
         after: Optional[int] = None
         while True:
-            rows = session.page(LINEAGE_TABLE, where, order_by="seq", descending=False,
-                                after=after, limit=_COUNT_PAGE)
+            rows = session.page(LINEAGE_TABLE, where, order_by="seq", descending=False, after=after, limit=_COUNT_PAGE)
             if not rows:
                 break
             total += len(rows)
@@ -91,15 +90,19 @@ class Segmentation:
     def _audit_archive(self, ctx: RequestContext, info: SegmentInfo) -> None:
         if self._audit is None:
             return
-        self._audit.initiate(OperationalAuditEvent(
-            actor_ref=ctx.principal_ref or "<system>", action="ArchivePrepared",
-            correlation_id=ctx.correlation_id,
-            outcome="segment:%d:%d-%d" % (info.segment_id, info.first_seq, info.last_seq),
-            target_ref=ctx.active_tenant_id,
-        ))
+        self._audit.initiate(
+            OperationalAuditEvent(
+                actor_ref=ctx.principal_ref or "<system>",
+                action="ArchivePrepared",
+                correlation_id=ctx.correlation_id,
+                outcome="segment:%d:%d-%d" % (info.segment_id, info.first_seq, info.last_seq),
+                target_ref=ctx.active_tenant_id,
+            )
+        )
 
     def _open(self, ctx: RequestContext) -> LineageReadSession:
         return self._provider.open_read_session(
-            tenant_id=ctx.active_tenant_id, correlation_id=ctx.correlation_id,
+            tenant_id=ctx.active_tenant_id,
+            correlation_id=ctx.correlation_id,
             principal_ref=ctx.principal_ref,
         )

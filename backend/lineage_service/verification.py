@@ -8,6 +8,7 @@ E4). Tenant-scoped, read-only, service-independent (no import_service / control_
 database_router import — E1/E2/E3). A detected break is alarmed via the shared operational
 audit (`ChainBroken`; IC-002), distinct from lineage.
 """
+
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
@@ -64,25 +65,29 @@ class LineageVerifier:
             try:
                 expected = canonical.marker_for(key, r, stored_prev, marker_version=marker_version)
             except canonical.UnknownMarkerVersion:
-                findings.append(VerificationFinding("marker_mismatch", seq, r.get("lineage_id"),
-                                                     "unknown marker_version"))
+                findings.append(VerificationFinding("marker_mismatch", seq, r.get("lineage_id"), "unknown marker_version"))
                 expected = None
             if expected is not None and expected != r.get("integrity_marker"):
-                findings.append(VerificationFinding("marker_mismatch", seq, r.get("lineage_id"),
-                                                     "recomputed marker != stored (tamper-evident)"))
+                findings.append(
+                    VerificationFinding("marker_mismatch", seq, r.get("lineage_id"), "recomputed marker != stored (tamper-evident)")
+                )
             if stored_prev != prev_marker:
-                findings.append(VerificationFinding("broken_link", seq, r.get("lineage_id"),
-                                                     "prev_marker != prior record integrity_marker"))
+                findings.append(
+                    VerificationFinding("broken_link", seq, r.get("lineage_id"), "prev_marker != prior record integrity_marker")
+                )
             if prev_seq is not None and seq != prev_seq + 1:
-                findings.append(VerificationFinding("seq_gap", seq, r.get("lineage_id"),
-                                                     "non-contiguous seq"))
+                findings.append(VerificationFinding("seq_gap", seq, r.get("lineage_id"), "non-contiguous seq"))
 
             prev_marker = r.get("integrity_marker", "")
             prev_seq = seq
 
         report = VerificationReport(
-            tenant_id=tenant_id, scanned=len(rows), ok=not findings,
-            first_seq=first_seq, last_seq=last_seq, findings=findings,
+            tenant_id=tenant_id,
+            scanned=len(rows),
+            ok=not findings,
+            first_seq=first_seq,
+            last_seq=last_seq,
+            findings=findings,
         )
         self._audit_result(ctx, report)
         return report
@@ -92,8 +97,7 @@ class LineageVerifier:
         out: List[Dict[str, Any]] = []
         after: Optional[int] = None
         while True:
-            rows = session.page(LINEAGE_TABLE, {}, order_by="seq", descending=False,
-                                after=after, limit=self._scan_page)
+            rows = session.page(LINEAGE_TABLE, {}, order_by="seq", descending=False, after=after, limit=self._scan_page)
             if not rows:
                 break
             out.extend(rows)
@@ -114,13 +118,19 @@ class LineageVerifier:
             return
         action = "LineageVerified" if report.ok else "ChainBroken"
         outcome = "verified:%d" % report.scanned if report.ok else "broken:%d" % len(report.findings)
-        self._audit.initiate(OperationalAuditEvent(
-            actor_ref=ctx.principal_ref or "<unknown>", action=action,
-            correlation_id=ctx.correlation_id, outcome=outcome, target_ref=report.tenant_id,
-        ))
+        self._audit.initiate(
+            OperationalAuditEvent(
+                actor_ref=ctx.principal_ref or "<unknown>",
+                action=action,
+                correlation_id=ctx.correlation_id,
+                outcome=outcome,
+                target_ref=report.tenant_id,
+            )
+        )
 
     def _open(self, ctx: RequestContext) -> LineageReadSession:
         return self._provider.open_read_session(
-            tenant_id=ctx.active_tenant_id, correlation_id=ctx.correlation_id,
+            tenant_id=ctx.active_tenant_id,
+            correlation_id=ctx.correlation_id,
             principal_ref=ctx.principal_ref,
         )

@@ -1,4 +1,5 @@
 """Canonicalization single-source + frozen v1 (PRD-P6-R2 C; closes P6-OBS-3)."""
+
 from __future__ import annotations
 
 import hashlib
@@ -12,14 +13,21 @@ import _h  # noqa: E402
 from lineage_service import canonical  # noqa: E402
 
 _REC = {
-    "lineage_id": "L1", "seq": 3, "event_type": "import", "occurred_at": "T",
-    "actor_ref": "a", "source_ref": "s", "target_ref": "t", "operation": "created",
-    "schema_version": "1", "derivation_ref": "job", "parent_lineage_ref": None,
-    "correlation_id": "ignored", "segment_id": 2,
+    "lineage_id": "L1",
+    "seq": 3,
+    "event_type": "import",
+    "occurred_at": "T",
+    "actor_ref": "a",
+    "source_ref": "s",
+    "target_ref": "t",
+    "operation": "created",
+    "schema_version": "1",
+    "derivation_ref": "job",
+    "parent_lineage_ref": None,
+    "correlation_id": "ignored",
+    "segment_id": 2,
 }
-_EXPECTED = "\x1f".join(
-    ["PREV", "L1", "3", "import", "T", "a", "s", "t", "created", "1", "job", ""]
-).encode("utf-8")
+_EXPECTED = "\x1f".join(["PREV", "L1", "3", "import", "T", "a", "s", "t", "created", "1", "job", ""]).encode("utf-8")
 
 
 def test_canonical_content_is_frozen_v1() -> None:
@@ -47,9 +55,11 @@ def test_unknown_marker_version_raises() -> None:
 
 
 if __name__ == "__main__":
-    _h.run([
-        test_canonical_content_is_frozen_v1,
-        test_correlation_and_segment_excluded_from_digest,
-        test_marker_matches_independent_hmac,
-        test_unknown_marker_version_raises,
-    ])
+    _h.run(
+        [
+            test_canonical_content_is_frozen_v1,
+            test_correlation_and_segment_excluded_from_digest,
+            test_marker_matches_independent_hmac,
+            test_unknown_marker_version_raises,
+        ]
+    )

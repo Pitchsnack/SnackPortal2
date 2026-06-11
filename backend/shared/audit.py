@@ -4,6 +4,7 @@ Operational / control-plane audit (IC-002, IC-003). It MUST NOT be conflated wit
 data-provenance lineage and MUST NOT be written into tenant databases. Records are
 reference-only and non-sensitive. No audit sink is implemented in Build Phase 1.
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod

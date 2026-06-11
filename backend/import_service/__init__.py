@@ -10,12 +10,31 @@ checkpoints (D-21), ingress validation/PII floor (D-09), pluggable source adapte
 (Global Directory/CSV/JSON, D-18), separate bulk capacity (D-13). Performs no
 authentication, authorization, routing, or credential resolution.
 """
+
 from __future__ import annotations
 
 GOVERNING_CONTRACTS = [
-    "IC-003", "IC-004", "IC-002", "IC-005", "IC-001",
-    "D-18", "D-19", "D-20", "D-21", "D-09", "D-08",
-    "D-13", "D-16", "D-17", "D-22", "D-25", "D-31", "D-04", "D-06", "D-30", "D-14",
+    "IC-003",
+    "IC-004",
+    "IC-002",
+    "IC-005",
+    "IC-001",
+    "D-18",
+    "D-19",
+    "D-20",
+    "D-21",
+    "D-09",
+    "D-08",
+    "D-13",
+    "D-16",
+    "D-17",
+    "D-22",
+    "D-25",
+    "D-31",
+    "D-04",
+    "D-06",
+    "D-30",
+    "D-14",
 ]
 BUILD_PHASE = 5
 IMPLEMENTS_BEHAVIOR = True

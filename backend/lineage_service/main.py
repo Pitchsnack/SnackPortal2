@@ -8,6 +8,7 @@ tenant-bound read sessions on the INTERACTIVE lane. An `OperationalAudit` sink (
 is injected for lineage operational events (≠ lineage; IC-002). No database access except
 through the caller-provided / provider-issued routed sessions; no service imports (DAG).
 """
+
 from __future__ import annotations
 
 from typing import Dict, Optional
@@ -27,8 +28,7 @@ from .verification import LineageVerifier
 SERVICE = "lineage_service"
 
 
-def build_lineage_emit(*, secret_store: SecretStore,
-                       audit: Optional[OperationalAudit] = None) -> LineageEmit:
+def build_lineage_emit(*, secret_store: SecretStore, audit: Optional[OperationalAudit] = None) -> LineageEmit:
     return LineageEmit(secret_store, audit=audit)
 
 
@@ -36,9 +36,9 @@ def build_lineage_query(*, read_provider: LineageReadSessionProvider) -> Lineage
     return LineageQuery(read_provider)
 
 
-def build_lineage_verifier(*, read_provider: LineageReadSessionProvider,
-                           secret_store: SecretStore,
-                           audit: Optional[OperationalAudit] = None) -> LineageVerifier:
+def build_lineage_verifier(
+    *, read_provider: LineageReadSessionProvider, secret_store: SecretStore, audit: Optional[OperationalAudit] = None
+) -> LineageVerifier:
     return LineageVerifier(read_provider, secret_store, audit=audit)
 
 
@@ -54,8 +54,7 @@ def build_retention(*, audit: Optional[OperationalAudit] = None) -> RetentionFra
     return RetentionFramework(audit=audit)
 
 
-def build_segmentation(*, read_provider: LineageReadSessionProvider,
-                       audit: Optional[OperationalAudit] = None) -> Segmentation:
+def build_segmentation(*, read_provider: LineageReadSessionProvider, audit: Optional[OperationalAudit] = None) -> Segmentation:
     return Segmentation(read_provider, audit=audit)
 
 

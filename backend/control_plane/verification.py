@@ -8,6 +8,7 @@ database_router — so the dependency graph stays acyclic (no control_plane →
 database_router edge). The association is passed by reference; credentials are
 resolved in-memory by the provider and never returned here (D-14).
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod

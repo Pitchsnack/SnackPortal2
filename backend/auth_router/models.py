@@ -4,9 +4,10 @@ These are auth-local DTOs so auth_router never imports control_plane (DAG rule 2
 the control-plane read API serializes to these shapes across the transport boundary.
 No tokens/secrets/JWKS appear in any output context (IC-005 disclosure).
 """
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, List, Optional
 
@@ -59,7 +60,7 @@ class FederationView:
 @dataclass(frozen=True)
 class TenantStateView:
     tenant_id: str
-    lifecycle_state: str   # IC-002 lifecycle state name
+    lifecycle_state: str  # IC-002 lifecycle state name
     ready: bool
 
 

@@ -15,6 +15,7 @@ not tamper-evidence ordering — D-25; correlation is request metadata).
 No payloads, PII, or secrets are serialized — references and codes only (D-22). The keyed
 hash key is a D-14 reference resolved by the caller and never stored in lineage.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -28,8 +29,17 @@ _SEP = "\x1f"  # unit separator
 
 # Frozen v1 field order (matches Build Phase 5 emit byte-for-byte).
 _V1_FIELDS = (
-    "lineage_id", "seq", "event_type", "occurred_at", "actor_ref", "source_ref",
-    "target_ref", "operation", "schema_version", "derivation_ref", "parent_lineage_ref",
+    "lineage_id",
+    "seq",
+    "event_type",
+    "occurred_at",
+    "actor_ref",
+    "source_ref",
+    "target_ref",
+    "operation",
+    "schema_version",
+    "derivation_ref",
+    "parent_lineage_ref",
 )
 
 
@@ -37,8 +47,7 @@ class UnknownMarkerVersion(ValueError):
     """A lineage record carries a marker_version this build cannot canonicalize."""
 
 
-def canonical_content(record: Mapping[str, Any], prev_marker: str, *,
-                      marker_version: int = CURRENT_MARKER_VERSION) -> bytes:
+def canonical_content(record: Mapping[str, Any], prev_marker: str, *, marker_version: int = CURRENT_MARKER_VERSION) -> bytes:
     """Deterministic bytes for `record` chained on `prev_marker`. References/codes only."""
     if marker_version == MARKER_VERSION_V1:
         parts = [prev_marker]
@@ -55,7 +64,6 @@ def compute_marker(key: str, content: bytes) -> str:
     return hmac.new(key.encode("utf-8"), content, hashlib.sha256).hexdigest()
 
 
-def marker_for(key: str, record: Mapping[str, Any], prev_marker: str, *,
-               marker_version: int = CURRENT_MARKER_VERSION) -> str:
+def marker_for(key: str, record: Mapping[str, Any], prev_marker: str, *, marker_version: int = CURRENT_MARKER_VERSION) -> str:
     """Convenience: canonicalize then HMAC. The single way a marker is produced."""
     return compute_marker(key, canonical_content(record, prev_marker, marker_version=marker_version))

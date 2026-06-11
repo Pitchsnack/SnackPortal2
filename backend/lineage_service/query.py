@@ -9,6 +9,7 @@ bound to exactly one tenant DB (D-04/D-30), so no cross-tenant query is expressi
 Authorization (`lineage:read`) is decided by the caller/auth layer (§16) — this service
 implements no authN/authZ; it consumes the resolved `RequestContext` and trusts its scope.
 """
+
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
@@ -35,30 +36,25 @@ class LineageQuery:
             session.close()
         return LineageRecordView.from_row(rows[0]) if rows else None
 
-    def for_record(self, ctx: RequestContext, target_ref: str, *,
-                   after: Optional[int] = None, limit: int = 50) -> Page:
+    def for_record(self, ctx: RequestContext, target_ref: str, *, after: Optional[int] = None, limit: int = 50) -> Page:
         """Lineage of one tenant record (G1)."""
         return self._page(ctx, {"target_ref": target_ref}, after, limit)
 
-    def for_import(self, ctx: RequestContext, derivation_ref: str, *,
-                   after: Optional[int] = None, limit: int = 50) -> Page:
+    def for_import(self, ctx: RequestContext, derivation_ref: str, *, after: Optional[int] = None, limit: int = 50) -> Page:
         """Import history by job reference (G2)."""
         return self._page(ctx, {"derivation_ref": derivation_ref}, after, limit)
 
-    def events(self, ctx: RequestContext, *, event_type: Optional[str] = None,
-               after: Optional[int] = None, limit: int = 50) -> Page:
+    def events(self, ctx: RequestContext, *, event_type: Optional[str] = None, after: Optional[int] = None, limit: int = 50) -> Page:
         """Recent events, optionally filtered by type (G2)."""
         where: Dict[str, Any] = {"event_type": event_type} if event_type else {}
         return self._page(ctx, where, after, limit)
 
     # -- internals -------------------------------------------------------------
-    def _page(self, ctx: RequestContext, where: Dict[str, Any],
-              after: Optional[int], limit: int) -> Page:
+    def _page(self, ctx: RequestContext, where: Dict[str, Any], after: Optional[int], limit: int) -> Page:
         n = max(1, min(int(limit), self._page_limit_max))
         session = self._open(ctx)
         try:
-            rows = session.page(LINEAGE_TABLE, where, order_by="seq",
-                                descending=True, after=after, limit=n)
+            rows = session.page(LINEAGE_TABLE, where, order_by="seq", descending=True, after=after, limit=n)
         finally:
             session.close()
         items = [LineageRecordView.from_row(r) for r in rows]
@@ -67,6 +63,7 @@ class LineageQuery:
 
     def _open(self, ctx: RequestContext) -> LineageReadSession:
         return self._provider.open_read_session(
-            tenant_id=ctx.active_tenant_id, correlation_id=ctx.correlation_id,
+            tenant_id=ctx.active_tenant_id,
+            correlation_id=ctx.correlation_id,
             principal_ref=ctx.principal_ref,
         )

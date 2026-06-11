@@ -4,6 +4,7 @@ Exercises the composition root (control_plane.main.create_app) and confirms the
 frameworks interoperate while honoring the Phase-2 invariants (no tenant Ready;
 operational audit recorded; readiness disclosure-safe).
 """
+
 from __future__ import annotations
 
 import os
@@ -34,9 +35,13 @@ def test_bootstrap_to_ready_control_plane() -> None:
 
     # Registry: tenant is Registered, never Ready in Phase 2.
     t = cp.registry.register_tenant(
-        tenant_id="t1", organization_ref="org1", expected_schema_version="1",
-        database_association_ref=SecretRef("tenant/t1/db", "1"), federation_config_ref="fed1",
-        actor="op", correlation_id="r1",
+        tenant_id="t1",
+        organization_ref="org1",
+        expected_schema_version="1",
+        database_association_ref=SecretRef("tenant/t1/db", "1"),
+        federation_config_ref="fed1",
+        actor="op",
+        correlation_id="r1",
     )
     assert t.lifecycle_state is TenantLifecycleState.REGISTERED
     assert cp.store.get_tenant("t1").lifecycle_state is not TenantLifecycleState.READY

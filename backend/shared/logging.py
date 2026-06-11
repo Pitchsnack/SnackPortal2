@@ -4,6 +4,7 @@ Defines the logging port. Implementations MUST redact secrets and PII; only
 references, codes, and non-sensitive fields may be logged (D-14, D-09 ingress).
 No concrete logger is provided in Build Phase 1.
 """
+
 from __future__ import annotations
 
 from typing import Any, Protocol

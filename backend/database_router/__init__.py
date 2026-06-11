@@ -9,11 +9,21 @@ with no cross-tenant connection reuse. Performs no authentication, authorization
 import, or lineage. This is the ONLY service permitted to access tenant databases;
 database drivers may appear only under `database_router/adapters/providers/**`.
 """
+
 from __future__ import annotations
 
 GOVERNING_CONTRACTS = [
-    "IC-005", "IC-002", "IC-001",
-    "D-04", "D-07", "D-11", "D-13", "D-14", "D-16", "D-17", "D-30",
+    "IC-005",
+    "IC-002",
+    "IC-001",
+    "D-04",
+    "D-07",
+    "D-11",
+    "D-13",
+    "D-14",
+    "D-16",
+    "D-17",
+    "D-30",
 ]
 BUILD_PHASE = 4
 IMPLEMENTS_BEHAVIOR = True

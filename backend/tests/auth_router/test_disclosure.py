@@ -1,4 +1,5 @@
 """Disclosure controls: no token/secret in context; 401 vs 403 semantics (IC-005 / L-3)."""
+
 from __future__ import annotations
 
 import pathlib
@@ -6,7 +7,6 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import _h  # noqa: E402
-import doubles as D  # noqa: E402  (ensures path setup)
 
 from auth_router.models import AuthContext, forbidden, not_ready, unauthenticated  # noqa: E402
 

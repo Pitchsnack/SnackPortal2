@@ -25,20 +25,73 @@ dev = [
   "import-linter",
 ]
 
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+# Flat multi-package layout: enumerate the seven runtime packages so setuptools
+# auto-discovery never guesses (and never packages tests/). PRD-P6-V1-E1 F1.
+[tool.setuptools.packages.find]
+include = [
+  "shared*",
+  "api_gateway*",
+  "auth_router*",
+  "database_router*",
+  "control_plane*",
+  "import_service*",
+  "lineage_service*",
+]
+
 [tool.ruff]
-line-length = 100
+line-length = 140
 target-version = "py38"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B"]
 
+[tool.ruff.lint.per-file-ignores]
+# `assert False, "..."` is the deliberate failure idiom of the stdlib-runnable
+# standalone test runners (no pytest dependency at runtime). PRD-P6-V1-E1 F2.
+"tests/**" = ["B011"]
+
+[tool.ruff.format]
+# The sanctioned live-PostgreSQL evidence harness must not be modified — not even
+# reformatted (PRD-P6-V1-E1 §8: binding P6-V1 acceptance evidence). PRD-P6-V1-E1 F4a.
+exclude = ["tests/lineage_service/requires_pg/*"]
+
 [tool.mypy]
-python_version = "3.8"
+# mypy >= 2.x cannot target below 3.10; the runtime floor remains 3.8, enforced by
+# requires-python and ruff target-version py38 (not by mypy). PRD-P6-V1-E1 F3.
+python_version = "3.10"
 strict = true
 ignore_missing_imports = true
+# `pip install .[dev]` (the CI install step) leaves a setuptools build/ artifact
+# in-tree; unlike ruff, mypy does not honor .gitignore and would see every
+# package twice ("Duplicate module"). PRD-P6-V1-E1 F1/F3 co-requisite.
+exclude = ["^build/"]
+
+[[tool.mypy.overrides]]
+# Tests are stdlib-runnable and deliberately lightly typed; strict typing is a
+# production-code gate. PRD-P6-V1-E1 F3.
+module = "tests.*"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+# The sanctioned DB-driver zones carry driver-version-dependent `# type: ignore`
+# pins that strict's warn_unused_ignores would flag. PRD-P6-V1-E1 F3.
+module = [
+  "database_router.adapters.providers.*",
+  "control_plane.adapters.providers.*",
+]
+warn_unused_ignores = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# requires_pg is the standalone-only live-PostgreSQL evidence harness (binding P6-V1
+# acceptance evidence; its tests receive `conn` from _pg.run(), not a pytest fixture).
+# Run it via `python tests/lineage_service/requires_pg/test_pg_*.py` with
+# SNACKPORTAL_TEST_DSN set. PRD-P6-V1-E1 F4a.
+addopts = "--ignore=tests/lineage_service/requires_pg"
 
 # --- Dependency boundaries (governance: dependency DAG, rules 1-2) ------------
 [tool.importlinter]

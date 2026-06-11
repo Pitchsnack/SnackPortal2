@@ -5,6 +5,7 @@ no service package and no vendor/cloud SDK. Admission to this package is governe
 by the Shared Package Admission Policy (governance E): only cross-cutting concerns
 consumed by >=2 services and owned by no single contract belong here.
 """
+
 from __future__ import annotations
 
 BUILD_PHASE = 1

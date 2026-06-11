@@ -1,4 +1,5 @@
 """Chain segmentation & archival framework: summaries + continuity (PRD-P6-R2 J; §15)."""
+
 from __future__ import annotations
 
 import pathlib
@@ -19,11 +20,20 @@ def _setup(n: int = 3):
     emit = LineageEmit(_doubles.FakeKeyStore())
     s = prov.open_session(tenant_id="t1", correlation_id="c")
     for i in range(1, n + 1):
-        emit.emit(s, LineageIntent(
-            event_type="import", occurred_at="T%d" % i, actor_ref="u", source_ref="g",
-            target_ref="t1:c:%d" % i, operation="created", schema_version="1",
-            derivation_ref="job1", correlation_id="c",
-        ))
+        emit.emit(
+            s,
+            LineageIntent(
+                event_type="import",
+                occurred_at="T%d" % i,
+                actor_ref="u",
+                source_ref="g",
+                target_ref="t1:c:%d" % i,
+                operation="created",
+                schema_version="1",
+                derivation_ref="job1",
+                correlation_id="c",
+            ),
+        )
     return prov
 
 
@@ -55,7 +65,11 @@ def test_empty_segment_is_none() -> None:
 
 
 if __name__ == "__main__":
-    _h.run([
-        test_current_segment_summary, test_prepare_archive_audits,
-        test_verify_continuity, test_empty_segment_is_none,
-    ])
+    _h.run(
+        [
+            test_current_segment_summary,
+            test_prepare_archive_audits,
+            test_verify_continuity,
+            test_empty_segment_is_none,
+        ]
+    )

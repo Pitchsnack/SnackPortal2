@@ -1,4 +1,5 @@
 """Readiness (three-state, disclosure-safe) + schema compatibility (detect-only)."""
+
 from __future__ import annotations
 
 import pathlib
@@ -43,8 +44,10 @@ def test_schema_states_and_readiness_mapping() -> None:
 
 
 if __name__ == "__main__":
-    _h.run([
-        test_three_readiness_states,
-        test_readiness_report_discloses_nothing_sensitive,
-        test_schema_states_and_readiness_mapping,
-    ])
+    _h.run(
+        [
+            test_three_readiness_states,
+            test_readiness_report_discloses_nothing_sensitive,
+            test_schema_states_and_readiness_mapping,
+        ]
+    )

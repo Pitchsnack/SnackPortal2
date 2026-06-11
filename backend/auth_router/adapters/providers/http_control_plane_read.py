@@ -4,6 +4,7 @@ Transport-only access to Phase-2 control-plane data; NO in-process import of
 control_plane (DAG rule 2). Not exercised by the stdlib unit suite (requires a running
 control plane); the test suite uses an in-memory read double.
 """
+
 from __future__ import annotations
 
 import json
@@ -36,15 +37,11 @@ class HttpControlPlaneRead(ControlPlaneReadPort):
         return TenantStateView(**data) if data else None
 
     def is_member(self, principal_ref: str, tenant_id: str) -> bool:
-        data = self._get(
-            "/membership?p=" + urllib.parse.quote(principal_ref) + "&t=" + urllib.parse.quote(tenant_id)
-        )
+        data = self._get("/membership?p=" + urllib.parse.quote(principal_ref) + "&t=" + urllib.parse.quote(tenant_id))
         return bool(data and data.get("member"))
 
     def get_role(self, principal_ref: str, tenant_id: str) -> Optional[Role]:
-        data = self._get(
-            "/role?p=" + urllib.parse.quote(principal_ref) + "&t=" + urllib.parse.quote(tenant_id)
-        )
+        data = self._get("/role?p=" + urllib.parse.quote(principal_ref) + "&t=" + urllib.parse.quote(tenant_id))
         if not data or not data.get("role"):
             return None
         return Role(data["role"])

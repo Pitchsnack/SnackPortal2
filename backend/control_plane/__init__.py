@@ -5,11 +5,20 @@ Global Discovery Platform, three-state readiness, schema-compatibility, and oper
 audit (IC-001 + IC-002; auth mechanism IC-005/D-01). Never holds tenant-owned data and
 never accesses a tenant database; all persistence is behind the ControlStore port.
 """
+
 from __future__ import annotations
 
 GOVERNING_CONTRACTS = [
-    "IC-001", "IC-002", "IC-005",
-    "D-01", "D-07", "D-10", "D-11", "D-12", "D-31", "D-32",
+    "IC-001",
+    "IC-002",
+    "IC-005",
+    "D-01",
+    "D-07",
+    "D-10",
+    "D-11",
+    "D-12",
+    "D-31",
+    "D-32",
 ]
 BUILD_PHASE = 2
 IMPLEMENTS_BEHAVIOR = True

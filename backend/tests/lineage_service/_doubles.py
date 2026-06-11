@@ -6,6 +6,7 @@ chain and then query/verify/traverse it. Providers key stores by tenant_id so cr
 isolation is exercised (a session for t2 can never see t1's rows). No PostgreSQL needed; the
 live-PG guarantees (privilege/trigger/advisory-lock) are covered by the requires_pg suite.
 """
+
 from __future__ import annotations
 
 import pathlib
@@ -65,7 +66,7 @@ class InMemorySession(RoutedTenantSession, LineageReadSession):
         d = self._store.tables.get(table)
         if isinstance(d, dict):
             return d.get(frozenset(key.items()))
-        for r in (d or []):
+        for r in d or []:
             if all(r.get(k) == v for k, v in key.items()):
                 return dict(r)
         return None
@@ -78,10 +79,7 @@ class InMemorySession(RoutedTenantSession, LineageReadSession):
     def page(self, table, where, *, order_by, descending=True, after=None, limit=100):
         rows = [r for r in self._rows(table) if all(r.get(k) == v for k, v in where.items())]
         if after is not None:
-            rows = [
-                r for r in rows
-                if ((int(r[order_by]) < after) if descending else (int(r[order_by]) > after))
-            ]
+            rows = [r for r in rows if ((int(r[order_by]) < after) if descending else (int(r[order_by]) > after))]
         rows.sort(key=lambda r: int(r[order_by]), reverse=descending)
         return [dict(r) for r in rows[: int(limit)]]
 

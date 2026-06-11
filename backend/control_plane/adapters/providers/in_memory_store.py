@@ -4,6 +4,7 @@ Stands in for the Control Database so the control-plane frameworks are functiona
 testable without binding a database driver. The logical Control-DB schema is the record
 models + the ControlStore port. No tenant-DB access; control-plane data only.
 """
+
 from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
@@ -50,9 +51,7 @@ class InMemoryControlStore(ControlStore):
     def put_membership(self, record: MembershipRecord) -> None:
         self._memberships.append(record)
 
-    def list_memberships(
-        self, principal_ref: Optional[str] = None, tenant_id: Optional[str] = None
-    ) -> List[MembershipRecord]:
+    def list_memberships(self, principal_ref: Optional[str] = None, tenant_id: Optional[str] = None) -> List[MembershipRecord]:
         out = self._memberships
         if principal_ref is not None:
             out = [m for m in out if m.principal_ref == principal_ref]

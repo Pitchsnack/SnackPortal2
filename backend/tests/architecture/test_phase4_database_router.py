@@ -9,6 +9,7 @@ Encodes the Phase-4 boundaries from PRD-P4-R2:
 
 Pure stdlib; runs under pytest and standalone.
 """
+
 from __future__ import annotations
 
 import pathlib
@@ -46,9 +47,7 @@ def test_database_router_db_drivers_confined() -> None:
     for f, mod in _imports("database_router"):
         if any(mod == p or mod.startswith(p + ".") for p in db_prefixes):
             rp = _scan.relposix(f)
-            assert rp.startswith("database_router/adapters/providers/"), (
-                f"tenant-DB driver '{mod}' outside the serving provider zone: {rp}"
-            )
+            assert rp.startswith("database_router/adapters/providers/"), f"tenant-DB driver '{mod}' outside the serving provider zone: {rp}"
 
 
 def test_database_router_has_no_secret_literals() -> None:
@@ -59,9 +58,11 @@ def test_database_router_has_no_secret_literals() -> None:
 
 
 if __name__ == "__main__":
-    _scan.run([
-        test_database_router_imports_no_other_service,
-        test_control_plane_does_not_import_database_router,
-        test_database_router_db_drivers_confined,
-        test_database_router_has_no_secret_literals,
-    ])
+    _scan.run(
+        [
+            test_database_router_imports_no_other_service,
+            test_control_plane_does_not_import_database_router,
+            test_database_router_db_drivers_confined,
+            test_database_router_has_no_secret_literals,
+        ]
+    )

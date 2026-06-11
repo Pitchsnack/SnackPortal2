@@ -1,4 +1,5 @@
 """Secret-hygiene checks: env templates are reference-only; no obvious secret literals."""
+
 from __future__ import annotations
 
 import pathlib
@@ -30,9 +31,7 @@ def test_templates_reference_only() -> None:
             key, _, value = s.partition("=")
             value = value.strip()
             if key.strip().endswith("_REF"):
-                assert value == "" or value.startswith("ref:"), (
-                    f"{p.name}:{i} *_REF must be empty or a 'ref:' reference, got: {value!r}"
-                )
+                assert value == "" or value.startswith("ref:"), f"{p.name}:{i} *_REF must be empty or a 'ref:' reference, got: {value!r}"
 
 
 def test_no_obvious_secret_literals() -> None:

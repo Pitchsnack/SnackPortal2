@@ -5,6 +5,7 @@ Phase 0: verify the bootstrap system identity against a static trust anchor with
 Control Database is reachable, schema-compatible, and the registry is available;
 Phase 0 is closed and break-glass disabled at transition (IC-001 §14).
 """
+
 from __future__ import annotations
 
 import hmac

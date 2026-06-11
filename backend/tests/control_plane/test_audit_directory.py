@@ -1,4 +1,5 @@
 """Operational audit (lifecycle events, no secrets) + Global Discovery Platform."""
+
 from __future__ import annotations
 
 import pathlib
@@ -19,9 +20,15 @@ def test_lifecycle_events_are_audited_with_required_fields() -> None:
     store = InMemoryControlStore()
     audit = ControlPlaneAudit(store)
     reg = TenantRegistry(store, audit)
-    reg.register_tenant(tenant_id="t1", organization_ref="o", expected_schema_version="1",
-                        database_association_ref=SecretRef("a", "1"), federation_config_ref="f",
-                        actor="op", correlation_id="c1")
+    reg.register_tenant(
+        tenant_id="t1",
+        organization_ref="o",
+        expected_schema_version="1",
+        database_association_ref=SecretRef("a", "1"),
+        federation_config_ref="f",
+        actor="op",
+        correlation_id="c1",
+    )
     reg.suspend_tenant("t1", actor="op", correlation_id="c2")
     actions = [e.action for e in audit.events()]
     assert "RegisterTenant" in actions and "SuspendTenant" in actions
@@ -31,8 +38,7 @@ def test_lifecycle_events_are_audited_with_required_fields() -> None:
 
 def test_audit_records_have_no_secret_fields() -> None:
     audit = ControlPlaneAudit(InMemoryControlStore())
-    rec = audit.record(actor="op", tenant_id="t1", action="RegisterTenant",
-                       from_state=None, to_state="Registered", correlation_id="c")
+    rec = audit.record(actor="op", tenant_id="t1", action="RegisterTenant", from_state=None, to_state="Registered", correlation_id="c")
     for bad in ("secret", "credential", "password", "material", "token"):
         assert not hasattr(rec, bad)
 
@@ -48,8 +54,10 @@ def test_global_directory_stable_ids_and_separation() -> None:
 
 
 if __name__ == "__main__":
-    _h.run([
-        test_lifecycle_events_are_audited_with_required_fields,
-        test_audit_records_have_no_secret_fields,
-        test_global_directory_stable_ids_and_separation,
-    ])
+    _h.run(
+        [
+            test_lifecycle_events_are_audited_with_required_fields,
+            test_audit_records_have_no_secret_fields,
+            test_global_directory_stable_ids_and_separation,
+        ]
+    )

@@ -11,6 +11,7 @@ value is returned in-memory only and never logged or persisted (D-14).
 Pluggable: a Vault / cloud secret-manager provider may replace this behind the same
 SecretStore port without touching business logic.
 """
+
 from __future__ import annotations
 
 import os

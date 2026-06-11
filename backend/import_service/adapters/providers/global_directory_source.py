@@ -5,6 +5,7 @@ The Global record is read by reference from the Control Database; the import cop
 the tenant DB (Global Record != Tenant Record). Never writes tenant data; no in-process
 import of control_plane.
 """
+
 from __future__ import annotations
 
 from typing import Iterator

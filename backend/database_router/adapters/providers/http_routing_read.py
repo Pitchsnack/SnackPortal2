@@ -5,6 +5,7 @@ import of control_plane (DAG rule). Not exercised by the stdlib unit suite (requ
 a running control plane); the suite uses an in-memory routing-read double. Returns
 None on 404 (consistent denial) and raises on transport failure so callers fail closed.
 """
+
 from __future__ import annotations
 
 import json
@@ -13,10 +14,9 @@ import urllib.parse
 import urllib.request
 from typing import Optional
 
-from shared.secrets import SecretRef
-
 from database_router.models import TenantRoutingView
 from database_router.ports import ControlPlaneRoutingReadPort
+from shared.secrets import SecretRef
 
 
 class HttpRoutingRead(ControlPlaneRoutingReadPort):

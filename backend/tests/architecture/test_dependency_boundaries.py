@@ -1,4 +1,5 @@
 """Dependency-boundary checks: shared is a leaf; services are independent."""
+
 from __future__ import annotations
 
 import pathlib
@@ -13,9 +14,7 @@ def test_shared_is_leaf() -> None:
     for f in _scan.py_files(shared_dir):
         for mod in _scan.imported_modules(f):
             top = mod.split(".")[0]
-            assert top not in _scan.SERVICE_PACKAGES, (
-                f"{_scan.relposix(f)} imports service '{mod}' — shared must be a dependency leaf"
-            )
+            assert top not in _scan.SERVICE_PACKAGES, f"{_scan.relposix(f)} imports service '{mod}' — shared must be a dependency leaf"
 
 
 def test_services_are_independent() -> None:

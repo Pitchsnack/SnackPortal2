@@ -1,12 +1,13 @@
 """Authentication audit: success/failure/switch/carrier-mismatch; never JWT contents."""
+
 from __future__ import annotations
 
 import pathlib
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import _auth_doubles as D  # noqa: E402
 import _h  # noqa: E402
-import doubles as D  # noqa: E402
 
 from auth_router.adapters.providers.in_memory_audit_sink import InMemoryAuditSink  # noqa: E402
 from auth_router.main import build_authenticator  # noqa: E402
@@ -65,9 +66,11 @@ def test_tenant_switch_audited() -> None:
 
 
 if __name__ == "__main__":
-    _h.run([
-        test_success_is_audited,
-        test_failure_audited_without_jwt_or_secret,
-        test_carrier_mismatch_audited,
-        test_tenant_switch_audited,
-    ])
+    _h.run(
+        [
+            test_success_is_audited,
+            test_failure_audited_without_jwt_or_secret,
+            test_carrier_mismatch_audited,
+            test_tenant_switch_audited,
+        ]
+    )

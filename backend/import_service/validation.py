@@ -7,6 +7,7 @@ Errors are non-sensitive (field name + reason — never field values); no payloa
 or secrets are logged (K5/L). Tenant writes are parameterized via the routed session, so
 sanitization is defense-in-depth.
 """
+
 from __future__ import annotations
 
 import re
@@ -44,9 +45,7 @@ def validate(raw: RawRecord, natural_key_field: str) -> ImportRecord:
                 raise ValidationError(f"field '{key}' contains control characters")
         fields[key] = value
         # PII classification (D-09): by field name or value shape.
-        if key.lower() in _PII_FIELD_NAMES or (
-            isinstance(value, str) and (_EMAIL.search(value) or _PHONE.search(value))
-        ):
+        if key.lower() in _PII_FIELD_NAMES or (isinstance(value, str) and (_EMAIL.search(value) or _PHONE.search(value))):
             pii.append(key)
 
     return ImportRecord(

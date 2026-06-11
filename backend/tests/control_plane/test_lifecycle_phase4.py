@@ -4,6 +4,7 @@ Uses a stdlib fake verification probe (no tenant DB, no driver). Confirms the
 Phase-4 states (Verifying/Ready/Failed) are reached, transitions are audited, and the
 service never touches database_router (Standard G).
 """
+
 from __future__ import annotations
 
 import pathlib
@@ -42,9 +43,13 @@ def _wire(probe=None):
 
 def _register(reg, tid="t1", version="1", schema="1"):
     return reg.register_tenant(
-        tenant_id=tid, organization_ref="org", expected_schema_version=schema,
-        database_association_ref=SecretRef(f"tenant/{tid}/db", version), federation_config_ref="fed",
-        actor="op", correlation_id="c",
+        tenant_id=tid,
+        organization_ref="org",
+        expected_schema_version=schema,
+        database_association_ref=SecretRef(f"tenant/{tid}/db", version),
+        federation_config_ref="fed",
+        actor="op",
+        correlation_id="c",
     )
 
 
@@ -122,11 +127,13 @@ def test_reassociate_requires_version_increment_and_reverifies() -> None:
 
 
 if __name__ == "__main__":
-    _h.run([
-        test_verify_promotes_provisioning_to_ready,
-        test_verify_unreachable_marks_failed,
-        test_verify_schema_out_of_range_marks_failed,
-        test_activate_requires_verifying,
-        test_reactivate_suspended_to_ready,
-        test_reassociate_requires_version_increment_and_reverifies,
-    ])
+    _h.run(
+        [
+            test_verify_promotes_provisioning_to_ready,
+            test_verify_unreachable_marks_failed,
+            test_verify_schema_out_of_range_marks_failed,
+            test_activate_requires_verifying,
+            test_reactivate_suspended_to_ready,
+            test_reassociate_requires_version_increment_and_reverifies,
+        ]
+    )

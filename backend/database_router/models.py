@@ -12,6 +12,7 @@ Database Routing Disclosure Standard (PRD-P4-R2 M): the HTTP mapping below is th
 foreign tenant active (consistent denial is enforced upstream by auth_router and
 the control-plane read API).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -24,8 +25,8 @@ from shared.session import Lane
 
 
 class RoutingTarget(Enum):
-    TENANT = "tenant"      # exactly one tenant database
-    CONTROL = "control"    # the Control Database (control-plane-scoped read)
+    TENANT = "tenant"  # exactly one tenant database
+    CONTROL = "control"  # the Control Database (control-plane-scoped read)
 
 
 @dataclass(frozen=True)
@@ -33,10 +34,10 @@ class TenantRoutingView:
     """Routing-read model (PRD-P4-R2 B). References only — never credentials."""
 
     tenant_id: str
-    lifecycle_state: str               # IC-002 lifecycle state name
-    ready: bool                        # derived two-state readiness (control-plane authoritative)
+    lifecycle_state: str  # IC-002 lifecycle state name
+    ready: bool  # derived two-state readiness (control-plane authoritative)
     database_association_ref: SecretRef  # reference {store_ref, version}; resolved at connect time
-    expected_schema_version: str       # registry-intended tenant schema version (D-17)
+    expected_schema_version: str  # registry-intended tenant schema version (D-17)
 
 
 @dataclass(frozen=True)
@@ -50,7 +51,7 @@ class RouteResult:
     tenant_id: Optional[str] = None
     association_version: Optional[str] = None
     connection: Optional[object] = None  # a bound TenantConnection for TENANT routes
-    lane: Lane = Lane.INTERACTIVE        # which capacity lane served this route (D-13)
+    lane: Lane = Lane.INTERACTIVE  # which capacity lane served this route (D-13)
 
 
 class RoutingDenied(Exception):

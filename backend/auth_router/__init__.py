@@ -7,6 +7,7 @@ membership/role validation (D-04/D-32), disclosure-safe denials, audited. Perfor
 no database routing, no tenant-DB access, and no permission evaluation. Consumes the
 control plane only via a transport ControlPlaneReadPort (no in-process import).
 """
+
 from __future__ import annotations
 
 GOVERNING_CONTRACTS = ["IC-005", "IC-001", "IC-002", "D-03", "D-04", "D-05", "D-06", "D-30", "D-32"]

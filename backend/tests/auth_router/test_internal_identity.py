@@ -1,12 +1,13 @@
 """Internal identity (D-03): CONTROL/MASTER_AGENT via platform issuer, same flow."""
+
 from __future__ import annotations
 
 import pathlib
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import _auth_doubles as D  # noqa: E402
 import _h  # noqa: E402
-import doubles as D  # noqa: E402
 
 from auth_router.main import build_authenticator  # noqa: E402
 from auth_router.models import Role  # noqa: E402

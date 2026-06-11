@@ -11,6 +11,7 @@ operations are guarded by a lock. The clock is injectable for deterministic test
 No credentials are held here — new connections are minted by a caller-supplied
 `open_fn` (the router resolves the secret at connect time and discards it).
 """
+
 from __future__ import annotations
 
 import threading

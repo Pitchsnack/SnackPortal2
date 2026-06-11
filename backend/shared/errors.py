@@ -7,6 +7,7 @@ detail.
 Governed by: IC-002 (denial semantics), IC-005 (401/403), IC-001 (minimally
 disclosing). No transport mapping and no business logic here.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -14,12 +15,12 @@ from enum import Enum
 
 
 class DenialReason(Enum):
-    UNAUTHENTICATED = "unauthenticated"                       # 401
-    FORBIDDEN = "forbidden"                                   # 403
-    NOT_FOUND = "not_found"                                   # unknown / decommissioned / unauthorized-to-know
-    NOT_READY = "not_ready"                                   # provisioning/verifying -> retry later
-    ADMINISTRATIVELY_DISABLED = "administratively_disabled"   # suspended
-    UNAVAILABLE = "unavailable"                               # failed / database unreachable
+    UNAUTHENTICATED = "unauthenticated"  # 401
+    FORBIDDEN = "forbidden"  # 403
+    NOT_FOUND = "not_found"  # unknown / decommissioned / unauthorized-to-know
+    NOT_READY = "not_ready"  # provisioning/verifying -> retry later
+    ADMINISTRATIVELY_DISABLED = "administratively_disabled"  # suspended
+    UNAVAILABLE = "unavailable"  # failed / database unreachable
 
 
 @dataclass(frozen=True)

@@ -5,6 +5,7 @@ tenant SecretStore, an audit sink, an injectable clock, and a wiring helper so t
 router's routing/isolation/lifecycle behaviour is exercised end-to-end without the
 production psycopg / HTTP providers.
 """
+
 from __future__ import annotations
 
 import pathlib
@@ -14,9 +15,6 @@ from typing import Dict, List, Optional, Tuple
 _BACKEND = pathlib.Path(__file__).resolve().parents[2]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
-
-from shared.audit import OperationalAudit, OperationalAuditEvent  # noqa: E402
-from shared.secrets import SecretRef, SecretStore, SecretValue  # noqa: E402
 
 from database_router.cache import RoutingViewCache  # noqa: E402
 from database_router.models import TenantRoutingView  # noqa: E402
@@ -28,6 +26,8 @@ from database_router.ports import (  # noqa: E402
 )
 from database_router.resolver import RoutingResolver  # noqa: E402
 from database_router.router import DatabaseRouter  # noqa: E402
+from shared.audit import OperationalAudit, OperationalAuditEvent  # noqa: E402
+from shared.secrets import SecretRef, SecretStore, SecretValue  # noqa: E402
 
 
 class FakeClock:
@@ -201,11 +201,12 @@ def make_router(
     clk = clock or (lambda: 0.0)
     cache = RoutingViewCache(ttl_seconds=ttl, clock=clk)
     resolver = RoutingResolver(read, cache, supported_schema_versions=supported)
-    pool = ConnectionPoolManager(
-        max_per_tenant=max_per_tenant, idle_timeout_seconds=idle_timeout, clock=clk
-    )
+    pool = ConnectionPoolManager(max_per_tenant=max_per_tenant, idle_timeout_seconds=idle_timeout, clock=clk)
     router = DatabaseRouter(
-        resolver=resolver, pool=pool, secret_store=secret_store,
-        connection_factory=factory, audit=audit,
+        resolver=resolver,
+        pool=pool,
+        secret_store=secret_store,
+        connection_factory=factory,
+        audit=audit,
     )
     return router, cache, pool, resolver

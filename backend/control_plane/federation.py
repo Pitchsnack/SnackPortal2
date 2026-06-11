@@ -4,6 +4,7 @@ Stores per-tenant OIDC config (issuer, audience, jwks reference, claim->tenant r
 that Build Phase 3 (IC-005) consumes. No runtime validation, no JWT processing, no
 OIDC processing here. jwks is stored by reference (public keys; no secret inline).
 """
+
 from __future__ import annotations
 
 from typing import Optional

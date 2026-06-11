@@ -5,6 +5,7 @@ Wires the import coordinator from injected shared-port providers: the RoutedSess
 DirectoryReadPort transport client. No service is imported directly (DAG) — only shared ports
 + this service's own adapters. Liveness is static and non-disclosing.
 """
+
 from __future__ import annotations
 
 from typing import Dict, Optional
@@ -39,8 +40,12 @@ def build_import_service(
         SourceKind.JSON: JsonSourceAdapter(),
     }
     return ImportService(
-        session_provider=session_provider, lineage=lineage, audit=audit or InMemoryAuditSink(),
-        sources=sources, schema_version=schema_version, batch_size=batch_size,
+        session_provider=session_provider,
+        lineage=lineage,
+        audit=audit or InMemoryAuditSink(),
+        sources=sources,
+        schema_version=schema_version,
+        batch_size=batch_size,
     )
 
 

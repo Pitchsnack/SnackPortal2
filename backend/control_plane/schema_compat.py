@@ -4,6 +4,7 @@ Detect-only: never migrates, never modifies schema. Out-of-range or migration-pe
 fails safe to global not-ready. Tenant schema checks are out of scope (Build Phase 4,
 D-17).
 """
+
 from __future__ import annotations
 
 from typing import Optional

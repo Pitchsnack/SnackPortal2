@@ -4,6 +4,7 @@ Transport-only access to the Global Discovery Platform directory reads; NO in-pr
 import of control_plane (DAG). Returns None on 404 (consistent denial). Not exercised by
 the stdlib unit suite by default; a best-effort loopback test exercises the real path.
 """
+
 from __future__ import annotations
 
 import json
@@ -33,8 +34,10 @@ class HttpDirectoryRead(DirectoryReadPort):
     @staticmethod
     def _view(data: dict) -> GlobalDirectoryRecordView:
         return GlobalDirectoryRecordView(
-            directory=data["directory"], record_id=data["record_id"],
-            display_name=data["display_name"], attributes=dict(data.get("attributes") or {}),
+            directory=data["directory"],
+            record_id=data["record_id"],
+            display_name=data["display_name"],
+            attributes=dict(data.get("attributes") or {}),
         )
 
     def get_record(self, kind: str, record_id: str) -> Optional[GlobalDirectoryRecordView]:

@@ -9,6 +9,7 @@ Encodes the Phase-5 boundaries from PRD-P5-R2/E1:
 
 Pure stdlib; runs under pytest and standalone.
 """
+
 from __future__ import annotations
 
 import pathlib
@@ -58,9 +59,11 @@ def test_import_service_has_no_secret_literals() -> None:
 
 
 if __name__ == "__main__":
-    _scan.run([
-        test_import_service_imports_no_other_service,
-        test_lineage_service_imports_no_router_or_import,
-        test_import_service_has_no_db_driver,
-        test_import_service_has_no_secret_literals,
-    ])
+    _scan.run(
+        [
+            test_import_service_imports_no_other_service,
+            test_lineage_service_imports_no_router_or_import,
+            test_import_service_has_no_db_driver,
+            test_import_service_has_no_secret_literals,
+        ]
+    )

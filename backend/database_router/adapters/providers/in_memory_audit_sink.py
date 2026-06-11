@@ -3,6 +3,7 @@
 Reuses the shared OperationalAudit port (routing audit is operational audit, never
 lineage). Records carry references only — no credentials, secrets, or DB topology.
 """
+
 from __future__ import annotations
 
 from typing import List

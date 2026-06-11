@@ -10,6 +10,7 @@ connect time via the SecretStore (D-14). It is used only to open the connection 
 is never stored, logged, or returned. Each connection is bound to exactly one tenant
 + association version for its lifetime and is never reused across tenants (D-30).
 """
+
 from __future__ import annotations
 
 import psycopg  # type: ignore  # noqa: F401  (driver import confined to this zone)

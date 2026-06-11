@@ -12,6 +12,7 @@ Consumers (import_service, lineage_service) receive sessions by injection and ne
 database_router (DAG). Exercised only against a live database (the stdlib suite uses an
 in-memory session double).
 """
+
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
@@ -77,10 +78,7 @@ class PgRoutedSession(RoutedTenantSession, LineageReadSession):
         col_sql = ", ".join(_quote_ident(c) for c in cols)
         conflict = ", ".join(_quote_ident(c) for c in key.keys())
         updates = ", ".join(f"{_quote_ident(c)} = EXCLUDED.{_quote_ident(c)}" for c in row.keys())
-        stmt = (
-            f"INSERT INTO {_quote_ident(table)} ({col_sql}) VALUES ({placeholders}) "
-            f"ON CONFLICT ({conflict}) DO UPDATE SET {updates}"
-        )
+        stmt = f"INSERT INTO {_quote_ident(table)} ({col_sql}) VALUES ({placeholders}) ON CONFLICT ({conflict}) DO UPDATE SET {updates}"
         self._conn.execute(stmt, tuple(merged[c] for c in cols))
         return True
 
@@ -93,18 +91,13 @@ class PgRoutedSession(RoutedTenantSession, LineageReadSession):
 
     def get(self, table: str, key: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         clause, params = _where(key)
-        rows: List[dict] = self._conn.query(
-            f"SELECT * FROM {_quote_ident(table)} WHERE {clause} LIMIT 1", params
-        )
+        rows: List[dict] = self._conn.query(f"SELECT * FROM {_quote_ident(table)} WHERE {clause} LIMIT 1", params)
         return rows[0] if rows else None
 
     def latest(self, table: str, where: Dict[str, Any], order_by: str) -> Optional[Dict[str, Any]]:
         if where:
             clause, params = _where(where)
-            sql = (
-                f"SELECT * FROM {_quote_ident(table)} WHERE {clause} "
-                f"ORDER BY {_quote_ident(order_by)} DESC LIMIT 1"
-            )
+            sql = f"SELECT * FROM {_quote_ident(table)} WHERE {clause} ORDER BY {_quote_ident(order_by)} DESC LIMIT 1"
         else:
             params = ()
             sql = f"SELECT * FROM {_quote_ident(table)} ORDER BY {_quote_ident(order_by)} DESC LIMIT 1"
@@ -133,10 +126,7 @@ class PgRoutedSession(RoutedTenantSession, LineageReadSession):
         where_sql = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         direction = "DESC" if descending else "ASC"
         params.append(int(limit))
-        sql = (
-            f"SELECT * FROM {_quote_ident(table)}{where_sql} "
-            f"ORDER BY {_quote_ident(order_by)} {direction} LIMIT %s"
-        )
+        sql = f"SELECT * FROM {_quote_ident(table)}{where_sql} ORDER BY {_quote_ident(order_by)} {direction} LIMIT %s"
         return self._conn.query(sql, tuple(params))
 
     def traverse(
@@ -165,9 +155,7 @@ class PgRoutedSession(RoutedTenantSession, LineageReadSession):
     def lock_chain(self) -> None:
         # Serialize per-tenant chain-head appends (PRD-P6-R2 B); the advisory xact lock
         # auto-releases at COMMIT/ROLLBACK. UNIQUE(seq) remains the fail-closed backstop.
-        self._conn.execute(
-            "SELECT pg_advisory_xact_lock(hashtext(%s))", (f"lineage_chain:{self.tenant_id}",)
-        )
+        self._conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"lineage_chain:{self.tenant_id}",))
 
 
 class PgRoutedSessionProvider(RoutedSessionProvider, LineageReadSessionProvider):
@@ -182,9 +170,7 @@ class PgRoutedSessionProvider(RoutedSessionProvider, LineageReadSessionProvider)
         principal_ref: Optional[str] = None,
         lane: Lane = Lane.BULK,
     ) -> RoutedTenantSession:
-        ctx = RequestContext(
-            correlation_id=correlation_id, active_tenant_id=tenant_id, principal_ref=principal_ref
-        )
+        ctx = RequestContext(correlation_id=correlation_id, active_tenant_id=tenant_id, principal_ref=principal_ref)
         result = self._router.route(ctx, lane=lane)  # raises a canonical denial if not routable
         return PgRoutedSession(result.connection, self._router, result)  # type: ignore[arg-type]
 
@@ -196,8 +182,6 @@ class PgRoutedSessionProvider(RoutedSessionProvider, LineageReadSessionProvider)
         principal_ref: Optional[str] = None,
     ) -> LineageReadSession:
         # Reads use the INTERACTIVE lane so lineage queries never draw on import BULK capacity (D-13).
-        ctx = RequestContext(
-            correlation_id=correlation_id, active_tenant_id=tenant_id, principal_ref=principal_ref
-        )
+        ctx = RequestContext(correlation_id=correlation_id, active_tenant_id=tenant_id, principal_ref=principal_ref)
         result = self._router.route(ctx, lane=Lane.INTERACTIVE)
         return PgRoutedSession(result.connection, self._router, result)  # type: ignore[arg-type]

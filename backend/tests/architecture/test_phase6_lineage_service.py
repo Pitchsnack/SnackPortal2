@@ -9,6 +9,7 @@ Encodes the Phase-6 boundaries from PRD-P6-E1 §18 / P6-R2:
 
 Pure stdlib; runs under pytest and standalone.
 """
+
 from __future__ import annotations
 
 import pathlib
@@ -60,15 +61,16 @@ def test_canonicalization_is_single_source() -> None:
         text = f.read_text(encoding="utf-8")
         for token in ("hmac", "hashlib", "\\x1f"):
             assert token not in text, (
-                f"{_scan.relposix(f)} re-implements canonicalization ('{token}') — "
-                f"use lineage_service.canonical (P6-OBS-3)"
+                f"{_scan.relposix(f)} re-implements canonicalization ('{token}') — use lineage_service.canonical (P6-OBS-3)"
             )
 
 
 if __name__ == "__main__":
-    _scan.run([
-        test_lineage_service_imports_no_other_service,
-        test_lineage_service_has_no_db_driver,
-        test_lineage_service_has_no_secret_literals,
-        test_canonicalization_is_single_source,
-    ])
+    _scan.run(
+        [
+            test_lineage_service_imports_no_other_service,
+            test_lineage_service_has_no_db_driver,
+            test_lineage_service_has_no_secret_literals,
+            test_canonicalization_is_single_source,
+        ]
+    )

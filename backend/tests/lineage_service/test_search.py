@@ -1,4 +1,5 @@
 """Lineage search: filterable, paginated, tenant-scoped (PRD-P6-R2 D; §13)."""
+
 from __future__ import annotations
 
 import pathlib
@@ -19,11 +20,20 @@ def _setup():
     s = prov.open_session(tenant_id="t1", correlation_id="c")
 
     def _e(event_type, op, deriv, actor, target):
-        emit.emit(s, LineageIntent(
-            event_type=event_type, occurred_at="T", actor_ref=actor, source_ref="g",
-            target_ref=target, operation=op, schema_version="1", derivation_ref=deriv,
-            correlation_id="c",
-        ))
+        emit.emit(
+            s,
+            LineageIntent(
+                event_type=event_type,
+                occurred_at="T",
+                actor_ref=actor,
+                source_ref="g",
+                target_ref=target,
+                operation=op,
+                schema_version="1",
+                derivation_ref=deriv,
+                correlation_id="c",
+            ),
+        )
 
     _e("import", "created", "jobA", "alice", "t1:c:1")
     _e("transform", "derived", "jobB", "bob", "t1:c:2")

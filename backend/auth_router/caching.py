@@ -4,6 +4,7 @@ A read-through caching decorator over ControlPlaneReadPort reduces control-plane
 round-trips while honoring tenant-scoped invalidation on re-association/membership
 change (D-11). Stdlib only.
 """
+
 from __future__ import annotations
 
 import time

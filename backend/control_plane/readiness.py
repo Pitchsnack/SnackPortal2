@@ -4,6 +4,7 @@
 are disclosure-safe (Phase-1 Disclosure Standard): no tenant ids/counts, no database
 identifiers/topology, no secrets.
 """
+
 from __future__ import annotations
 
 from shared.health import GlobalReadiness, ReadinessReport

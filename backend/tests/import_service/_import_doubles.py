@@ -5,6 +5,7 @@ fake Directory read, an audit sink, a fake SecretStore for the lineage chain key
 lineage-emit doubles to drive atomic-rollback / resume scenarios. The import flow is
 exercised end-to-end with the REAL lineage_service hash-chaining emit.
 """
+
 from __future__ import annotations
 
 import copy
@@ -16,11 +17,6 @@ _BACKEND = pathlib.Path(__file__).resolve().parents[2]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-from shared.audit import OperationalAudit, OperationalAuditEvent  # noqa: E402
-from shared.lineage import LineageEmitPort, LineageIntent  # noqa: E402
-from shared.secrets import SecretRef, SecretStore, SecretValue  # noqa: E402
-from shared.session import Lane, RoutedSessionProvider, RoutedTenantSession  # noqa: E402
-
 from import_service.main import build_import_service  # noqa: E402
 from import_service.ports import (  # noqa: E402
     DirectoryPage,
@@ -28,6 +24,10 @@ from import_service.ports import (  # noqa: E402
     GlobalDirectoryRecordView,
 )
 from lineage_service.emit import LineageEmit  # noqa: E402
+from shared.audit import OperationalAudit, OperationalAuditEvent  # noqa: E402
+from shared.lineage import LineageEmitPort  # noqa: E402
+from shared.secrets import SecretRef, SecretStore, SecretValue  # noqa: E402
+from shared.session import Lane, RoutedSessionProvider, RoutedTenantSession  # noqa: E402
 
 _KEYED = {"tenant_copy", "import_job", "import_idempotency"}
 
@@ -39,7 +39,7 @@ def _kf(key: Dict[str, Any]):
 class FakeRoutedSession(RoutedTenantSession):
     def __init__(self, tenant_id: str, committed: dict) -> None:
         self._tenant_id = tenant_id
-        self._committed = committed   # table -> {kf: row} (keyed) | [rows] (append)
+        self._committed = committed  # table -> {kf: row} (keyed) | [rows] (append)
         self._working: Optional[dict] = None
 
     @property
@@ -131,7 +131,8 @@ class FakeDirectoryRead(DirectoryReadPort):
     def add(self, kind: str, record_id: str, display_name: str, **attrs) -> None:
         view = GlobalDirectoryRecordView(
             directory="GlobalStartupDirectory" if kind == "startup" else "GlobalInvestorDirectory",
-            record_id=record_id, display_name=display_name,
+            record_id=record_id,
+            display_name=display_name,
             attributes={k: str(v) for k, v in attrs.items()},
         )
         self._recs.setdefault(kind, []).append(view)
@@ -145,7 +146,7 @@ class FakeDirectoryRead(DirectoryReadPort):
     def page(self, kind, cursor, limit):
         recs = self._recs.get(kind, [])
         offset = int(cursor) if (cursor or "").isdigit() else 0
-        page = recs[offset:offset + limit]
+        page = recs[offset : offset + limit]
         nxt = str(offset + limit) if offset + limit < len(recs) else None
         return DirectoryPage(records=page, next_cursor=nxt)
 
@@ -203,7 +204,10 @@ def make_service(*, provider=None, lineage=None, audit=None, directory=None, bat
     audit = audit or FakeAudit()
     directory = directory or FakeDirectoryRead()
     svc = build_import_service(
-        session_provider=provider, lineage=lineage, directory_read=directory,
-        audit=audit, batch_size=batch_size,
+        session_provider=provider,
+        lineage=lineage,
+        directory_read=directory,
+        audit=audit,
+        batch_size=batch_size,
     )
     return svc, provider, lineage, audit, directory

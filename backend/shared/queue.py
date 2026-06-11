@@ -5,6 +5,7 @@ authoritative tenant job state lives in the tenant's own database (written via
 database_router). Envelopes carry references and non-sensitive routing fields
 only — no payloads, secrets, or PII. No queue processing exists in Build Phase 1.
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -18,7 +19,7 @@ class JobEnvelope:
     job_id: str
     idempotency_key: str
     correlation_id: str
-    state_ref: str             # reference to tenant-resident job state (never the state itself)
+    state_ref: str  # reference to tenant-resident job state (never the state itself)
 
 
 class Queue(ABC):

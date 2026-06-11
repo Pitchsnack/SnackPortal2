@@ -6,14 +6,15 @@ identity at deployment). The read *logic* lives in control_plane.read_api and is
 tested directly; this binding is exercised by an optional loopback round-trip test.
 Pure stdlib (no web framework) — vendor-neutral and portable.
 """
+
 from __future__ import annotations
 
 import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Tuple
 
-from control_plane.read_api import ControlPlaneReadDispatcher, ControlPlaneReadService
 from control_plane.ports import ControlStore
+from control_plane.read_api import ControlPlaneReadDispatcher, ControlPlaneReadService
 
 
 def _make_handler(dispatcher: ControlPlaneReadDispatcher):

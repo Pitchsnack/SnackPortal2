@@ -1,12 +1,13 @@
 """Stage 2 tenant context: carrier-match, membership, consistent denial, fail-closed."""
+
 from __future__ import annotations
 
 import pathlib
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import _auth_doubles as D  # noqa: E402
 import _h  # noqa: E402
-import doubles as D  # noqa: E402
 
 from auth_router.models import AuthDenied, Claims, Role  # noqa: E402
 from auth_router.tenant_context import TenantContextResolver  # noqa: E402
@@ -79,11 +80,13 @@ def test_no_tenant_claim_is_control_scope() -> None:
 
 
 if __name__ == "__main__":
-    _h.run([
-        test_member_resolves_context_with_role,
-        test_carrier_match_required,
-        test_unknown_and_nonmember_indistinguishable,
-        test_member_of_not_ready_tenant,
-        test_fail_closed_when_control_plane_unavailable,
-        test_no_tenant_claim_is_control_scope,
-    ])
+    _h.run(
+        [
+            test_member_resolves_context_with_role,
+            test_carrier_match_required,
+            test_unknown_and_nonmember_indistinguishable,
+            test_member_of_not_ready_tenant,
+            test_fail_closed_when_control_plane_unavailable,
+            test_no_tenant_claim_is_control_scope,
+        ]
+    )

@@ -5,4 +5,5 @@ only against a live database (not by the stdlib suite). The in-memory audit sink
 env/file tenant SecretStore are pure stdlib. Any tenant-database driver import is
 confined to this zone (Driver Containment Standard; PRD-P4-R2 C).
 """
+
 from __future__ import annotations

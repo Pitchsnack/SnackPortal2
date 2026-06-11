@@ -5,6 +5,7 @@
 - DirectoryReadPort: transport read of the Control-Plane Global Discovery Platform (D-31);
   no in-process import of control_plane (DAG). Read models are import-local (decoupled).
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod

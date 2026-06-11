@@ -1,4 +1,5 @@
 """Stage 1 token validation: signature, alg-confusion, kid, claims (IC-005 / L-1)."""
+
 from __future__ import annotations
 
 import json
@@ -6,8 +7,8 @@ import pathlib
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import _auth_doubles as D  # noqa: E402
 import _h  # noqa: E402
-import doubles as D  # noqa: E402
 
 from auth_router.jwt_validation import JwtValidator  # noqa: E402
 from auth_router.models import AuthDenied  # noqa: E402
@@ -78,12 +79,14 @@ def test_reject_expired() -> None:
 
 
 if __name__ == "__main__":
-    _h.run([
-        test_valid_token_yields_claims,
-        test_reject_alg_none,
-        test_reject_hs_rs_confusion,
-        test_reject_unknown_kid,
-        test_reject_bad_signature,
-        test_reject_aud_mismatch,
-        test_reject_expired,
-    ])
+    _h.run(
+        [
+            test_valid_token_yields_claims,
+            test_reject_alg_none,
+            test_reject_hs_rs_confusion,
+            test_reject_unknown_kid,
+            test_reject_bad_signature,
+            test_reject_aud_mismatch,
+            test_reject_expired,
+        ]
+    )

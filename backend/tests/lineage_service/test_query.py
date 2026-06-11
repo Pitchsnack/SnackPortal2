@@ -1,4 +1,5 @@
 """Lineage query: lookup, keyset pagination, filtering, tenant scope (PRD-P6-R2 D; §10)."""
+
 from __future__ import annotations
 
 import pathlib
@@ -19,11 +20,22 @@ def _setup(n: int = 5, tenant: str = "t1"):
     s = prov.open_session(tenant_id=tenant, correlation_id="c")
     ids = []
     for i in range(1, n + 1):
-        ids.append(emit.emit(s, LineageIntent(
-            event_type="import", occurred_at="T%d" % i, actor_ref="user1",
-            source_ref="g:%d" % i, target_ref="%s:tenant_copy:%d" % (tenant, i),
-            operation="created", schema_version="1", derivation_ref="job1", correlation_id="c",
-        )))
+        ids.append(
+            emit.emit(
+                s,
+                LineageIntent(
+                    event_type="import",
+                    occurred_at="T%d" % i,
+                    actor_ref="user1",
+                    source_ref="g:%d" % i,
+                    target_ref="%s:tenant_copy:%d" % (tenant, i),
+                    operation="created",
+                    schema_version="1",
+                    derivation_ref="job1",
+                    correlation_id="c",
+                ),
+            )
+        )
     return prov, LineageQuery(prov), ids
 
 
@@ -61,7 +73,12 @@ def test_tenant_scoped_isolation() -> None:
 
 
 if __name__ == "__main__":
-    _h.run([
-        test_get_by_id, test_for_record, test_keyset_pagination,
-        test_for_import_filters, test_tenant_scoped_isolation,
-    ])
+    _h.run(
+        [
+            test_get_by_id,
+            test_for_record,
+            test_keyset_pagination,
+            test_for_import_filters,
+            test_tenant_scoped_isolation,
+        ]
+    )
