@@ -80,9 +80,9 @@ Also binding (architecture-wide): **no shared tenant databases**; **secrets neve
 
 **Lineage preservation (mandatory).** Every re-import outcome — including *Ignore* — appends lineage; **prior lineage and import history are never modified or deleted** (IC-004 append-only is absolute); lineage remains **tenant-resident** per IC-004 (unchanged); a *Replace Existing* event chains to the prior record's provenance via `parent_lineage_ref`.
 
-**Natural-key semantics per directory kind (D-35-R2 §5).** Each Global directory kind (Startup, Investor, **Deal**) defines its D-20 reconciliation natural key as the **stable Global-record reference** of that kind. For **Import New Copy**, the additional copy carries a distinct tenant-side identity: reconciliation operates on (Global-record reference + copy-instance discriminator) so multiple coexisting copies are distinguishable and any later re-import targets a specific copy. The concrete discriminator mechanics are an **execution-PRD item** (defined before any deal-import implementation, per D-35-R2 §5).
+**Natural-key semantics per directory kind (D-35-R2 §5).** Each Global directory kind (Startup, Investor, **Deal**) defines its D-20 reconciliation natural key as the **stable Global-record reference** of that kind. For **Import New Copy**, the additional copy carries a distinct tenant-side identity: reconciliation operates on (Global-record reference + copy-instance discriminator) so multiple coexisting copies are distinguishable and any later re-import targets a specific copy. The concrete discriminator mechanics are an **execution-PRD item** (deferral authority: D-34-R2 §8; the specify-before-implementation requirement is D-35-R2 §5 and is satisfied by this section). Where the user's re-import decision sits relative to the import-job lifecycle (the D-19 state machine) is likewise an execution-PRD item.
 
-**IC-004 harmonization (without modifying IC-004).** IC-004's actor example — *"for automated, system-originated events (e.g., a scheduled import), the actor is the responsible service/control-plane identity"* (IC-004:73) — defines **actor attribution only**. It MUST NOT be read as authorizing recurring, scheduled, or automatic imports **of Global records**: under this contract, every Global-record import and re-import is a discrete, user-controlled event regardless of initiator. (Scheduled ingestion from **external, non-Global sources** via a future D-18 adapter, if ever introduced, is governed separately and is not a Global-record re-import.)
+**IC-004 harmonization (without modifying IC-004).** IC-004's actor example — *"for automated, system-originated events (e.g., a scheduled import), the actor is the responsible service/control-plane identity"* (IC-004:73) — defines **actor attribution only**. It MUST NOT be read as authorizing recurring, scheduled, or automatic imports **of Global records**: under this contract, every Global-record import and re-import is a discrete, user-controlled event regardless of initiator. (Scheduled ingestion from **external, non-Global sources** via a future D-18 adapter, if ever introduced, is governed separately and is not a Global-record re-import — but any ingestion from **any** source whose natural key reconciles to an existing tenant copy is a re-import and follows the user-controlled rule above.)
 
 ## Authentication Requirements
 > Consumes IC-005; does not define authentication.
@@ -128,7 +128,7 @@ Per **D-09 (ingress)** — this resolves the import-ingress slice; the **AI-egre
 - No payloads or secrets in lineage (references only); import lineage retention follows the per-tenant compliance policy (D-24, D-08).
 
 ## Audit Requirements
-- Import operations — initiation, completion, failure, denial — MUST be recorded in **operational audit** (control-plane/operational, distinct from data-provenance lineage; *Global Record ≠ Tenant Record*). Each record: actor, tenant id, action, **source reference**, outcome, timestamp, correlation id.
+- Import operations — initiation, completion, failure, denial — MUST be recorded in **operational audit** (control-plane/operational, distinct from data-provenance lineage; *Global Record ≠ Tenant Record*). Each record: actor, tenant id, action, **source reference**, outcome, timestamp, correlation id — all carried **as references** per the Global Audit Representation Rule (D-34-R2 §7; contractual home: IC-001).
 - Audit records MUST NOT contain payloads or secrets (references only).
 - **Two distinct records:** *lineage* = provenance of the tenant copy (tenant-resident, IC-004); *import audit* = operational record of the import action. Both are required; neither substitutes for the other.
 - Failed and denied imports SHOULD be audited.
@@ -137,7 +137,7 @@ Per **D-09 (ingress)** — this resolves the import-ingress slice; the **AI-egre
 - **Partial-failure semantics (D-21):** imports are **batched/checkpointed**, each batch atomic and **resumable**, with an optional strict all-or-nothing mode. Committed batches MUST have lineage (atomic provenance), a failed import MUST NOT modify the Global record (no write-back), and other tenants MUST be unaffected.
 - **Tenant not ready / DB unavailable:** import is denied with IC-002 semantics; the target tenant and all others remain unaffected (D-16).
 - **Source unavailable/invalid (external adapter, D-18):** import fails with a defined error; no committed batch is left without lineage; source credentials are never exposed.
-- **Idempotency / re-import (D-20):** operation-level idempotency keys + per-record natural-key reconciliation make retries safe; a re-run **resumes from the last good checkpoint** (D-21) and re-applies idempotently — never corrupting the tenant copy, never duplicating misleadingly, never mutating the Global record.
+- **Idempotency / retries (D-20):** operation-level idempotency keys + per-record natural-key reconciliation make retries safe; a re-run **resumes from the last good checkpoint** (D-21) and re-applies idempotently — never corrupting the tenant copy, never duplicating misleadingly, never mutating the Global record. *(Retry of the same operation only — a new operation reconciling to an existing copy is a re-import and follows* Re-Import Governance*.)*
 - **Phase 0 (D-01):** no import is possible.
 - **Isolation on failure:** a failing import is contained to the single active tenant (Invariant 6; physical isolation).
 - Secrets and payloads MUST be structurally absent from lineage, audit, and responses (references only).
@@ -157,11 +157,11 @@ Per **D-09 (ingress)** — this resolves the import-ingress slice; the **AI-egre
 - AI-assisted import transforms are out of scope (D-02; IC-006 later) and MUST NOT bind to any AI provider.
 
 ## API Contract
-> Operations and semantics only — no transport code. The surface is a **tenant-scoped API** authenticated per IC-005. Execution is **hybrid** (async-default + bounded sync fast-path, D-19); re-submits are **idempotent** (operation key + natural-key reconciliation, D-20). Denial semantics follow IC-002 readiness (*forbidden* / *not found* / *not ready* / *administratively disabled* / *unavailable*).
+> Operations and semantics only — no transport code. The surface is a **tenant-scoped API** authenticated per IC-005. Execution is **hybrid** (async-default + bounded sync fast-path, D-19); re-submits are **idempotent** (operation key + natural-key reconciliation, D-20 **as amended in part by D-34-R2**) — a **new** operation whose natural key reconciles to an existing tenant copy is a re-import and follows the user-controlled *Re-Import Governance* flow. Denial semantics follow IC-002 readiness (*forbidden* / *not found* / *not ready* / *administratively disabled* / *unavailable*).
 
 | Operation | Purpose | Caller (authz) | Result | Notes |
 |---|---|---|---|---|
-| **StartImport** | Initiate a global-to-tenant copy into the active tenant | Authorized tenant member / operator (IC-005) | Begins an import (async or sync fast-path, D-19); emits lineage per committed batch | Idempotent via operation key + natural-key (D-20) |
+| **StartImport** | Initiate a global-to-tenant copy into the active tenant | Authorized tenant member / operator (IC-005) | Begins an import (async or sync fast-path, D-19); emits lineage per committed batch | Idempotent via operation key + natural-key (D-20, as amended — re-import detection triggers *Re-Import Governance*) |
 | **GetImportStatus** | Report state/outcome of an import | Authorized tenant member / operator | Status + non-sensitive summary | — |
 
 ## DTO Contract

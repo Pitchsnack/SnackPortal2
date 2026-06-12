@@ -58,7 +58,7 @@ The Global Directory schema is part of the Control Database and therefore falls 
 A Global Deal Directory record is a **discovery record only** — a Control-managed opportunity consisting solely of approved global discovery metadata. It is **not**: a tenant deal, a pipeline record, commercial terms, or a negotiation record; it MUST NOT contain tenant-owned deal data, tenant-confidential data, tenant pipeline data, tenant negotiation data, or tenant commercial terms. `Global Deal ≠ Tenant Deal` — the existence of either never implies the other; after import (IC-003) they evolve independently. Deal **recommendation** is human/control workflows only (AI behavior is IC-006-gated); deal **discovery** creates no ownership, no import, and no synchronization.
 
 ### Discovery-Metadata Categories (D-35-R2 §4/§5)
-A global directory record may consist **only** of these four categories — each **tenant-anonymous** under the Tenant Anonymity Rule below:
+A global directory record may consist **only** of these four categories — each **tenant-anonymous** under the Tenant Anonymity Rule below. *(Stated for **all** global directory records — a deliberate strengthening generalization of D-35-R2's deal/publication-record wording, consistent with D-31's global-reference-data-only residency.)*
 - **Global Data** — data originating in Control scope (created or curated by control-plane workflows).
 - **Reference Data** — data originating from public or external non-tenant sources.
 - **Discovery Data** — non-sensitive attributes that identify and describe the opportunity or entity for search/browse/review.
@@ -77,7 +77,7 @@ Global directory/publication records MUST NOT contain: `tenant_id`, `tenant_name
 ## Operational Audit — Global Classes & Platform Rules (D-34-R2, as corrected by D-34-E1)
 *Added 2026-06-12 under PRD-CAP-01B. This section is the contractual home for the **global-scope** operational-audit classes; tenant-scoped classes are homed in IC-002/IC-003 as noted.*
 
-**Taxonomy (D-34-R2 §6).** Operational audit is Control-DB-resident (D-34-R2 O1); import lineage is tenant-resident (IC-004 — unchanged). Minimum classes:
+**Taxonomy (D-34-R2 §6, as extended by D-34-E1 and PRD-CAP-01B §7.E).** Operational audit is Control-DB-resident (D-34-R2 O1); import lineage is tenant-resident (IC-004 — unchanged). Minimum classes:
 
 | Class | Examples | Contractual home |
 |---|---|---|
@@ -92,10 +92,10 @@ Global directory/publication records MUST NOT contain: `tenant_id`, `tenant_name
 **Directory-mutation audit status (D-34-E1):** `GlobalDirectory` mutations are currently **unaudited** (Not Implemented — the D-34 §2 inventory row was corrected by D-34-E1). *Execution-PRD acceptance items (contracts precede code):* `GlobalDirectory` mutation audit events emitting reference-only records per the rule below, plus a test asserting the emission.
 
 **Global Audit Representation Rule (D-34-R2 §7 — platform-wide, carried verbatim into contract law).** Normative for **every** audit class in this taxonomy and for all audit defined by D-33/D-35/D-36:
-1. Audit records store **references only**: `actor_ref`, `user_ref`, `tenant_ref`, `ownership_ref`, `record_ref` (plus correlation/action/outcome/timestamp metadata).
+1. Audit records store **references only**: `actor_ref`, `user_ref`, `tenant_ref`, `ownership_ref`, `record_ref` (and correlation/action/outcome/timestamp metadata).
 2. Audit records **never** store: names, emails, display names, identity payloads, PII, authorization payloads, record payloads, secrets, or tenant business content.
-3. Audit records of tenant-context operations are **governance metadata about actions, not tenant data**; they are access-controlled, reference-only, and explicitly distinct from tenant business records. Exported or published *content* never appears in any audit record.
-4. Identity resolution happens at **presentation time** through the D-03 identity model (traceability: D-03 identities, D-14 reference discipline, D-34 audit architecture, D-36 ownership references).
+3. Audit records of tenant-context operations are **governance metadata about actions, not tenant data**; they are access-controlled, reference-only, and explicitly distinct from "Tenant Deal Activity" and any other tenant business records. Exported or published *content* never appears in any audit record.
+4. Identity resolution happens at **presentation time** through the **D-03 identity model**; traceability: D-03 (identities), D-14 (secrets/reference discipline), D-34 (audit architecture), D-36 (ownership references).
 
 **Control-DB audit retention (Inventory R2 item 4 / PRD-D33-D37-V2 Minor 2).** Control-resident audit records follow a **defined platform retention/expiry policy** mirroring the segmented D-24 pattern; concrete retention values are business/legal parameters governed under the D-08 process (default: retain-all until values are named). **Per-tenant D-08 compliance parameters do NOT govern Control-DB audit records** — even where such records carry a `tenant_ref`, they are platform governance metadata about actions, not tenant data (rule 3 above); their privacy exposure is bounded by the reference-only rule, and erasure of tenant data never requires erasure of governance metadata that references it.
 
