@@ -3,6 +3,7 @@
 **Status:** Final · **Phase:** Architecture Planning · **Type:** Specification only (no implementation)
 **Decision basis:** Applies the approved decisions in [Architecture-Decision-Register.md](../docs/Architecture-Decision-Register.md) (D-01–D-05, D-07, D-08, D-13–D-17, D-22–D-25, the import decisions D-18–D-21 + D-09 ingress, and the **D-31** Global Directory Residency amendment). Authoritative dependencies: **IC-002** (Final), **IC-004** (Final), **IC-005** (Final).
 **Status note:** All cross-cutting, dependency, and import architecture decisions are resolved and incorporated. **Final** for MVP architecture. The **D-09 AI-egress** slice remains owned by IC-006 (AI post-MVP, D-02) and does not gate import.
+**Amendment (2026-06-12, PRD-CAP-01B):** implementing **D-34-R2** and **D-35-R2** — the Global-record definition extended to include the **Global Deal Directory**; **D-20 amended in part** (user-controlled re-import replaces the default-upsert re-import semantics — see *Re-Import Governance*); synchronization prohibition made explicit; lineage-preservation rule; IC-004 actor-example harmonization. The import-copy invariants are unchanged and strengthened.
 Requirement keywords **MUST / MUST NOT / SHOULD / MAY** are used in the RFC-2119 sense.
 
 ## Purpose
@@ -41,10 +42,10 @@ Also binding (architecture-wide): **no shared tenant databases**; **secrets neve
 - Any implementation, ETL, or migration code.
 
 ## Global-to-Tenant Import-Copy Model
-- The **Global record** (D-31) is a record in the **Global Startup Directory** or **Global Investor Directory**, residing in the **Control Database** (the Global Discovery Platform). It is **never served directly as tenant data**.
+- The **Global record** (D-31, extended by D-35) is a record in the **Global Startup Directory**, the **Global Investor Directory**, or the **Global Deal Directory**, residing in the **Control Database** (the Global Discovery Platform). It is **never served directly as tenant data**. *(Definition replaced 2026-06-12 per D-35-R2 under PRD-CAP-01B: Global record = Startup ∨ Investor ∨ Deal directory record.)*
 - Import **copies** selected Global data into the **single active tenant's** physically separate database, producing a **tenant-owned copy** (Invariant 3). The copy is a **point-in-time snapshot**.
 - After import, the Global record and the tenant copy evolve **independently** (Invariants 4 & 5): tenant edits never write back to Global; later Global edits never propagate to the existing tenant copy.
-- There is **no ongoing synchronization** (Invariant 2): a re-import is an explicit new copy event (chained in lineage), not a sync.
+- There is **no ongoing synchronization** (Invariant 2): a re-import is an explicit, **user-controlled** copy event (chained in lineage; see *Re-Import Governance*), not a sync.
 - **Global Record ≠ Tenant Record** (Invariant 1): the imported tenant copy has its own identity in the tenant DB and MUST NOT be conflated with, or write to, the Global record.
 - External sources MAY also feed imports through a **pluggable source-adapter model** (**D-18**); v1 supports the **Global record + structured CSV/JSON (client upload)**, with API-pull deferred to a later adapter. Regardless of origin, the **same copy / ownership / lineage** semantics apply, and ingestion is **portable** (no provider bulk-load).
 
@@ -53,7 +54,35 @@ Also binding (architecture-wide): **no shared tenant databases**; **secrets neve
 - The Global record is owned at global/control-plane scope; changes to it MUST NOT propagate to previously imported tenant copies (Invariant 5).
 - **No write-back:** an import MUST read from Global and write to the tenant only; it MUST NOT modify the Global record.
 - The ownership boundary is enforced by **physical database separation**: the Global record lives in global scope; the copy lives in the tenant DB; the two are never shared and never joined in a tenant-routed query.
-- Re-import semantics (idempotency, **D-20**) default to **upsert by natural key** (no-op when unchanged); in all cases a re-import MUST NOT mutate the Global record and MUST emit lineage recording the outcome.
+- Re-import semantics are **user-controlled** (**D-20, as amended in part by D-34-R2** — see *Re-Import Governance* below; the former default-upsert re-import semantics are superseded); in all cases a re-import MUST NOT mutate the Global record and MUST emit lineage recording the outcome.
+
+## Re-Import Governance (D-20, as amended in part by D-34-R2)
+*Added 2026-06-12 under PRD-CAP-01B.*
+
+**D-20 amendment statement (explicit).** **D-20 is amended in part by D-34-R2.**
+- *Original position (D-20, Approved 2026-06-05):* re-import defaulted to **upsert by natural key** (no-op when unchanged).
+- *New position (D-34-R2 §8, R3):* **user-controlled re-import** — no silent overwrite of tenant edits.
+- *Retained from D-20, in force unchanged:* the operation-level **idempotency-key** mechanics, **natural-key reconciliation**, the **lineage-append** rule, and the **never-mutate-Global** rule. Only the **default overwrite-on-re-import semantics** are superseded.
+- *As-built note:* the implemented natural-key-upsert default was contract-conformant until this amendment; from this amendment it is a **tracked remediation item for a future execution PRD** (contracts precede code — no code change is authorized by PRD-CAP-01B).
+
+**Retry ≠ Re-import.** A **retry** of the same import operation (same idempotency key, D-20) remains idempotent and requires no user decision. A **re-import** — a new import operation whose natural key reconciles to an existing tenant copy — triggers the user-controlled flow below.
+
+**User-controlled re-import (D-34-R2 §8).** When a re-import is detected, the initiating user chooses exactly one outcome — there is **no default**:
+1. **Import New Copy** — creates an additional, distinct tenant copy; requires a distinct natural-key strategy (see *Natural-key semantics* below).
+2. **Replace Existing** — explicit, consent-based replacement of the existing tenant copy; **never silent**; the new copy's lineage **chains to the prior record's provenance**.
+3. **Ignore** — no tenant data changes; the decision is still lineage/audit-visible.
+
+**No hidden overwrite. No automatic overwrite. No background overwrite.** This rule applies **platform-wide — to any initiator** (backend service, scheduler, control-plane operator, or portal), not only to portal-initiated imports.
+
+**Synchronization prohibition (explicit).** The following are prohibited between a Global record and a tenant record, in either direction: **automatic sync, background sync, timer/scheduled sync, event-triggered sync, portal-driven sync** — and any other continuous or recurring propagation mechanism. Import remains a discrete, bounded, user-controlled copy event (Invariant 2); there is **no hidden synchronization** (anything else is D-34-R2's rejected R2 option by the back door).
+
+**Future-merge constraints (D-34-R2 §8).** Any future merge workflow MUST be: **discrete**, **explicitly user-initiated per event**, **lineage-appending** (chained per IC-004/D-25), **never scheduled/automatic/continuous**, and **never writing back to the Global record**. No merge workflow is authorized by this contract.
+
+**Lineage preservation (mandatory).** Every re-import outcome — including *Ignore* — appends lineage; **prior lineage and import history are never modified or deleted** (IC-004 append-only is absolute); lineage remains **tenant-resident** per IC-004 (unchanged); a *Replace Existing* event chains to the prior record's provenance via `parent_lineage_ref`.
+
+**Natural-key semantics per directory kind (D-35-R2 §5).** Each Global directory kind (Startup, Investor, **Deal**) defines its D-20 reconciliation natural key as the **stable Global-record reference** of that kind. For **Import New Copy**, the additional copy carries a distinct tenant-side identity: reconciliation operates on (Global-record reference + copy-instance discriminator) so multiple coexisting copies are distinguishable and any later re-import targets a specific copy. The concrete discriminator mechanics are an **execution-PRD item** (defined before any deal-import implementation, per D-35-R2 §5).
+
+**IC-004 harmonization (without modifying IC-004).** IC-004's actor example — *"for automated, system-originated events (e.g., a scheduled import), the actor is the responsible service/control-plane identity"* (IC-004:73) — defines **actor attribution only**. It MUST NOT be read as authorizing recurring, scheduled, or automatic imports **of Global records**: under this contract, every Global-record import and re-import is a discrete, user-controlled event regardless of initiator. (Scheduled ingestion from **external, non-Global sources** via a future D-18 adapter, if ever introduced, is governed separately and is not a Global-record re-import.)
 
 ## Authentication Requirements
 > Consumes IC-005; does not define authentication.
@@ -94,7 +123,7 @@ Per **D-09 (ingress)** — this resolves the import-ingress slice; the **AI-egre
 > Handoff to [IC-004](IC-004-Lineage-Contract.md); IC-004 owns the model, IC-003 emits.
 - Every import that creates or updates tenant data MUST emit an IC-004 lineage record (`event_type = import`) capturing at least: `source_ref` (the **Global record reference** or external source descriptor + key/offset — never the payload or credentials), `target_ref` (the tenant copy), `actor_ref`, `occurred_at`, `operation`, `derivation_ref` (the import job), and `schema_version` (D-22).
 - **Atomic provenance (IC-004):** lineage is written in the **same tenant transaction** as the copy — for batched imports (D-21), each committed batch carries its lineage atomically — so committed tenant data always has provenance (no data-without-lineage).
-- **Re-import appends** (Invariant 2; D-23 append-only): re-imports add new lineage entries chained via `parent_lineage_ref` and MUST NOT mutate prior lineage. Idempotent re-import (D-20) still emits attributable lineage reflecting the outcome (applied vs. no-op).
+- **Re-import appends** (Invariant 2; D-23 append-only): re-imports add new lineage entries chained via `parent_lineage_ref` and MUST NOT mutate prior lineage. Every re-import outcome under *Re-Import Governance* (D-20, as amended in part by D-34-R2) emits attributable lineage reflecting the outcome (new copy / replaced / ignored — or no-op on an idempotent retry).
 - Import events are **roots in the unified per-tenant provenance graph** (D-25); the graph never crosses tenants.
 - No payloads or secrets in lineage (references only); import lineage retention follows the per-tenant compliance policy (D-24, D-08).
 
@@ -148,10 +177,12 @@ Per **D-09 (ingress)** — this resolves the import-ingress slice; the **AI-egre
 The import decisions that previously gated this contract are now approved and incorporated above (see [Architecture-Decision-Register.md](../docs/Architecture-Decision-Register.md)):
 - **D-18** — pluggable source-adapter model; v1 = Global record + CSV/JSON (*Global-to-Tenant Import-Copy Model*).
 - **D-19** — hybrid execution (async-default + bounded sync fast-path) (*Execution Model*).
-- **D-20** — operation-level idempotency key + natural-key reconciliation (*Ownership Rules*, *Import Lineage*, *Failure Behavior*).
+- **D-20** — operation-level idempotency key + natural-key reconciliation (*Ownership Rules*, *Import Lineage*, *Failure Behavior*). **As amended in part by D-34-R2 (2026-06-12):** the default-upsert re-import semantics are superseded by **user-controlled re-import** (*Re-Import Governance*); the idempotency-key, natural-key-reconciliation, lineage-append, and never-mutate-Global mechanics remain in force.
 - **D-21** — batched/checkpointed atomic imports with resumability (*Failure Behavior*, *Import Lineage*).
 - **D-09 (ingress)** — policy-driven validation/sanitization/classification on a mandatory floor (*Ingress Validation & PII Handling*).
-- **D-31** — the Global record is a Global Startup/Investor Directory record residing in the Control Database (*Global-to-Tenant Import-Copy Model*); copy → tenant DB, *ownership never transfers*, *Global Record ≠ Tenant Record* and *Import ≠ Synchronization* preserved.
+- **D-31** — the Global record is a Global Startup/Investor/Deal Directory record residing in the Control Database (D-31, extended by D-35; *Global-to-Tenant Import-Copy Model*); copy → tenant DB, *ownership never transfers*, *Global Record ≠ Tenant Record* and *Import ≠ Synchronization* preserved.
+- **D-35** (R2) — the **Global Deal Directory** record is an importable Global record (`Global Deal → Import → Tenant Deal Copy` under the unchanged Import-Copy model); `Global Deal ≠ Tenant Deal`; deal natural-key semantics specified in *Re-Import Governance* (*Global-to-Tenant Import-Copy Model*, *Re-Import Governance*).
+- **D-34** (R2) — **amends D-20 in part**: user-controlled re-import (Import New Copy / Replace Existing / Ignore), explicit synchronization prohibition, future-merge constraints, mandatory lineage preservation, platform-wide applicability, IC-004 actor-example harmonization (*Re-Import Governance*).
 
 No import architecture decisions remain open for this contract. The **D-09 AI-egress** slice remains owned by IC-006 (AI post-MVP, D-02) and does not gate import.
 
