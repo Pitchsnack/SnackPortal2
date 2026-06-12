@@ -2,6 +2,7 @@
 
 **Status:** Final · **Phase:** Architecture Planning · **Type:** Specification only (no implementation)
 **Status note:** All architecture decisions governing authentication and routing are resolved and recorded in [Architecture-Decision-Register.md](../docs/Architecture-Decision-Register.md) — through D-06 (tenant carriage), D-30 (isolation enforcement), the JWT lifecycle, plus the **D-32** role hierarchy and the **D-31** directory-authorization clarification. **Final** for MVP architecture; residual items are implementation/operational (exact token TTL, optional denylist enablement, DNS/cert, concrete permission sets) and do not reopen the architecture.
+**Amendment (2026-06-12, PRD-CAP-01A):** added *Workspace Terminology & Carriers* implementing **D-33** as corrected by **D-33-E1** — workspace definition, exact carrier enumeration, prohibited carriers, and the mandatory carrier-on-CONTROL anomaly audit. No normative change to token validation, JWKS, roles, or denial semantics; no frozen invariant altered.
 
 ## Purpose
 Define the contract for the **Authentication Router**: how incoming requests are authenticated, how tenant context is established, and how authenticated requests are routed to the correct tenant (or control plane) via the Database Router.
@@ -32,7 +33,7 @@ Authentication is **separated from tenant routing** to break the IC-001 ⇄ IC-0
 - Any implementation, middleware, or auth-server code.
 
 ## API Contract Placeholder
-> Tenant context is carried as an **authoritative signed JWT claim** (D-06). Auth failures use standard semantics — **401** (unauthenticated), **403** (authenticated but not a member / carrier-claim mismatch). Concrete endpoints/headers and shapes are **implementation bindings** (no transport code here).
+> Tenant context is carried as an **authoritative signed JWT claim** (D-06). Auth failures use standard semantics — **401** (unauthenticated), **403** (authenticated but not a member / carrier-claim mismatch). Concrete endpoints and shapes are **implementation bindings** (no transport code here) — **except the recognized tenant-carrier channels, which are contract-enumerated** (D-33; see *Workspace Terminology & Carriers*).
 
 ## DTO Contract Placeholder
 > Shapes (fields only, no code, **no tokens or secrets**): **authenticated principal** (subject/identity reference, source = internal | federated, D-03), **tenant context** (active `tenant_id` from the signed claim, D-06), **auth error** (non-sensitive code: unauthenticated / forbidden / tenant-mismatch). Tokens, JWTs, and secrets never appear in payloads.
@@ -87,6 +88,35 @@ The active tenant is carried as an **integrity-protected signed JWT claim**, whi
 
 This blocks the "valid token + swapped tenant header/host" cross-tenant attack. A **tenant switch** (1:N membership) is performed by obtaining a **new token scoped to the new active tenant** — stateless, no session store — and is an audited operation.
 
+The exact recognized carrier channels, the prohibited carrier channels, and the workspace vocabulary that presents this mechanism are specified in *Workspace Terminology & Carriers* (D-33) below.
+
+## Workspace Terminology & Carriers (D-33, as corrected by D-33-E1)
+*Added 2026-06-12 under PRD-CAP-01A. Terminology and carrier enumeration only — no normative change to token validation, JWKS, roles, or denial semantics; the D-06 mechanism above is unchanged.*
+
+**Workspace definition.** A **Workspace** is the **UI representation of a signed tenant context** — presentation vocabulary for an already-authenticated routing context, never a mechanism of its own:
+- **Tenant Workspace** ↔ the signed active-tenant claim (D-06) ↔ exactly one physically separate tenant database.
+- **Control Workspace** ↔ a CONTROL-role principal with **no** tenant claim ↔ control-plane scope only; it can never reach a tenant database.
+
+**Workspace is NOT:** a routing input; a database selector; an authorization source; an HTTP header, cookie, or query-string value with authority; a tenant filter; a JWT claim of its own; a database or schema; or server-side session state.
+
+**Routing authority.** The **signed tenant claim is the sole routing authority** (D-06). The UI derives the current workspace *from* the token — never the reverse. No workspace value participates in database selection, directly or indirectly.
+
+**Workspace switching.** Selecting a different workspace is the existing IC-005 **tenant switch**: obtain a **new token scoped to the new active tenant** (or a tenantless CONTROL token for the Control Workspace) — stateless, audited. A workspace switch is **never** a header mutation, session mutation, or in-place context mutation.
+
+**Recognized carriers (exact enumeration).** Exactly **two** carrier channels are recognized for tenant addressing/UX, both subordinate to the signed claim under **match-or-reject**:
+1. the **tenant subdomain** (host-based addressing; the concrete DNS/certificate scheme remains a deployment binding);
+2. the HTTP request header **`X-Tenant-Id`** — the **only** recognized carrier header (name fixed by this amendment, following the D-06 decision-pack precedent; HTTP header-name case-insensitivity applies).
+
+**All other headers are unrecognized as tenant carriers and MUST be ignored** for carriage purposes.
+
+**Carrier mismatch (restated).** Every recognized carrier value MUST match the signed claim or the request is rejected — **403 `carrier_mismatch`** (existing contract law; implemented and verified by two complementary tests).
+
+**Prohibited carriers.** **Cookies and query-string parameters MUST NOT carry tenant or workspace identity** — and MUST NOT be read by any backend component for **any** purpose, including token issuance. The API Gateway MUST strip/ignore inbound workspace cookies and query-string parameters. *Rationale:* a cookie attaches ambient, client-controlled authority to every request (CSRF-class risk); query strings leak into logs and referrers.
+
+**Tenantless-CONTROL carrier rule (D-33-E1 Item 1 — mandatory).** When a recognized tenant carrier accompanies a **tenantless CONTROL token**, routing behavior is unchanged — the carrier is **ignored; the claim alone governs** (control-plane scope) — **and the platform MUST emit an anomaly-audit event** (action `CarrierOnControlAnomaly`) recording, **by reference only** (D-34 Global Audit Representation Rule): principal reference, carrier-asserted tenant identifier, correlation id, timestamp. This event is control-plane **operational audit** (Control-DB resident per D-34). **Execution-PRD acceptance items (code lands only with the IC-005-amendment execution PRD — contracts precede code):** (a) the anomaly-audit emission (small additive `auth_router` change); (b) a regression test locking the tenantless-CONTROL carrier-ignored behavior, parallel to `test_carrier_mismatch_audited`.
+
+**Gateway obligation (forward-binding, D-33 §4.6).** When the API Gateway is implemented (contract: IC-010), it MUST construct the Database Router's request context **exclusively** from the Authenticator's output, MUST pass any recognized carrier into the carrier-match check, and MUST NOT read any workspace header, cookie, or query-string as a tenant selector.
+
 ## Cross-Tenant Isolation Enforcement (D-30)
 Isolation is enforced **defense-in-depth** across four layers; no single failure may breach it:
 1. **AuthN/AuthZ** — OIDC stateless JWT (D-05) + authoritative signed tenant claim (D-06) + principal membership check (D-04); mismatches rejected.
@@ -124,6 +154,7 @@ Per the OIDC stateless model (D-05) — **no session store, no Control-DB sessio
 - Unknown / suspended-tenant routing semantics follow **IC-002** readiness (*not found* / *administratively disabled* / *unavailable* / *retry later*).
 - **D-32** — MVP role hierarchy (CONTROL, MASTER_AGENT, TENANT_ADMIN, TENANT_AGENT, STARTUP_USER, INVESTOR_USER); roles not permissions; anti-privilege-escalation; cross-tenant collaboration deferred to IC-007 (*Role Hierarchy & Operating Model*).
 - **D-31** — Global Directory authorization governed by IC-005 (control-plane read; authenticated/auditable; never exposes tenant-owned records) (*Global Directory Authorization*).
+- **D-33** (as corrected by **D-33-E1**) — Workspace = UI representation of the signed tenant context; exact carrier enumeration (tenant subdomain + `X-Tenant-Id`); cookie/query-string carriage prohibited; mandatory carrier-on-CONTROL anomaly audit (*Workspace Terminology & Carriers*).
 - (Earlier) **D-03** hybrid identity; **D-04** 1:N, one active tenant per request; **D-05** OIDC + stateless JWT. See [Architecture-Decision-Register.md](../docs/Architecture-Decision-Register.md).
 
 ## Implementation Notes (non-architecture)
