@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **ADR ID** | D-33 (Architecture Decision Register series; next after D-32) |
-| **Status** | **Proposed** — for separate review and approval per PRD-WA-01 §3 |
+| **Status** | **✅ Approved** — 2026-06-12 via PRD-D33-D36-P1-R1 (register entry at `20368cf`); header corrected per D-33-E1 Item 3 |
 | **Authorized by** | PRD-WA-01 (as amended by PRD-WA-01-R1, Amendments A1–A5) |
 | **Date** | 2026-06-11 |
 | **Evidence base** | PRD 1A-R2 Verification Report; contracts IC-002/IC-005 (Final); backend `main` @ `0c2133a` |

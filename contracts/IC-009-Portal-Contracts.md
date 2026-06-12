@@ -17,7 +17,7 @@ Carry the concrete, per-portal data and visibility contracts for the six portal 
 - **Channel bindings** (D-37 §6 Channel Rule: web, mobile, API-platform consumers bind to identical contracts and to the gateway-only, residency, and caching rules).
 
 ## Boundary (in force now)
-- **No portal implementation** (frontend or backend surface) may proceed until IC-009 is designed and approved and the API Gateway contract exists (D-37 §22 sequence).
+- **No portal implementation** (frontend or backend surface) may proceed until IC-009 is designed and approved and the API Gateway contract (**IC-010 — reserved 2026-06-12**) exists (D-37 §22 sequence; traceability per PRD-D33-D37-V2-R1 WP-D).
 - All D-37 rules bind any future IC-009 design: gateway-only data access (no portal-side database or Supabase data access of any kind), record-residency retrieval, no cross-workspace client caching, the Portal Import Rule (discrete, user-initiated only), and the package-wide audit representation rule (D-34).
 - Cross-tenant capabilities remain **IC-007-deferred**; AI presentation remains **IC-006-deferred**; ownership mechanics remain **IC-008-reserved**.
 
