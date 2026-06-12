@@ -139,7 +139,7 @@ Per **D-13**:
 |---|---|---|---|---|
 | **RegisterTenant** | Create the authoritative tenant record + associations | Control-plane operator (internal identity) | `→ Registered` | Yes (by tenant id) |
 | **GetTenantStatus** | Return lifecycle state + readiness | Control-plane / authorized member | none | Yes |
-| **MembershipsForPrincipal** | Enumerate the authenticated principal's tenant memberships (the workspace-selector source, D-33) | The principal itself (**self-scoped**) or CONTROL; **audited** | none — returns **membership records only** (tenant id, role, display ref), **never tenant-DB data** | Yes |
+| **MembershipsForPrincipal** | Enumerate a subject principal's tenant memberships — self by default; CONTROL may specify another subject (the workspace-selector source, D-33) | The principal itself (**self-scoped**) or CONTROL; **audited** | none — returns **membership records only** (tenant id, role, display ref), **never tenant-DB data** | Yes |
 | **VerifyTenant** | Run connectivity + schema-version checks | Control-plane operator | `Verifying → Ready` or `→ Failed` | Yes |
 | **ActivateTenant** | Promote a verified tenant to routable | Control-plane operator | `→ Ready` | Yes |
 | **SuspendTenant** | Administratively disable; preserve data | Control-plane operator | `Ready → Suspended` | Yes |
