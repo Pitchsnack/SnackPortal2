@@ -3,6 +3,7 @@
 **Status:** Final · **Phase:** Architecture Planning · **Type:** Specification only (no implementation)
 **Decision basis:** Incorporates approved decisions **D-01–D-05** and the tenant-infrastructure decisions **D-07, D-13–D-17** ([Architecture-Decision-Register.md](../docs/Architecture-Decision-Register.md)).
 **Status note:** All tenant-startup architecture decisions are resolved and incorporated; the previously-pending cross-contract items — the secret-store abstraction (D-14) and tenant-identifier carriage (D-06, owned by IC-005) — are now resolved. **Final** for MVP architecture; residual items are implementation/operational and do not reopen the architecture.
+**Amendment (2026-06-12, PRD-CAP-01A):** implementing **D-33** as corrected by **D-33-E1** — the *Tenant Workspace* terminology alias (vocabulary only; the Core Invariants are untouched verbatim), the **MembershipsForPrincipal** operation added to the API Contract (D-33-E1 Item 2; implementation deferred to the API Gateway / frontend-integration execution PRD), and the D-33 audit events named under *Audit Requirements*.
 Requirement keywords **MUST / MUST NOT / SHOULD / MAY** are used in the RFC-2119 sense.
 
 ## Purpose
@@ -15,6 +16,9 @@ Define how an **individual tenant** is registered, brought online, and made rout
 4. **No shared tenant databases.** Each tenant has its own physical database; tenants MUST NOT share a database or schema.
 
 These invariants bind every section below. Any behavior that would violate them is out of contract.
+
+## Workspace Terminology (D-33 — alias only)
+*Added 2026-06-12 under PRD-CAP-01A (D-33, as corrected by D-33-E1).* The **active tenant context (D-04)** gains the presentation-layer alias **Tenant Workspace**; **Control Workspace** denotes control-plane scope — a CONTROL-role principal with **no** tenant claim, which can never reach a tenant database. The alias is vocabulary only: the four **Core Invariants above are untouched verbatim**, and no behavior of this contract changes. **Workspace switching is the IC-005 tenant switch** — obtaining a **new scoped token** (audited) — never a header mutation, session mutation, or context mutation. The workspace definition, exact carrier enumeration, prohibited carriers (cookies/query strings), and the carrier-on-CONTROL anomaly rule are owned by [IC-005](IC-005-Authentication-Routing-Contract.md) (*Workspace Terminology & Carriers*).
 
 ## Scope
 - Tenant **registration** in the Control-DB tenant registry and the tenant **lifecycle** state machine.
@@ -121,6 +125,12 @@ Per **D-13**:
 - `Suspend`, `Decommission`, and `Re-associate` are sensitive and MUST always be audited; failed/denied lifecycle attempts SHOULD also be recorded.
 - Tenant-lifecycle audit is **operational/control-plane audit**, distinct from data-provenance lineage ([IC-004](IC-004-Lineage-Contract.md)); it is control-plane-scoped and MUST NOT be written into tenant databases.
 - Audit storage MUST remain standard-PostgreSQL/portable; its exact location is a control-plane detail (related to D-14 for any referenced secrets).
+- **D-33 workspace-related audit events** *(added 2026-06-12, PRD-CAP-01A)* — the following control-plane audit obligations, aligned with the **Control-DB operational-audit model approved by D-34** and bound by its **Global Audit Representation Rule** (references only — never names, emails, PII, or payloads):
+  - **Workspace switch** = the IC-005 tenant switch — an audited operation (event owned by IC-005; named here because the workspace alias presents it).
+  - **Carrier mismatch** — audited rejection (403 `carrier_mismatch`; event owned by IC-005).
+  - **Tenantless-CONTROL carrier anomaly** — the mandatory `CarrierOnControlAnomaly` event (D-33-E1 Item 1; specified in IC-005 *Workspace Terminology & Carriers*).
+  - **MembershipsForPrincipal** calls MUST be audited (actor, subject principal reference, timestamp, correlation id — references only).
+  - *Scope note:* the broader audit-section extension required by D-34/D-36 (administrative/runtime/export/ownership audit classes and Control-DB audit retention) is a **separate pending amendment** tracked in the register's closing note (Contract Amendment Inventory R2) — it is **not** executed by PRD-CAP-01A.
 
 ## API Contract
 > Specification of **operations and semantics** only — no transport code. The surface is a **control-plane API** (REST/HTTP-style); concrete method/path bindings are a minor remaining detail. Denial semantics MUST distinguish *forbidden* (authz), *not found* (unknown/decommissioned), *not ready* (provisioning/verifying), *administratively disabled* (suspended), and *unavailable* (failed).
@@ -129,12 +139,15 @@ Per **D-13**:
 |---|---|---|---|---|
 | **RegisterTenant** | Create the authoritative tenant record + associations | Control-plane operator (internal identity) | `→ Registered` | Yes (by tenant id) |
 | **GetTenantStatus** | Return lifecycle state + readiness | Control-plane / authorized member | none | Yes |
+| **MembershipsForPrincipal** | Enumerate the authenticated principal's tenant memberships (the workspace-selector source, D-33) | The principal itself (**self-scoped**) or CONTROL; **audited** | none — returns **membership records only** (tenant id, role, display ref), **never tenant-DB data** | Yes |
 | **VerifyTenant** | Run connectivity + schema-version checks | Control-plane operator | `Verifying → Ready` or `→ Failed` | Yes |
 | **ActivateTenant** | Promote a verified tenant to routable | Control-plane operator | `→ Ready` | Yes |
 | **SuspendTenant** | Administratively disable; preserve data | Control-plane operator | `Ready → Suspended` | Yes |
 | **ReactivateTenant** | Re-verify and restore service | Control-plane operator | `Suspended → Verifying → Ready` | Yes |
 | **DecommissionTenant** | Offboard; remove from routing; retain/archive | Control-plane operator | `→ Decommissioned` | Yes |
 | **ReassociateDatabase** | Point a tenant at a restored/relocated DB | Control-plane operator | `→ Verifying` (then `Ready`) | Yes |
+
+*`MembershipsForPrincipal` (added 2026-06-12 per D-33-E1 Item 2) is **contract-owned here**; its implementation is deferred to the API Gateway / frontend-integration execution PRD — contracts precede code.*
 
 ## DTO Contract
 > Data **shapes** described as fields only — no code, **no secrets in any payload**. Database credentials are never present; only references to secret-store entries are.
@@ -148,6 +161,8 @@ Per **D-13**:
 **Physical Database Association:** `association_ref`, `tenant_id`, `db_descriptor_ref` (secret-store reference `{store-ref, version}` per D-14 — **never** the credentials), `engine` (PostgreSQL), `provisioning_owner` (IaC + control-plane workflow, D-15), `association_state`.
 
 **Lifecycle Audit Record:** `audit_id`, `tenant_id`, `actor`, `action`, `from_state`, `to_state`, `timestamp`, `reason`, `correlation_id` (append-only).
+
+**Principal Membership Record (D-33):** `tenant_id`, `role`, `display_ref` — membership data only; never tenant-DB data; no secrets, names, or other PII (display naming is resolved by reference).
 
 ## Anti-Vendor-Lock-In Requirements
 - **No Supabase-specific** tenant logic, no RLS-as-business-logic, and no Supabase Auth (authentication is OIDC via IC-005, D-05).
