@@ -11,13 +11,13 @@ from __future__ import annotations
 
 import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Tuple
+from typing import Tuple, cast
 
 from control_plane.ports import ControlStore
 from control_plane.read_api import ControlPlaneReadDispatcher, ControlPlaneReadService
 
 
-def _make_handler(dispatcher: ControlPlaneReadDispatcher):
+def _make_handler(dispatcher: ControlPlaneReadDispatcher) -> type[BaseHTTPRequestHandler]:
     class _Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 (http.server API)
             status, body = dispatcher.handle("GET", self.path)
@@ -42,7 +42,7 @@ def make_server(store: ControlStore, host: str = "127.0.0.1", port: int = 0) -> 
     """
     dispatcher = ControlPlaneReadDispatcher(ControlPlaneReadService(store))
     server = HTTPServer((host, port), _make_handler(dispatcher))
-    bound_host, bound_port = server.server_address[0], server.server_address[1]
+    bound_host, bound_port = cast(str, server.server_address[0]), server.server_address[1]
     return server, f"http://{bound_host}:{bound_port}"
 
 

@@ -38,7 +38,7 @@ def _quote_ident(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
-def _where(key: Dict[str, Any]):
+def _where(key: Dict[str, Any]) -> tuple[str, tuple[Any, ...]]:
     cols = list(key.keys())
     clause = " AND ".join(f"{_quote_ident(c)} = %s" for c in cols)
     params = tuple(key[c] for c in cols)
@@ -91,7 +91,7 @@ class PgRoutedSession(RoutedTenantSession, LineageReadSession):
 
     def get(self, table: str, key: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         clause, params = _where(key)
-        rows: List[dict] = self._conn.query(f"SELECT * FROM {_quote_ident(table)} WHERE {clause} LIMIT 1", params)
+        rows: List[Dict[str, Any]] = self._conn.query(f"SELECT * FROM {_quote_ident(table)} WHERE {clause} LIMIT 1", params)
         return rows[0] if rows else None
 
     def latest(self, table: str, where: Dict[str, Any], order_by: str) -> Optional[Dict[str, Any]]:
@@ -101,7 +101,7 @@ class PgRoutedSession(RoutedTenantSession, LineageReadSession):
         else:
             params = ()
             sql = f"SELECT * FROM {_quote_ident(table)} ORDER BY {_quote_ident(order_by)} DESC LIMIT 1"
-        rows: List[dict] = self._conn.query(sql, params)
+        rows: List[Dict[str, Any]] = self._conn.query(sql, params)
         return rows[0] if rows else None
 
     # -- LineageReadSession (Build Phase 6; read-only; standard parameterized SQL) --

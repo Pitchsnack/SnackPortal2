@@ -37,7 +37,7 @@ class _Pool:
     def __init__(self, max_size: int) -> None:
         self.max_size = max_size
         self.idle: List[_Idle] = []
-        self.in_use: set = set()
+        self.in_use: set[TenantConnection] = set()
 
 
 class ConnectionPoolManager:

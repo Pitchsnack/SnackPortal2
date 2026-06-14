@@ -13,7 +13,7 @@ authorization, routing, credential resolution, lineage persistence, or hash-chai
 from __future__ import annotations
 
 import uuid
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from shared.audit import OperationalAudit, OperationalAuditEvent
 from shared.lineage import LineageEmitPort, LineageIntent
@@ -96,7 +96,7 @@ class ImportService:
         )
 
     # -- internals -------------------------------------------------------------
-    def _begin_job(self, session: RoutedTenantSession, req: ImportRequest):
+    def _begin_job(self, session: RoutedTenantSession, req: ImportRequest) -> Tuple[str, bool, Optional[ImportStatus]]:
         """Returns (job_id, resuming, replay_status_or_None)."""
         session.begin()
         idem = session.get(IDEM_TABLE, {"operation_key": req.operation_key})
@@ -143,7 +143,7 @@ class ImportService:
         session.commit()
         return job_id, False, None
 
-    def _collect(self, req: ImportRequest):
+    def _collect(self, req: ImportRequest) -> Tuple[List[ImportRecord], int]:
         adapter = self._sources.get(req.source.kind)
         if adapter is None:
             raise _ImportFailed("unsupported_source", self._failed_status(req, "unknown", 0, 0, 0))
@@ -162,7 +162,14 @@ class ImportService:
         session.commit()
         return (int(cp["batch_seq"]) + 1) if cp else 1
 
-    def _apply_batches(self, session, req, job_id, valid, start_seq):
+    def _apply_batches(
+        self,
+        session: RoutedTenantSession,
+        req: ImportRequest,
+        job_id: str,
+        valid: List[ImportRecord],
+        start_seq: int,
+    ) -> Tuple[int, int]:
         applied = noop = 0
         batches = [valid[i : i + self._batch_size] for i in range(0, len(valid), self._batch_size)]
         for seq, batch in enumerate(batches, start=1):
@@ -191,7 +198,14 @@ class ImportService:
             noop += len(batch) - b_applied
         return applied, noop
 
-    def _apply_one_batch(self, session, req, job_id, seq, batch) -> int:
+    def _apply_one_batch(
+        self,
+        session: RoutedTenantSession,
+        req: ImportRequest,
+        job_id: str,
+        seq: int,
+        batch: List[ImportRecord],
+    ) -> int:
         b_applied = 0
         for rec in batch:
             row = dict(rec.fields)
@@ -227,7 +241,15 @@ class ImportService:
         )
         return b_applied
 
-    def _finalize(self, session, req, job_id, applied, noop, rejected) -> ImportStatus:
+    def _finalize(
+        self,
+        session: RoutedTenantSession,
+        req: ImportRequest,
+        job_id: str,
+        applied: int,
+        noop: int,
+        rejected: int,
+    ) -> ImportStatus:
         session.begin()
         session.upsert(
             JOB_TABLE,
@@ -265,7 +287,14 @@ class ImportService:
             correlation_id=req.correlation_id,
         )
 
-    def _failed_status(self, req, job_id, applied, noop, rejected) -> ImportStatus:
+    def _failed_status(
+        self,
+        req: ImportRequest,
+        job_id: str,
+        applied: int,
+        noop: int,
+        rejected: int,
+    ) -> ImportStatus:
         return ImportStatus(
             import_id=job_id,
             tenant_id=req.tenant_id,

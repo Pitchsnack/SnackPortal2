@@ -11,7 +11,7 @@ import json
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Optional
+from typing import Any, Optional
 
 from import_service.ports import DirectoryPage, DirectoryReadPort, GlobalDirectoryRecordView
 
@@ -21,18 +21,19 @@ class HttpDirectoryRead(DirectoryReadPort):
         self._base = base_url.rstrip("/")
         self._timeout = timeout
 
-    def _get(self, path: str) -> Optional[dict]:
+    def _get(self, path: str) -> Optional[dict[str, Any]]:
         req = urllib.request.Request(self._base + path, headers={"Accept": "application/json"})
         try:
             with urllib.request.urlopen(req, timeout=self._timeout) as resp:  # internal control-plane URL
-                return json.loads(resp.read().decode("utf-8"))
+                payload: dict[str, Any] = json.loads(resp.read().decode("utf-8"))
+                return payload
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 return None
             raise
 
     @staticmethod
-    def _view(data: dict) -> GlobalDirectoryRecordView:
+    def _view(data: dict[str, Any]) -> GlobalDirectoryRecordView:
         return GlobalDirectoryRecordView(
             directory=data["directory"],
             record_id=data["record_id"],

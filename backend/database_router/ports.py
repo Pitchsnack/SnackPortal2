@@ -16,7 +16,7 @@ import + lineage write can commit atomically on the single resolved connection
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Any, Optional
 
 from .models import TenantRoutingView
 
@@ -63,11 +63,11 @@ class TenantConnection(ABC):
     def close(self) -> None: ...
 
     @abstractmethod
-    def execute(self, statement: str, params: tuple = ()) -> None:
+    def execute(self, statement: str, params: tuple[object, ...] = ()) -> None:
         """Run a parameterized write statement on the bound connection (Build Phase 5)."""
 
     @abstractmethod
-    def query(self, statement: str, params: tuple = ()) -> list:
+    def query(self, statement: str, params: tuple[object, ...] = ()) -> list[dict[str, Any]]:
         """Run a parameterized read and return rows as dicts (Build Phase 5)."""
 
 
