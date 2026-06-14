@@ -84,7 +84,7 @@ class LineageEmit(LineageEmitPort):
     # -- per-tenant keyed-hash key by reference (D-14; never stored in lineage) ----
     def _chain_key(self, tenant_id: str) -> str:
         store_ref = f"{self._key_prefix}/{tenant_id}/chainkey"
-        version: Optional[str] = self._secrets.current_version(store_ref)
+        version: str = self._secrets.current_version(store_ref)
         return self._secrets.resolve(SecretRef(store_ref=store_ref, version=version)).material
 
     def _audit_written(self, tenant_id: str, intent: LineageIntent, lineage_id: str) -> None:

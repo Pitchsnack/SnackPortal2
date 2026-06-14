@@ -17,7 +17,7 @@ from typing import Optional
 
 from shared.audit import OperationalAudit, OperationalAuditEvent
 from shared.context import RequestContext
-from shared.secrets import SecretStore
+from shared.secrets import SecretRef, SecretStore
 from shared.session import Lane
 
 from .models import (
@@ -107,7 +107,7 @@ class DatabaseRouter:
             return RoutingTarget.CONTROL
         raise forbidden("no_active_tenant")
 
-    def _acquire(self, tenant_id: str, association_ref, lane: Lane) -> TenantConnection:
+    def _acquire(self, tenant_id: str, association_ref: SecretRef, lane: Lane) -> TenantConnection:
         def open_fn() -> TenantConnection:
             # Resolve the per-tenant credential in memory at connect time only (D-14);
             # the descriptor is never stored, logged, or returned.

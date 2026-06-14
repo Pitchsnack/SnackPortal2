@@ -13,6 +13,8 @@ is never stored, logged, or returned. Each connection is bound to exactly one te
 
 from __future__ import annotations
 
+from typing import Any
+
 import psycopg  # type: ignore  # noqa: F401  (driver import confined to this zone)
 
 from database_router.ports import ConnectionFactory, TenantConnection
@@ -59,11 +61,11 @@ class PsycopgTenantConnection(TenantConnection):
         except Exception:
             pass
 
-    def execute(self, statement: str, params: tuple = ()) -> None:
+    def execute(self, statement: str, params: tuple[object, ...] = ()) -> None:
         with self._conn.cursor() as cur:
             cur.execute(statement, params)  # standard parameterized SQL (portable)
 
-    def query(self, statement: str, params: tuple = ()) -> list:
+    def query(self, statement: str, params: tuple[object, ...] = ()) -> list[dict[str, Any]]:
         with self._conn.cursor() as cur:
             cur.execute(statement, params)
             cols = [d[0] for d in cur.description] if cur.description else []
