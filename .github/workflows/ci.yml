@@ -37,3 +37,8 @@ jobs:
           fetch-depth: 0
       - name: Secret scan (gitleaks)
         uses: gitleaks/gitleaks-action@v2
+        env:
+          # Required by gitleaks-action@v2 to scan pull_request events
+          # (push events do not require it). GitHub Actions auto-provided token;
+          # not a stored/custom secret. CI-config only.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
