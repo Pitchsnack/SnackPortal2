@@ -56,7 +56,7 @@ class LineageSearch:
 
     def _open(self, ctx: RequestContext) -> LineageReadSession:
         return self._provider.open_read_session(
-            tenant_id=ctx.active_tenant_id,
+            tenant_id=ctx.active_tenant_id or "",
             correlation_id=ctx.correlation_id,
             principal_ref=ctx.principal_ref,
         )

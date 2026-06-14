@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import urllib.parse
 import urllib.request
-from typing import Optional
+from typing import Any, Optional
 
 from auth_router.models import FederationView, Role, TenantStateView
 from auth_router.ports import ControlPlaneReadPort
@@ -21,12 +21,13 @@ class HttpControlPlaneRead(ControlPlaneReadPort):
         self._base = base_url.rstrip("/")
         self._timeout = timeout
 
-    def _get(self, path: str) -> Optional[dict]:
+    def _get(self, path: str) -> Optional[dict[str, Any]]:
         req = urllib.request.Request(self._base + path, headers={"Accept": "application/json"})
         with urllib.request.urlopen(req, timeout=self._timeout) as resp:  # internal control-plane URL
             if getattr(resp, "status", 200) == 404:
                 return None
-            return json.loads(resp.read().decode("utf-8"))
+            payload: dict[str, Any] = json.loads(resp.read().decode("utf-8"))
+            return payload
 
     def get_federation_for_issuer(self, issuer: str) -> Optional[FederationView]:
         data = self._get("/federation?issuer=" + urllib.parse.quote(issuer))

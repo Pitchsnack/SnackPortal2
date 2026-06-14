@@ -110,7 +110,7 @@ class LineageVerifier:
 
     def _chain_key(self, tenant_id: str) -> str:
         store_ref = f"{self._key_prefix}/{tenant_id}/chainkey"
-        version: Optional[str] = self._secrets.current_version(store_ref)
+        version: str = self._secrets.current_version(store_ref)
         return self._secrets.resolve(SecretRef(store_ref=store_ref, version=version)).material
 
     def _audit_result(self, ctx: RequestContext, report: VerificationReport) -> None:
@@ -130,7 +130,7 @@ class LineageVerifier:
 
     def _open(self, ctx: RequestContext) -> LineageReadSession:
         return self._provider.open_read_session(
-            tenant_id=ctx.active_tenant_id,
+            tenant_id=ctx.active_tenant_id or "",
             correlation_id=ctx.correlation_id,
             principal_ref=ctx.principal_ref,
         )

@@ -14,7 +14,7 @@ credentials (D-14): the tenant database association is two columns
 
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 import psycopg  # type: ignore  # noqa: F401  (driver import confined to this zone)
 
@@ -233,7 +233,7 @@ class PostgresControlStore(ControlStore):
 
     # -- internals ------------------------------------------------------------
     @staticmethod
-    def _tenant_from_row(row: Tuple) -> TenantRecord:
+    def _tenant_from_row(row: Tuple[Any, ...]) -> TenantRecord:
         return TenantRecord(
             tenant_id=row[0],
             organization_ref=row[1],

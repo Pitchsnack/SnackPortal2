@@ -128,7 +128,7 @@ class TenantRegistry:
         self,
         tenant_id: str,
         to_state: TenantLifecycleState,
-        allowed_from: set,
+        allowed_from: set[TenantLifecycleState],
         action: str,
         actor: str,
         correlation_id: str,

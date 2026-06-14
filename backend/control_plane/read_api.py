@@ -14,11 +14,11 @@ distinct from tenant-state so the auth path never receives the association refer
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 from urllib.parse import parse_qs, urlsplit
 
 from .ports import ControlStore
-from .records import DirectoryKind, TenantLifecycleState
+from .records import DirectoryKind, DirectoryRecord, TenantLifecycleState
 
 _DIR_ALIAS = {"startup": DirectoryKind.STARTUP, "investor": DirectoryKind.INVESTOR}
 _MAX_PAGE = 200
@@ -28,7 +28,7 @@ class ControlPlaneReadService:
     def __init__(self, store: ControlStore) -> None:
         self._store = store
 
-    def tenant_state(self, tenant_id: str) -> Optional[dict]:
+    def tenant_state(self, tenant_id: str) -> Optional[dict[str, Any]]:
         rec = self._store.get_tenant(tenant_id)
         if rec is None:
             return None
@@ -38,7 +38,7 @@ class ControlPlaneReadService:
             "ready": rec.lifecycle_state is TenantLifecycleState.READY,
         }
 
-    def routing_view(self, tenant_id: str) -> Optional[dict]:
+    def routing_view(self, tenant_id: str) -> Optional[dict[str, Any]]:
         rec = self._store.get_tenant(tenant_id)
         if rec is None:
             return None
@@ -53,11 +53,11 @@ class ControlPlaneReadService:
             "expected_schema_version": rec.expected_schema_version,
         }
 
-    def is_member(self, principal_ref: str, tenant_id: str) -> dict:
+    def is_member(self, principal_ref: str, tenant_id: str) -> dict[str, Any]:
         members = self._store.list_memberships(principal_ref=principal_ref, tenant_id=tenant_id)
         return {"member": len(members) > 0}
 
-    def get_role(self, principal_ref: str, tenant_id: str) -> Optional[dict]:
+    def get_role(self, principal_ref: str, tenant_id: str) -> Optional[dict[str, Any]]:
         members = self._store.list_memberships(principal_ref=principal_ref, tenant_id=tenant_id)
         if not members:
             return None
@@ -65,7 +65,7 @@ class ControlPlaneReadService:
 
     # --- Global Discovery Platform reads (D-31; PRD-P5-R2 E) -----------------
     # Global reference data only; NEVER tenant-owned records.
-    def directory_record(self, kind_alias: str, record_id: str) -> Optional[dict]:
+    def directory_record(self, kind_alias: str, record_id: str) -> Optional[dict[str, Any]]:
         kind = _DIR_ALIAS.get(kind_alias)
         if kind is None:
             return None
@@ -74,7 +74,7 @@ class ControlPlaneReadService:
             return None
         return self._directory_view(rec)
 
-    def directory_page(self, kind_alias: str, cursor: str, limit: int) -> Optional[dict]:
+    def directory_page(self, kind_alias: str, cursor: str, limit: int) -> Optional[dict[str, Any]]:
         kind = _DIR_ALIAS.get(kind_alias)
         if kind is None:
             return None
@@ -86,7 +86,7 @@ class ControlPlaneReadService:
         return {"records": [self._directory_view(r) for r in page], "next_cursor": next_cursor}
 
     @staticmethod
-    def _directory_view(rec) -> dict:
+    def _directory_view(rec: DirectoryRecord) -> dict[str, Any]:
         return {
             "directory": rec.directory.value,
             "record_id": rec.record_id,
@@ -95,7 +95,7 @@ class ControlPlaneReadService:
         }
 
 
-_NOT_FOUND: Tuple[int, dict] = (404, {"error": "not_found"})
+_NOT_FOUND: Tuple[int, dict[str, Any]] = (404, {"error": "not_found"})
 
 
 class ControlPlaneReadDispatcher:
@@ -104,7 +104,7 @@ class ControlPlaneReadDispatcher:
     def __init__(self, service: ControlPlaneReadService) -> None:
         self._svc = service
 
-    def handle(self, method: str, request_target: str) -> Tuple[int, Optional[dict]]:
+    def handle(self, method: str, request_target: str) -> Tuple[int, Optional[dict[str, Any]]]:
         if method != "GET":
             return (405, {"error": "method_not_allowed"})
         parts = urlsplit(request_target)
