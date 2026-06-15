@@ -31,9 +31,20 @@ jobs:
 
   secret-scan:
     runs-on: ubuntu-latest
+    # Least-privilege, job-scoped. gitleaks-action@v2 reads PR commits via the
+    # REST API on pull_request events; without pull-requests:read the call returns
+    # 403 "Resource not accessible by integration". CI-config only.
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - name: Secret scan (gitleaks)
         uses: gitleaks/gitleaks-action@v2
+        env:
+          # Required by gitleaks-action@v2 to scan pull_request events
+          # (push events do not require it). GitHub Actions auto-provided token;
+          # not a stored/custom secret. CI-config only.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -88,10 +88,10 @@ warn_unused_ignores = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # requires_pg is the standalone-only live-PostgreSQL evidence harness (binding P6-V1
-# acceptance evidence; its tests receive `conn` from _pg.run(), not a pytest fixture).
-# Run it via `python tests/lineage_service/requires_pg/test_pg_*.py` with
-# SNACKPORTAL_TEST_DSN set. PRD-P6-V1-E1 F4a.
-addopts = "--ignore=tests/lineage_service/requires_pg"
+# acceptance evidence; its tests receive `conn`/`admin_dsn` from _pg.run(), not a pytest
+# fixture). Run via `python tests/<svc>/requires_pg/test_pg_*.py` with SNACKPORTAL_TEST_DSN
+# set. PRD-P6-V1-E1 F4a; D15 distinctness evidence per PRD-D15-IMPL-01 §13.
+addopts = "--ignore=tests/lineage_service/requires_pg --ignore=tests/control_plane/requires_pg"
 
 # --- Dependency boundaries (governance: dependency DAG, rules 1-2) ------------
 [tool.importlinter]
