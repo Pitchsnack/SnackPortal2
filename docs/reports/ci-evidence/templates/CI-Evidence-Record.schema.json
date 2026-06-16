@@ -1,0 +1,139 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/Pitchsnack/SnackPortal2/docs/reports/ci-evidence/templates/CI-Evidence-Record.schema.json",
+  "title": "CI Evidence Record (PRD-CI-EVIDENCE-01)",
+  "description": "Machine-readable durable CI evidence record schema required by PRD-CI-EVIDENCE-01-R1 (sections 8/9/13). Enum value sets are bound verbatim to PRD-CI-EVIDENCE-01-R1 sections 9 and 13.",
+  "$comment": "RULE 1: DERIVED_INFERENCE may support observations but may not satisfy a PASS gate by itself (a DERIVED_INFERENCE record must have pass_gate_eligible=false unless a future PRD downgrades the target requirement to observation-only). RULE 2: verdict_reason_code MUST be TOOL-PREREQ-UNMET for any 'BLOCKED — EVIDENCE UNAVAILABLE' record produced because an authenticated GitHub run-status client (gh/API) was absent. CROSSWALK (snake_case here -> normative camelCase in R1): head_sha->headSha; event_type->triggeringEvent; source_classification->evidenceSource(human|gh-api); gitleaks_version->gitleaksVersion; config_identity->configIdentity; captured_by->attester; captured_at->attestedAt. base_sha = PR base where applicable; null for push/local-git records. Per-job conclusion is recorded as ONE record per job_name (the validate record's job_conclusion = validateConclusion; the secret-scan record's job_conclusion = secretScanConclusion).",
+  "type": "object",
+  "properties": {
+    "evidence_records": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/evidence_record" }
+    }
+  },
+  "definitions": {
+    "evidence_record": {
+      "type": "object",
+      "required": [
+        "evidence_id",
+        "requirement_id",
+        "evidence_type",
+        "evidence_strength",
+        "source_classification",
+        "repository",
+        "pass_gate_eligible"
+      ],
+      "properties": {
+        "evidence_id": { "type": "string", "description": "Format CI-EVD-YYYYMMDD-NNN, e.g. CI-EVD-20260616-001." },
+        "requirement_id": { "type": "string" },
+        "requirement_source": { "type": "string" },
+        "evidence_type": {
+          "type": "string",
+          "enum": [
+            "workflow_run",
+            "job_result",
+            "job_log_excerpt",
+            "check_suite",
+            "check_run",
+            "branch_protection",
+            "ruleset",
+            "workflow_file_hash",
+            "commit_ancestry",
+            "local_gate",
+            "manual_screenshot",
+            "resolved_scanner_artifact",
+            "run_conclusion_assertion"
+          ]
+        },
+        "evidence_strength": {
+          "type": "string",
+          "enum": [
+            "OBSERVED_DIRECT",
+            "OBSERVED_REPRODUCIBLE",
+            "OBSERVED_HUMAN_PROVIDED",
+            "DERIVED_INFERENCE",
+            "UNAVAILABLE"
+          ]
+        },
+        "source_classification": {
+          "type": "string",
+          "enum": [
+            "DIRECT_GITHUB_API_EVIDENCE",
+            "DIRECT_GITHUB_UI_EVIDENCE",
+            "GH_CLI_EVIDENCE",
+            "HUMAN_PROVIDED_GITHUB_EVIDENCE",
+            "LOCAL_GIT_EVIDENCE",
+            "LOCAL_TEST_EVIDENCE",
+            "DERIVED_EVIDENCE",
+            "UNAVAILABLE_EVIDENCE"
+          ]
+        },
+        "repository": { "type": "string" },
+        "branch": { "type": ["string", "null"] },
+        "commit_sha": { "type": ["string", "null"] },
+        "head_sha": { "type": ["string", "null"] },
+        "base_sha": { "type": ["string", "null"], "description": "PR base where applicable; null for push/local-git records." },
+        "workflow_name": { "type": ["string", "null"] },
+        "workflow_file_path": { "type": ["string", "null"] },
+        "workflow_file_blob_sha": { "type": ["string", "null"] },
+        "workflow_file_sha256_if_available": { "type": ["string", "null"] },
+        "event_type": { "type": ["string", "null"], "description": "push | pull_request (normative: triggeringEvent)." },
+        "run_id": { "type": ["string", "integer", "null"] },
+        "run_url": { "type": ["string", "null"] },
+        "run_created_at": { "type": ["string", "null"] },
+        "run_updated_at": { "type": ["string", "null"] },
+        "job_name": { "type": ["string", "null"] },
+        "job_id": { "type": ["string", "integer", "null"] },
+        "check_name": { "type": ["string", "null"] },
+        "job_status": { "type": ["string", "null"] },
+        "job_conclusion": { "type": ["string", "null"] },
+        "step_name": { "type": ["string", "null"] },
+        "step_status": { "type": ["string", "null"] },
+        "captured_at": { "type": ["string", "null"] },
+        "captured_by": { "type": ["string", "null"] },
+        "capture_method": { "type": ["string", "null"] },
+        "command_used": { "type": ["string", "null"] },
+        "assertion_performed": { "type": ["string", "null"] },
+        "supporting_excerpt": { "type": ["string", "null"], "description": "Non-sensitive excerpt only; never a secret. If a secret is encountered, STOP and report (do not redact-and-continue)." },
+        "redaction_status": {
+          "type": "string",
+          "enum": ["no-secrets-present", "redacted", "STOPPED-secret-detected"]
+        },
+        "limitations": { "type": ["string", "null"] },
+        "pass_gate_eligible": { "type": "boolean" },
+        "human_evidence_accepted_by": { "type": ["string", "null"] },
+        "resolved_action_commit": { "type": ["string", "null"] },
+        "gitleaks_version": { "type": ["string", "null"] },
+        "config_identity": { "type": ["string", "null"] },
+        "scanned_range": { "type": ["string", "null"] },
+        "non_vacuity_status": {
+          "type": ["string", "null"],
+          "enum": [
+            "SCAN-NON-VACUITY-OBSERVED",
+            "SCAN-NON-VACUITY-NOT-OBSERVED",
+            "NON-VACUITY-UNOBSERVABLE-WITH-CURRENT-CONFIG",
+            null
+          ]
+        },
+        "current_origin_main_sha": { "type": ["string", "null"] },
+        "staleness_status": {
+          "type": ["string", "null"],
+          "enum": ["FRESH", "STALE-FOR-CURRENT-HEAD", null]
+        },
+        "verdict": {
+          "type": ["string", "null"],
+          "enum": [
+            "PASS — EVIDENCE COMPLETE",
+            "PASS WITH OBSERVATIONS",
+            "BLOCKED — EVIDENCE UNAVAILABLE",
+            "BLOCKED — USER ACTION REQUIRED",
+            "FAIL — EVIDENCE CONTRADICTS CLAIM",
+            "FAIL — CI RUNTIME BROKEN",
+            null
+          ]
+        },
+        "verdict_reason_code": { "type": ["string", "null"] }
+      }
+    }
+  }
+}
