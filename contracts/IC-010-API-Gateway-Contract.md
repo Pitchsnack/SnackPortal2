@@ -143,7 +143,7 @@ The gateway resolves (via the Database Router) to the Control Database **or** ex
 - **IC-001** — Global Discovery Platform residency (D-31, extended by D-35); operational-audit homes + Global Audit Representation Rule; readiness disclosure (D-10) (*Endpoint Dispatch Taxonomy*, *Audit Contract*, *Readiness Disclosure Contract*).
 - **IC-003** — import-copy + user-controlled re-import; the Portal Import Rule restated (*Endpoint Dispatch Taxonomy*).
 - **IC-008** — ownership is reference-only and never routes/authorizes (*Gateway Responsibilities*, *IC-006 / IC-007 Deferrals*).
-- **IC-009** (reserved) — **boundary respected, not depended on** (M1): the per-role × per-directory visibility matrix and portal DTO contracts remain IC-009's to author *after* IC-010; this contract bounds IC-009, never relies on its (non-existent) content.
+- **IC-009** (Final, IC-009-R1) — **boundary respected, not depended on** (M1): the per-role × per-directory visibility matrix and portal DTO contracts were IC-009's to author *after* IC-010; this contract bounds IC-009, never relies on its content.
 - **D-30/D-31/D-32** — cross-tenant isolation; directory residency; role hierarchy — consumed unchanged.
 - **D-15** — provisioning distinctness verification hook reserved (*Distinctness Verification Hook*).
 - **IC-006 / IC-007** — AI and cross-tenant surfaces deferred (*IC-006 / IC-007 Deferrals*).
