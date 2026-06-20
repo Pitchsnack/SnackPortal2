@@ -13,7 +13,7 @@ from typing import Optional, Sequence
 
 from shared.context import RequestContext
 
-from .models import AuthResult, DispatchDecision, GatewayAuditEvent
+from .models import AuthResult, DispatchDecision, GatewayAuditEvent, RequestMetric
 
 
 class AuthenticatorPort(ABC):
@@ -45,3 +45,13 @@ class AuditEmitterPort(ABC):
 
     @abstractmethod
     def emit(self, event: GatewayAuditEvent) -> None: ...
+
+
+class MetricsPort(ABC):
+    """Vendor-neutral request/latency metrics sink (IC-010 §S; WP-11). Records operational
+    labels only — never a tenant identity/count, database name, or topology (§S). No
+    provider observability SDK may be used (vendor-neutrality is enforced by
+    tests/architecture/test_phase7_api_gateway.py)."""
+
+    @abstractmethod
+    def record_request(self, metric: RequestMetric) -> None: ...

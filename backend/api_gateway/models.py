@@ -109,6 +109,21 @@ class GatewayResponse:
     category: Optional[DispatchCategory] = None
 
 
+@dataclass(frozen=True)
+class RequestMetric:
+    """A non-disclosing per-request observability metric (IC-010 §S; WP-11).
+
+    Operational labels ONLY — NEVER a tenant identity/count, database name, connection
+    detail, or topology. ``category`` is a DispatchCategory value (or None for a
+    pre-dispatch rejection); ``outcome`` is the fixed public_code; both are tenant-agnostic.
+    """
+
+    category: Optional[str]
+    outcome: str
+    status: int
+    duration_ms: float
+
+
 class RequestRejected(Exception):
     """Fail-closed rejection (IC-010 §L). Carries only a non-sensitive status + public code."""
 

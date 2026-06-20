@@ -10,6 +10,7 @@ emission). Framework-agnostic core — no web framework dependency.
 
 from __future__ import annotations
 
+import time
 import uuid
 from typing import Callable, Optional, Set, Tuple
 
@@ -23,9 +24,10 @@ from .models import (
     GatewayAuditEvent,
     GatewayResponse,
     InboundRequest,
+    RequestMetric,
     RequestRejected,
 )
-from .ports import AuditEmitterPort, AuthenticatorPort, RouterDispatchPort
+from .ports import AuditEmitterPort, AuthenticatorPort, MetricsPort, RouterDispatchPort
 from .request_context import build_request_context
 
 _CORRELATION_HEADER = "x-correlation-id"
@@ -41,13 +43,30 @@ class Gateway:
         router: RouterDispatchPort,
         classify: Callable[[InboundRequest], DispatchCategory],
         audit: AuditEmitterPort,
+        metrics: MetricsPort,
     ) -> None:
         self._authenticator = authenticator
         self._router = router
         self._classify = classify
         self._audit = audit
+        self._metrics = metrics
 
     def handle(self, request: InboundRequest) -> GatewayResponse:
+        # Observability (§S/WP-11): time every request and record a non-disclosing metric
+        # (operational labels only — never a tenant identity/count, DB name, or topology).
+        start = time.monotonic()
+        response = self._handle(request)
+        self._metrics.record_request(
+            RequestMetric(
+                category=response.category.value if response.category is not None else None,
+                outcome=response.public_code,
+                status=response.status,
+                duration_ms=(time.monotonic() - start) * 1000.0,
+            )
+        )
+        return response
+
+    def _handle(self, request: InboundRequest) -> GatewayResponse:
         correlation_id = self._correlation_id(request)
         emitted: Set[Tuple[AuditAction, str]] = set()  # per-request dedup: single edge emission per anomaly
 

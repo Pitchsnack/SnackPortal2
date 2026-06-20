@@ -11,6 +11,7 @@ stricter than the repo-wide containment test, which permits vendor imports insid
 
 from __future__ import annotations
 
+import ast
 import pathlib
 import sys
 
@@ -35,6 +36,14 @@ FORBIDDEN_LIBS = [
     "azure",
     "google.cloud",
     "google.auth",
+    # observability / telemetry SDKs (OBS-3): metrics stay vendor-neutral — no provider SDK
+    "datadog",
+    "ddtrace",
+    "opentelemetry",
+    "prometheus_client",
+    "statsd",
+    "sentry_sdk",
+    "newrelic",
 ]
 
 
@@ -50,5 +59,22 @@ def test_api_gateway_no_forbidden_imports() -> None:
             assert not _matches(mod, FORBIDDEN_LIBS), f"{_scan.relposix(f)} imports forbidden lib '{mod}'"
 
 
+def _governing_contracts() -> list:
+    """The GOVERNING_CONTRACTS list literal from api_gateway/__init__.py (AST; no import)."""
+    tree = ast.parse((AG / "__init__.py").read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name) and tgt.id == "GOVERNING_CONTRACTS" and isinstance(node.value, ast.List):
+                    return [e.value for e in node.value.elts if isinstance(e, ast.Constant)]
+    raise AssertionError("api_gateway GOVERNING_CONTRACTS list literal not found")
+
+
+def test_api_gateway_governing_contracts_lock_ic010() -> None:
+    # DRIFT-04 lock (V4 TRACE-1): the legacy traceability test only checks GOVERNING_CONTRACTS
+    # is non-empty; this asserts the gateway's primary governing contract IC-010 is a member.
+    assert "IC-010" in _governing_contracts(), "api_gateway must declare IC-010 in GOVERNING_CONTRACTS (DRIFT-04 lock)"
+
+
 if __name__ == "__main__":
-    _scan.run([test_api_gateway_no_forbidden_imports])
+    _scan.run([test_api_gateway_no_forbidden_imports, test_api_gateway_governing_contracts_lock_ic010])
