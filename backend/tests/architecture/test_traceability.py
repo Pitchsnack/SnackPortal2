@@ -12,7 +12,7 @@ import _scan  # noqa: E402
 
 # Services built so far (their __init__ declares IMPLEMENTS_BEHAVIOR = True).
 # lineage_service is built as a Build Phase 5 write-path slice of Phase 6.
-BUILT_SERVICES = {"control_plane", "auth_router", "database_router", "import_service", "lineage_service"}
+BUILT_SERVICES = {"api_gateway", "control_plane", "auth_router", "database_router", "import_service", "lineage_service"}
 
 
 def _module_assignments(path: pathlib.Path) -> dict:
