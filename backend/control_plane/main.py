@@ -21,6 +21,7 @@ from .adapters.providers.in_memory_store import InMemoryControlStore
 from .audit import ControlPlaneAudit
 from .bootstrap import BootstrapController
 from .directory import GlobalDirectory
+from .distinctness import DistinctnessLedger, InMemoryDistinctnessLedger
 from .federation import FederationStore
 from .membership import MembershipRegistry
 from .onboarding import OnboardingOrchestrator
@@ -41,6 +42,13 @@ SUPPORTED_SCHEMA_MAX = 1
 # non-production default); any other value selects the controlled-non-prod real-cluster
 # adapters, which are delivered in B-4 (live-PostgreSQL exercise) — not B-1.
 PROVISIONING_ADAPTER_ENV = "SP2_CP_PROVISIONING_ADAPTER"
+
+# D-15 distinctness-ledger selection (PRD 06 B-2). Unset/empty -> in-memory (controlled
+# non-production default; the per-instance distinctness-evidence inventory). Any other value
+# selects the durable Control-DB-backed ledger, whose live record/read exercise against a real
+# Control DB is delivered in B-4 (live PostgreSQL) — not B-2; selecting it here defers with
+# NotImplementedError rather than silently falling back. Construction performs no I/O.
+DISTINCTNESS_LEDGER_ENV = "SP2_CP_DISTINCTNESS_LEDGER"
 
 
 class ControlPlane:
@@ -80,9 +88,24 @@ class ControlPlane:
             InMemoryTenantDatabaseProbe(schema_version=str(SUPPORTED_SCHEMA_MAX)),
             InMemoryDistinctnessEvidenceProvider(),
             nonprod_control_db_evidence(),
+            ledger=self._build_ledger(),
             supported_schema_versions=supported,
         )
         return operator, provisioning
+
+    def _build_ledger(self) -> DistinctnessLedger:
+        """Select the distinctness-evidence ledger (controlled non-prod; PRD 06 B-2).
+
+        Default (env unset/empty) is the in-memory ledger — construction performs no I/O. Any
+        other value selects the durable Control-DB-backed ledger, whose live record/read against
+        a real Control DB is delivered in B-4 (live-PostgreSQL exercise), not B-2; it defers here
+        with NotImplementedError rather than silently falling back. The durable adapter itself is
+        lazy-connect (no I/O at construction) and is exercised live only in B-4.
+        """
+        kind = (os.environ.get(DISTINCTNESS_LEDGER_ENV) or "in_memory").strip().lower()
+        if kind not in ("", "in_memory"):
+            raise NotImplementedError(f"distinctness ledger {kind!r} is exercised in B-4 (live Control DB); B-2 supports 'in_memory' only")
+        return InMemoryDistinctnessLedger()
 
 
 def liveness() -> Dict[str, str]:
