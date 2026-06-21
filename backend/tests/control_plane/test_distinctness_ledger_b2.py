@@ -110,6 +110,17 @@ class _SpySecretStore(_FakeSecretStore):
         return super().resolve(ref)
 
 
+class _ResolveError(RuntimeError):
+    """Unique sentinel raised by the SecretStore.resolve() path (distinct from any connect error)."""
+
+
+class _RaisingResolveStore(_FakeSecretStore):
+    """A SecretStore whose resolve() always raises _ResolveError (the D-14 resolve-failure path)."""
+
+    def resolve(self, ref: SecretRef) -> SecretValue:
+        raise _ResolveError("control-db secret reference unresolvable")
+
+
 class _FakeCursor:
     def __init__(self, rows=None, raise_on_execute=False):
         self.rows = rows or []
@@ -129,6 +140,20 @@ class _FakeCursor:
 
     def __exit__(self, *exc):
         return False
+
+
+class _FilteringFakeCursor(_FakeCursor):
+    """A fake cursor that HONORS `WHERE tenant_id <> %s`: fetchall() filters self.rows by the bound
+    subject param from the executed SQL. This makes data-level subject exclusion observable — if the
+    adapter dropped or inverted the WHERE clause, the subject row would leak and the test would fail."""
+
+    def fetchall(self):
+        if self.executed:
+            sql, params = self.executed[-1]
+            if "tenant_id <> %s" in sql.lower() and params:
+                subject = str(params[0])
+                return [r for r in self.rows if str(r[0]) != subject]
+        return self.rows
 
 
 class _FakeConn:
@@ -181,6 +206,93 @@ def _patch_connect(conn_or_factory):
 
 def _adapter():
     return ledger_mod.PostgresDistinctnessLedger(_FakeSecretStore(), _CONTROL_REF)
+
+
+# Canonical durable-ledger column order — the contract the adapter SQL, the row decode, and the DDL
+# all share. _LEDGER_COLUMNS is the SELECT projection (inventory key + the 7 evidence fields);
+# _INSERT_COLUMNS adds recorded_at (write-only freshness). Used by the alignment tests below.
+_DATA_COLUMNS = (
+    "system_identifier",
+    "database_identity",
+    "observed_target",
+    "secret_ref_key",
+    "sentinel_namespace",
+    "sentinel_token",
+    "sentinel_written",
+)
+_LEDGER_COLUMNS = ("tenant_id",) + _DATA_COLUMNS
+_INSERT_COLUMNS = _LEDGER_COLUMNS + ("recorded_at",)
+
+
+def _insert_columns():
+    """The adapter INSERT column list (between the first '(' after the table and ') VALUES')."""
+    seg = ledger_mod._UPSERT.lower().split("insert into", 1)[1]
+    inner = seg[seg.index("(") + 1 : seg.index(")")]
+    return tuple(c.strip() for c in inner.split(","))
+
+
+def _select_columns():
+    """The adapter SELECT projection column list (between 'select' and 'from')."""
+    proj = ledger_mod._SELECT_EXCLUDING.lower().split("select", 1)[1].split("from", 1)[0]
+    return tuple(c.strip() for c in proj.split(","))
+
+
+def _parse_ddl_columns(sql):
+    """Ordered [(name, definition_lower), ...] for each column in the CREATE TABLE body — comments
+    stripped, paren-depth-aware top-level-comma split (so `default now()` does not break parsing)."""
+    body = _ddl_body(sql)
+    start = body.index("(")
+    depth = 0
+    end = start
+    for i in range(start, len(body)):
+        if body[i] == "(":
+            depth += 1
+        elif body[i] == ")":
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+    inner = body[start + 1 : end]
+    chunks = []
+    buf = ""
+    depth = 0
+    for ch in inner:
+        if ch == "(":
+            depth += 1
+            buf += ch
+        elif ch == ")":
+            depth -= 1
+            buf += ch
+        elif ch == "," and depth == 0:
+            chunks.append(buf)
+            buf = ""
+        else:
+            buf += ch
+    if buf.strip():
+        chunks.append(buf)
+    cols = []
+    for c in chunks:
+        toks = c.split()
+        if toks:
+            cols.append((toks[0], " ".join(toks)))
+    return cols
+
+
+def _with_ledger_env(value):
+    """Set/clear SP2_CP_DISTINCTNESS_LEDGER (value=None -> unset); returns a restore() callable."""
+    saved = os.environ.get(cp_main.DISTINCTNESS_LEDGER_ENV)
+    if value is None:
+        os.environ.pop(cp_main.DISTINCTNESS_LEDGER_ENV, None)
+    else:
+        os.environ[cp_main.DISTINCTNESS_LEDGER_ENV] = value
+
+    def restore():
+        if saved is None:
+            os.environ.pop(cp_main.DISTINCTNESS_LEDGER_ENV, None)
+        else:
+            os.environ[cp_main.DISTINCTNESS_LEDGER_ENV] = saved
+
+    return restore
 
 
 # --- preserved in-memory default + inventory semantics ------------------------------------------
@@ -492,6 +604,219 @@ def test_adapter_applies_no_ddl() -> None:
         assert ddl_kw not in src, f"adapter must not apply DDL; found {ddl_kw!r}"
 
 
+# === PRD 06 B-2 tests-only hardening (V3 WP-H1..H6 + addendum WP-H7..H15) ========================
+def test_durable_evidence_excluding_excludes_subject_row() -> None:
+    # WP-H1 / WP-H8: data-level subject exclusion. The filtering fake honors WHERE tenant_id <> %s,
+    # so a dropped/inverted clause leaks the subject row and fails this test (not just SQL shape).
+    rows = [
+        ("t1", "sysA", "t1:1", "sp2_tenant_t1", "sp2_tenant_t1", "dv_sentinel_t1", "tok1", True),
+        ("t2", "sysB", "t2:2", "sp2_tenant_t2", "sp2_tenant_t2", "dv_sentinel_t2", "tok2", True),
+    ]
+    cur = _FilteringFakeCursor(rows=rows)
+    restore = _patch_connect(_FakeConn(cur))
+    try:
+        inv = _adapter().evidence_excluding("t1")
+        sql, params = cur.executed[0]
+        assert "where tenant_id <> %s" in sql.lower() and params == ("t1",)  # WP-H8 shape
+        assert "t1" not in inv, "subject tenant must be excluded at the data level"
+        assert set(inv.keys()) == {"t2"}
+    finally:
+        restore()
+
+
+def test_inmemory_subject_exclusion_is_data_level() -> None:
+    # WP-H9: the in-memory ledger (production default) genuinely filters — the SUBJECT is the
+    # dropped key (not merely "one key dropped"), and the kept evidence round-trips exactly.
+    led = InMemoryDistinctnessLedger()
+    led.record_evidence("t1", _ev("t1", database_identity="t1:AA"))
+    led.record_evidence("t2", _ev("t2", database_identity="t2:BB"))
+    out = led.evidence_excluding("t1")
+    assert set(out.keys()) == {"t2"}
+    assert "t1" not in out
+    assert out["t2"].database_identity == "t2:BB"
+
+
+def test_durable_read_field_fidelity_all_seven() -> None:
+    # WP-H2: every reconstructed DistinctnessEvidence field decodes from the correct row column.
+    # The fed tuple is built in the adapter's ACTUAL SELECT projection order, with a distinct value
+    # per column, so a decode transposition is caught. All seven live fields are asserted.
+    select_cols = _select_columns()
+    assert select_cols[0] == "tenant_id"
+    values = {c: f"V_{c}" for c in select_cols}
+    values["tenant_id"] = "tX"
+    values["sentinel_written"] = True
+    row = tuple(values[c] for c in select_cols)
+    cur = _FakeCursor(rows=[row])
+    restore = _patch_connect(_FakeConn(cur))
+    try:
+        ev = _adapter().evidence_excluding("subject")["tX"]
+        assert ev.system_identifier == "V_system_identifier"
+        assert ev.database_identity == "V_database_identity"
+        assert ev.observed_target == "V_observed_target"
+        assert ev.secret_ref_key == "V_secret_ref_key"
+        assert ev.sentinel_namespace == "V_sentinel_namespace"
+        assert ev.sentinel_token == "V_sentinel_token"
+        assert ev.sentinel_written is True
+        assert set(_DATA_COLUMNS) == {f.name for f in dataclasses.fields(DistinctnessEvidence)}
+    finally:
+        restore()
+
+
+def test_durable_read_null_and_bool_coercion() -> None:
+    # WP-H12: NULL sentinel_token decodes to None (not "None"); a falsey sentinel_written -> False.
+    select_cols = _select_columns()
+    values = {c: f"v_{c}" for c in select_cols}
+    values["tenant_id"] = "tN"
+    values["sentinel_token"] = None
+    values["sentinel_written"] = 0
+    row = tuple(values[c] for c in select_cols)
+    cur = _FakeCursor(rows=[row])
+    restore = _patch_connect(_FakeConn(cur))
+    try:
+        ev = _adapter().evidence_excluding("s")["tN"]
+        assert ev.sentinel_token is None, "NULL sentinel_token must decode to None, not 'None'"
+        assert ev.sentinel_written is False, "falsey sentinel_written must coerce to False"
+    finally:
+        restore()
+
+
+def test_write_insert_param_ddl_alignment() -> None:
+    # WP-H3: INSERT column order == record_evidence param order == DDL column order, proven with a
+    # DISTINCT value per field so a write-side transposition is caught (the existing upsert test uses
+    # equal observed_target/secret_ref_key values and would miss that swap).
+    insert_cols = _insert_columns()
+    ddl_order = tuple(name for name, _ in _parse_ddl_columns(_DDL.read_text(encoding="utf-8")))
+    assert insert_cols == _INSERT_COLUMNS, insert_cols
+    assert ddl_order == _INSERT_COLUMNS, ddl_order
+    ev = _ev(
+        "tW",
+        system_identifier="SYS",
+        database_identity="DBID",
+        observed_target="TGT",
+        secret_ref_key="REF",
+        sentinel_namespace="NS",
+        sentinel_token="TOK",
+        sentinel_written=True,
+    )
+    cur = _FakeCursor()
+    restore = _patch_connect(_FakeConn(cur))
+    try:
+        _adapter().record_evidence("tW", ev)
+        _, params = cur.executed[0]
+        by_col = dict(zip(insert_cols, params))
+        assert by_col["tenant_id"] == "tW"
+        assert by_col["system_identifier"] == "SYS"
+        assert by_col["database_identity"] == "DBID"
+        assert by_col["observed_target"] == "TGT"
+        assert by_col["secret_ref_key"] == "REF"
+        assert by_col["sentinel_namespace"] == "NS"
+        assert by_col["sentinel_token"] == "TOK"
+        assert by_col["sentinel_written"] is True
+    finally:
+        restore()
+
+
+def test_read_select_ddl_alignment() -> None:
+    # WP-H10: the SELECT projection order == the canonical column order == the DDL data-column order
+    # (the read-side twin of WP-H3). The decode r[i]->field mapping is pinned by the read-fidelity
+    # test above; this pins that the DB columns the decode reads are the ones it expects.
+    assert _select_columns() == _LEDGER_COLUMNS, _select_columns()
+    ddl_order = tuple(name for name, _ in _parse_ddl_columns(_DDL.read_text(encoding="utf-8")))
+    assert ddl_order == _INSERT_COLUMNS
+    assert _LEDGER_COLUMNS == _INSERT_COLUMNS[:-1]  # SELECT omits recorded_at (write-only)
+
+
+def test_resolve_failure_fails_closed_all_methods() -> None:
+    # WP-H11 / WP-H4: a SecretStore.resolve() failure on ANY operation fails closed (propagates the
+    # exact resolve error) and never reaches psycopg.connect (proving the resolve path, not connect).
+    connect_calls = []
+    restore = _patch_connect(lambda *a, **k: connect_calls.append((a, k)))
+    try:
+        adapter = ledger_mod.PostgresDistinctnessLedger(_RaisingResolveStore(), _CONTROL_REF)
+        for op in (
+            lambda: adapter.record_evidence("t1", _ev("t1")),
+            lambda: adapter.evidence_excluding("t1"),
+            lambda: adapter.remove("t1"),
+        ):
+            raised = False
+            try:
+                op()
+            except _ResolveError:
+                raised = True
+            assert raised, "resolve() failure must propagate (fail-closed) on every method"
+        assert connect_calls == [], "connect must never be reached when resolve() fails"
+    finally:
+        restore()
+
+
+def test_ledger_flag_normalization_table() -> None:
+    # WP-H5: only unset/''/'in_memory' (after strip+lower) map to in-memory; every other token defers.
+    for value in (None, "", "in_memory", " in_memory ", "IN_MEMORY", "In_Memory"):
+        restore = _with_ledger_env(value)
+        try:
+            cp = cp_main.ControlPlane()
+            assert isinstance(cp.provisioning._ledger, InMemoryDistinctnessLedger), f"{value!r} -> in-memory"
+        finally:
+            restore()
+    for value in ("postgres", "durable", "control_db", "true", "x"):
+        restore = _with_ledger_env(value)
+        try:
+            raised = False
+            try:
+                cp_main.ControlPlane()
+            except NotImplementedError:
+                raised = True
+            assert raised, f"{value!r} must defer with NotImplementedError (no silent fallback)"
+        finally:
+            restore()
+
+
+def test_deferred_selection_raises_with_zero_io() -> None:
+    # WP-H13: the deferred/unsupported selection is a pure string check — it raises NotImplementedError
+    # with NO psycopg.connect before raising (no partial side effect / no live I/O).
+    connect_calls = []
+    restore_c = _patch_connect(lambda *a, **k: connect_calls.append((a, k)))
+    try:
+        for value in ("postgres", "durable", "true", "x"):
+            restore_e = _with_ledger_env(value)
+            try:
+                raised = False
+                try:
+                    cp_main.ControlPlane()
+                except NotImplementedError:
+                    raised = True
+                assert raised, f"{value!r} must raise NotImplementedError"
+            finally:
+                restore_e()
+        assert connect_calls == [], "deferred selection must not open a connection before raising"
+    finally:
+        restore_c()
+
+
+def test_ddl_set_equality_pk_and_nullability() -> None:
+    # WP-H6: exact column set == {tenant_id, recorded_at} + evidence fields; tenant_id PRIMARY KEY;
+    # sentinel_token nullable; every other required column NOT NULL. Robust per-column parse.
+    cols = dict(_parse_ddl_columns(_DDL.read_text(encoding="utf-8")))
+    ev_fields = {f.name for f in dataclasses.fields(DistinctnessEvidence)}
+    assert set(cols) == ev_fields | {"tenant_id", "recorded_at"}, set(cols)
+    assert "primary key" in cols["tenant_id"]
+    assert "not null" not in cols["sentinel_token"], "sentinel_token must be nullable"
+    for required in (ev_fields - {"sentinel_token"}) | {"recorded_at"}:
+        assert "not null" in cols[required], f"{required} must be NOT NULL"
+
+
+def test_adapter_sql_columns_subset_of_ddl() -> None:
+    # WP-H14: every column the adapter SQL references exists in the DDL (closed-world), and the upsert
+    # is single-row-per-tenant (conflict target == tenant_id, the first INSERT column / PK).
+    ddl_cols = {name for name, _ in _parse_ddl_columns(_DDL.read_text(encoding="utf-8"))}
+    referenced = set(_insert_columns()) | set(_select_columns()) | {"tenant_id"}
+    set_clause = ledger_mod._UPSERT.lower().split("do update set", 1)[1]
+    referenced |= {seg.split("=", 1)[0].strip() for seg in set_clause.split(",")}
+    assert referenced <= ddl_cols, f"adapter references columns absent from DDL: {referenced - ddl_cols}"
+    assert "on conflict (tenant_id) do update" in ledger_mod._UPSERT.lower()
+    assert _insert_columns()[0] == "tenant_id"
+
+
 _TESTS = [
     test_inmemory_inventory_semantics,
     test_default_ledger_is_in_memory,
@@ -508,6 +833,17 @@ _TESTS = [
     test_durable_all_methods_fail_closed_on_connect_error,
     test_durable_mutations_no_partial_commit_on_execute_error,
     test_upsert_updates_each_column_from_excluded,
+    test_durable_evidence_excluding_excludes_subject_row,
+    test_inmemory_subject_exclusion_is_data_level,
+    test_durable_read_field_fidelity_all_seven,
+    test_durable_read_null_and_bool_coercion,
+    test_write_insert_param_ddl_alignment,
+    test_read_select_ddl_alignment,
+    test_resolve_failure_fails_closed_all_methods,
+    test_ledger_flag_normalization_table,
+    test_deferred_selection_raises_with_zero_io,
+    test_ddl_set_equality_pk_and_nullability,
+    test_adapter_sql_columns_subset_of_ddl,
     test_no_new_lifecycle_states,
     test_no_new_audit_vocabulary,
     test_control_store_port_frozen,
