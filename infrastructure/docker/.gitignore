@@ -1,0 +1,8 @@
+# PRD 06 B-3A — keep local runtime secrets/state OUT of git (D-14).
+# The committed template is the ONLY env file in git; the real local env file is never committed.
+
+.env.local
+.env.*
+!.env.local.template
+.runtime/
+*.log

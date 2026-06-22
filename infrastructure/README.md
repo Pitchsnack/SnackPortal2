@@ -30,3 +30,17 @@ separately-gated, validator-backed phase (consistent with the deferral noted abo
 
 The D-15 ownership boundary holds: **IaC provides substrate; the Control Plane owns tenant lifecycle** and
 per-tenant physical database creation. `infrastructure/db/**` remains the governed DDL (apply/reference only).
+
+## Local Docker multi-database test environment (PRD 06 B-3A — added)
+
+**PRD 06 B-3A** adds a **local / non-production** Docker Compose fixture under `docker/` — four physically separate
+PostgreSQL instances (one Control + three tenant) that demonstrate the Physical Multi-Database MVP topology locally and
+feed the existing `requires_pg` distinctness harness. It is a **local test convenience only**: Docker is **substrate
+only**, never production, never the portability mechanism, and **not** a substitute for the Docker-free cloud-portable
+IaC under `iac/`. It applies **no DDL**, activates **no runtime**, and commits **no secret values** (the container
+password is interpolated from an untracked `.env.local`; the committed `.env.local.template` holds placeholders and
+`ref:` references only).
+
+- `docker/` — `docker-compose.local.yml` (4 × `postgres:17`, 127.0.0.1:5540-5543), `.env.local.template`, `.gitignore`,
+  and `runbooks/` (local start + teardown).
+- `../docs/infrastructure/b3a_*.md` — B-3A design narrative + references-only evidence template.

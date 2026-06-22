@@ -1,0 +1,91 @@
+# SnackPortal2 — PRD 06 B-3A — LOCAL / NON-PRODUCTION ONLY Docker multi-database topology proof.
+#
+# Four physically separate PostgreSQL instances (one Control + three tenant) — each its own cluster, so each has
+# its own system_identifier. This demonstrates the Physical Multi-Database MVP topology locally (IC-010 §O). It is
+# NOT production, NOT the cloud-portable IaC (that is B-3, and stays Docker-free), and does NOT activate runtime.
+# Tenant DB CREATION in the real system is the D-15 Control-Plane workflow — this file only provides a local fixture.
+#
+# Secret hygiene (D-14): NO password value appears here. POSTGRES_PASSWORD is interpolated from an UNTRACKED .env.local
+# (copy .env.local.template → .env.local, set a throwaway LOCAL value). Run with:
+#   docker compose -f infrastructure/docker/docker-compose.local.yml --env-file infrastructure/docker/.env.local <cmd>
+# Ports bind to 127.0.0.1 only. Volumes are disposable local volumes (teardown with `down -v`).
+
+name: snackportal2-b3a-local
+
+x-pg-common: &pg-common
+  image: postgres:17                      # stock upstream PostgreSQL (matches local PG 17.10 + D-17 range; vendor-neutral)
+  restart: "no"
+  environment: &pg-env
+    POSTGRES_USER: ${SP2_LOCAL_PG_USER:-sp2_local}
+    POSTGRES_PASSWORD: ${SP2_LOCAL_PG_PASSWORD:?set SP2_LOCAL_PG_PASSWORD in an untracked infrastructure/docker/.env.local}
+
+services:
+  control-postgres:
+    <<: *pg-common
+    container_name: sp2_b3a_control
+    environment:
+      <<: *pg-env
+      POSTGRES_DB: snackportal2_control_local
+    ports:
+      - "127.0.0.1:5540:5432"
+    volumes:
+      - sp2_b3a_control_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${SP2_LOCAL_PG_USER:-sp2_local} -d snackportal2_control_local"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  tenant-acme-postgres:
+    <<: *pg-common
+    container_name: sp2_b3a_tenant_acme
+    environment:
+      <<: *pg-env
+      POSTGRES_DB: snackportal2_tenant_acme_local
+    ports:
+      - "127.0.0.1:5541:5432"
+    volumes:
+      - sp2_b3a_tenant_acme_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${SP2_LOCAL_PG_USER:-sp2_local} -d snackportal2_tenant_acme_local"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  tenant-zeta-postgres:
+    <<: *pg-common
+    container_name: sp2_b3a_tenant_zeta
+    environment:
+      <<: *pg-env
+      POSTGRES_DB: snackportal2_tenant_zeta_local
+    ports:
+      - "127.0.0.1:5542:5432"
+    volumes:
+      - sp2_b3a_tenant_zeta_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${SP2_LOCAL_PG_USER:-sp2_local} -d snackportal2_tenant_zeta_local"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  tenant-nova-postgres:
+    <<: *pg-common
+    container_name: sp2_b3a_tenant_nova
+    environment:
+      <<: *pg-env
+      POSTGRES_DB: snackportal2_tenant_nova_local
+    ports:
+      - "127.0.0.1:5543:5432"
+    volumes:
+      - sp2_b3a_tenant_nova_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${SP2_LOCAL_PG_USER:-sp2_local} -d snackportal2_tenant_nova_local"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  sp2_b3a_control_data:
+  sp2_b3a_tenant_acme_data:
+  sp2_b3a_tenant_zeta_data:
+  sp2_b3a_tenant_nova_data:
