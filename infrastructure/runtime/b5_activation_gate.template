@@ -1,0 +1,26 @@
+# SnackPortal2 — Production Runtime Activation Gate — FORWARD-CONTRACT TEMPLATE (PRD 06 B-5).
+#
+# Reference-only. NOT read by runtime code in B-5. NOT production config. NO secret VALUES (D-14): every secret-bearing
+# setting is a reference (*_REF=ref:...), resolved in-memory at connect time by a later, separately-gated phase. The
+# activation switch is disabled by default and must fail closed if missing/false/malformed/incomplete.
+#
+# Reconciliation (B5-D8): the live fail-closed mechanism today is backend/control_plane/main.py's
+# SP2_CP_PROVISIONING_ADAPTER / SP2_CP_DISTINCTNESS_LEDGER (default in_memory; non-in_memory raises NotImplementedError).
+# A future runtime-activation phase may wrap/supersede it while preserving fail-closed. B-5 wires nothing.
+
+# --- Activation switch (default DISABLED) ---
+RUNTIME_ACTIVATION_ENABLED=false
+
+# --- Database references (D-14; references only, never values) ---
+CONTROL_DB_REF=ref:control-db
+TENANT_DB_ACME_REF=ref:tenant/acme-db
+TENANT_DB_ZETA_REF=ref:tenant/zeta-db
+TENANT_DB_NOVA_REF=ref:tenant/nova-db
+
+# --- Auth references (IC-005) ---
+JWT_ISSUER_REF=ref:auth/jwt-issuer
+OIDC_PROVIDER_REF=ref:auth/oidc-provider
+
+# --- Audit + rollback references ---
+AUDIT_SINK_REF=ref:audit/provisioning-sink
+ROLLBACK_PLAN_REF=ref:runtime/rollback-plan

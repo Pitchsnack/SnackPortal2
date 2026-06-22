@@ -44,3 +44,14 @@ password is interpolated from an untracked `.env.local`; the committed `.env.loc
 - `docker/` — `docker-compose.local.yml` (4 × `postgres:17`, 127.0.0.1:5540-5543), `.env.local.template`, `.gitignore`,
   and `runbooks/` (local start + teardown).
 - `../docs/infrastructure/b3a_*.md` — B-3A design narrative + references-only evidence template.
+
+## Runtime activation gate (reference-only) (PRD 06 B-5 — added)
+
+**PRD 06 B-5** adds a **reference-only** runtime activation-gate template under `runtime/`. It is **not** production
+config, **not** runtime-wired, and **not** secret-bearing: the activation switch is disabled by default
+(`RUNTIME_ACTIVATION_ENABLED=false`) and all secret-bearing settings are `*_REF=ref:...` references only (D-14). B-5
+**does not** activate runtime, **does not** modify `backend/control_plane/main.py`, and **does not** flip the live
+`NotImplementedError` deferral. The gate specification, blocker register (NOT READY by default), evidence template, and
+readiness matrix live under `../docs/runtime/b5_*.md`.
+
+- `runtime/` — `b5_activation_gate.template` (forward contract; references only) + `README.md`.
