@@ -1,0 +1,18 @@
+# infrastructure/iac — state-file ignore patterns (defense-in-depth).
+#
+# PRD 06 B-3 commits NO IaC state and NO executable IaC. These patterns are preventive: if a later,
+# separately-gated phase introduces OpenTofu/Terraform, state and variable files (which can contain
+# resolved secrets and provider/account identifiers) MUST NEVER be committed (D-14; DB3-4: no committed
+# state files; local/non-production state only). Documentation examples (*.md) are intentionally NOT ignored.
+
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+*.tfvars
+*.tfvars.json
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json

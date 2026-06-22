@@ -15,3 +15,18 @@ values (D-14). No provisioning, deployment, release, or automation is defined he
 - Docker/Compose, Terraform, Kubernetes manifests for real environments.
 
 See `env/` for the reference-only template convention.
+
+## IaC substrate scaffold (PRD 06 B-3 — added)
+
+**PRD 06 B-3 (Cloud-Portable IaC Rollout)** adds a **documentation + scaffold** layer under `iac/` describing the
+provider-neutral substrate module interfaces, environment conventions, and rollout/teardown runbooks for the
+Physical Multi-Database MVP. This is **scaffold only**: it commits **no executable IaC (no `.tf`/`.tofu`/HCL),
+applies no DDL, and creates no cloud resources**. Executable IaC / SQL runbooks remain **deferred** to a later,
+separately-gated, validator-backed phase (consistent with the deferral noted above).
+
+- `iac/` — provider-neutral module interfaces (`modules/`) + environment conventions (`environments/`).
+- `runbooks/` — non-production rollout and teardown runbooks (documentation).
+- `docs/infrastructure/` — B-3 design narrative, DDL→target mapping (blob-pinned), and the evidence template.
+
+The D-15 ownership boundary holds: **IaC provides substrate; the Control Plane owns tenant lifecycle** and
+per-tenant physical database creation. `infrastructure/db/**` remains the governed DDL (apply/reference only).
