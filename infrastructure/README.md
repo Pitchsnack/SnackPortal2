@@ -55,3 +55,15 @@ config, **not** runtime-wired, and **not** secret-bearing: the activation switch
 readiness matrix live under `../docs/runtime/b5_*.md`.
 
 - `runtime/` — `b5_activation_gate.template` (forward contract; references only) + `README.md`.
+
+## Provisioning audit sink (reference-only) (PRD 06 B-6 — added)
+
+**PRD 06 B-6** adds a **reference-only** provisioning-audit-sink template under `runtime/`. It is a forward **contract**
+layered on the existing wired control-plane audit (`backend/control_plane/audit.py`) — **not** runtime-wired and **not**
+secret-bearing: every secret-bearing setting is a `*_REF=ref:...` reference only (D-14). B-6 **does not** activate
+runtime, **does not** apply DDL, and **does not** modify `audit.py` / `events.py` / `main.py`. The sink contract, event
+catalog (mapped to the frozen `events.py` vocabulary), fail-closed policy, evidence template, and blocker note (which
+keeps `B5-BLK-4` OPEN) live under `../docs/runtime/b6_*.md`. Provisioning audit (IC-002/D-34) is **distinct** from
+lineage (IC-004/D-23).
+
+- `runtime/` — `b6_provisioning_audit_sink.template` (forward contract; references only).
