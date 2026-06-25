@@ -4,7 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Status
 
-SnackPortal2 is in the **architecture planning phase**. There is no implementation code yet, and none should be generated unless explicitly requested. The current focus is defining contracts, architecture constraints, and standards before any backend or frontend code is written.
+SnackPortal2 is in **active build under contract-first governance**. Do **not** generate implementation code unless explicitly requested via an authorized PRD — contracts and decisions come first.
+
+Current state (see `docs/SnackPortal2_Canonical_Overview_and_Decisions_v2.md` for the full, authoritative picture):
+
+- **Backend (this repo):** core Phases 1–6 built and **accepted** (Control Plane, Authentication, Database Router, Import, Lineage; PostgreSQL-verified). **API Gateway is scaffold-only** — readiness review (PRD 04 V1) = `READY_WITH_GUARDS`; next artifact is **PRD 04 V2** (implementation), not yet started.
+- **Frontend (Lovable, separate Lovable Cloud project):** ~70% of screens built, but on an **interim** Supabase data layer using *logical* (`tenant_id` + RLS) separation. Per decisions D3/D7 this data layer is **interim** and must be re-pointed to the API Gateway + physical tenant databases; not yet brought into this repo's `frontend/`.
 
 This project follows a **contract-first design approach**: interface contracts are defined and agreed upon *before* the corresponding implementation begins.
 
@@ -13,10 +18,10 @@ This project follows a **contract-first design approach**: interface contracts a
 | Directory        | Purpose |
 |------------------|---------|
 | `contracts/`     | Architecture specifications and interface contracts (no code). Source of truth for system design. |
-| `backend/`       | FastAPI / Python backend (not yet implemented). |
-| `frontend/`      | React / TypeScript frontend, Lovable-generated (not yet implemented). |
+| `backend/`       | FastAPI / Python backend. |
+| `frontend/`      | React / TypeScript frontend, Lovable-generated. |
 | `infrastructure/`| Infrastructure-as-Code: Docker, Docker Compose, Terraform, Kubernetes manifests, environment templates. |
-| `docs/`          | Project documentation. |
+| `docs/`          | Project documentation (incl. the planning files imported below). |
 
 ## Interface Contracts
 
@@ -63,9 +68,19 @@ These constraints exist to preserve portability and tenant isolation. Do not vio
 
 5. **Contracts precede code.** Backend/frontend behavior must trace back to a contract in `contracts/`. New behavior requires a contract (new or amended) first.
 
+> **Interim exception (tracked, not permanent):** the current Lovable frontend uses Supabase + RLS and therefore does **not** yet satisfy constraints 2–3. This is the agreed *interim* state under decisions D3/D7; it is resolved by re-pointing the frontend's data layer to the API Gateway + physical tenant databases at the cutover. Do not treat the Supabase data layer as the final architecture.
+
 ## Development Standards
 
-- **Do not generate implementation code during the planning phase.** Produce contracts, specifications, diagrams, and architecture decisions instead.
+- **Do not generate implementation code unless explicitly requested via an authorized PRD.** Produce contracts, specifications, diagrams, and architecture decisions otherwise.
 - When proposing designs, verify them against the **Architecture Constraints** above and cite the relevant `IC-00x` contract.
 - Keep portability front of mind: if a proposed approach would only work on one cloud or one vendor's platform, flag it and offer a portable alternative.
 - Database designs must assume per-tenant physical databases plus a separate control database — not a single shared database with a `tenant_id` column.
+
+## Planning & Decisions (imported)
+
+These product-side planning documents load every session. The **Overview is authoritative** on scope and the eight locked decisions (D1–D8); if a request conflicts with it, flag **DRIFT** before acting. Keep the **Action Tracker** updated and commit changes.
+
+@docs/SnackPortal2_Canonical_Overview_and_Decisions_v2.md
+@docs/SnackPortal2_Action_Tracker.md
+@docs/SnackPortal2_PRD_Index.md
