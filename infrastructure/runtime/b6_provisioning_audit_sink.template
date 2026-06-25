@@ -1,0 +1,11 @@
+# PRD 06 B-6 — Provisioning Audit Sink (reference-only forward contract)
+# Reference-only. NOT runtime-wired, NOT production config, NO secret values (D-14).
+# *_REF keys are references only (empty or "ref:..."); enforced by
+#   backend/tests/architecture/test_no_secret_literals.py::test_templates_reference_only.
+# The hash policy is OPTIONAL / forward only and must NOT be conflated with IC-004/D-23 lineage.
+
+PROVISIONING_AUDIT_REQUIRED=true
+PROVISIONING_AUDIT_SINK_REF=ref:audit/provisioning-sink
+PROVISIONING_AUDIT_RETENTION_POLICY_REF=ref:audit/retention-policy
+PROVISIONING_AUDIT_HASH_POLICY_REF=ref:audit/hash-policy
+PROVISIONING_AUDIT_REDACTION_POLICY_REF=ref:audit/redaction-policy
