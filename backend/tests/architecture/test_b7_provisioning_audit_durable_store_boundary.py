@@ -29,6 +29,8 @@ _DRIVER_TOPLEVEL = {"psycopg", "psycopg2", "asyncpg", "sqlalchemy"}
 _B7_TEST_FILES = [
     _scan.BACKEND_ROOT / "tests" / "control_plane" / "test_b7_provisioning_audit_durable_store_contract.py",
     _scan.BACKEND_ROOT / "tests" / "architecture" / "test_b7_provisioning_audit_durable_store_boundary.py",
+    # PRD 06 B-7A: the live-PG harness reaches the driver only via the adapter — no static driver import (defense-in-depth).
+    _scan.BACKEND_ROOT / "tests" / "control_plane" / "requires_pg" / "test_pg_control_audit_ddl.py",
 ]
 
 
