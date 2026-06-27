@@ -36,9 +36,10 @@ Effect:
   a companion assertion; if it is ever wired, that future governed change must reorder it and extend this
   guard.
 - **DDL blob-drift guard** (`tests/architecture/test_b7c1_control_audit_ddl_blob_pins.py`): recomputes the
-  LF-normalized git-blob SHA-1 of `002_provisioning_audit.sql` (`887d0cbc…`) and
-  `003_provisioning_audit_append_only.sql` (`c787c537…`) and asserts both `requires_pg` harness pins match —
-  catching DDL/pin drift in CI without a database. Never applies DDL; never connects.
+  LF-normalized git-blob SHA-1 of `001_distinctness_ledger.sql` (`30956ff1…`),
+  `002_provisioning_audit.sql` (`887d0cbc…`) and `003_provisioning_audit_append_only.sql` (`c787c537…`) and
+  asserts the `requires_pg` harness pins match — catching DDL/pin drift in CI without a database. Never
+  applies DDL; never connects. (001 coverage added by B-7C-1R / B7C1-AR-1.)
 - **Missing-table / required-audit-failure floor**
   (`tests/control_plane/test_b7c1_required_audit_failure_floor.py`): proves, with no live DB, that a
   required durable audit write failing as if `control_audit` were absent rejects the operation with **no
