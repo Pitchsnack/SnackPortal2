@@ -35,6 +35,8 @@ jobs:
         run: lint-imports
       - name: Architecture tests (vendor/DB containment, traceability, hygiene)
         run: pytest tests/architecture
+      - name: Full default test suite (PRD 06 B-7C-1; requires_pg excluded via addopts — no PostgreSQL)
+        run: pytest
 
   secret-scan:
     runs-on: ubuntu-latest
