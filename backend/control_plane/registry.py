@@ -66,7 +66,9 @@ class TenantRegistry:
             created_at=ts,
             updated_at=ts,
         )
-        self._store.put_tenant(record)
+        # Fail-closed ordering (PRD 06 B-7B / B7B-D5): write the required audit record BEFORE the
+        # irreversible state commit, so a failed durable audit write rejects the transition with
+        # NO committed partial state. The in-memory default is unaffected (its writes never fail).
         self._audit.record(
             actor=actor,
             tenant_id=tenant_id,
@@ -75,6 +77,7 @@ class TenantRegistry:
             to_state=TenantLifecycleState.REGISTERED.value,
             correlation_id=correlation_id,
         )
+        self._store.put_tenant(record)
         return record
 
     def get_tenant_status(self, tenant_id: str) -> Optional[TenantRecord]:
@@ -142,7 +145,7 @@ class TenantRegistry:
         if record.lifecycle_state not in allowed_from:
             raise RegistryError("illegal lifecycle transition")
         updated = replace(record, lifecycle_state=to_state, updated_at=now_iso())
-        self._store.put_tenant(updated)
+        # Fail-closed ordering (B7B-D5): required audit write precedes the irreversible put_tenant.
         self._audit.record(
             actor=actor,
             tenant_id=tenant_id,
@@ -151,4 +154,5 @@ class TenantRegistry:
             to_state=to_state.value,
             correlation_id=correlation_id,
         )
+        self._store.put_tenant(updated)
         return updated

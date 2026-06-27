@@ -210,7 +210,7 @@ class ProvisioningVerificationService:
             lifecycle_state=TenantLifecycleState.VERIFYING,
             updated_at=now_iso(),
         )
-        self._store.put_tenant(updated)
+        # Fail-closed ordering (B7B-D5): required audit write precedes the irreversible put_tenant.
         self._audit.record(
             actor=actor,
             tenant_id=tenant_id,
@@ -219,6 +219,7 @@ class ProvisioningVerificationService:
             to_state=TenantLifecycleState.VERIFYING.value,
             correlation_id=correlation_id,
         )
+        self._store.put_tenant(updated)
         self._event(tenant_id, events.REGISTRY_MAPPING_CHANGED, actor, correlation_id)
         self._invalidate(tenant_id, actor, correlation_id)
         return self.verify(tenant_id, actor=actor, correlation_id=correlation_id)
@@ -248,7 +249,9 @@ class ProvisioningVerificationService:
         correlation_id: str,
     ) -> TenantRecord:
         updated = replace(rec, lifecycle_state=to_state, updated_at=now_iso())
-        self._store.put_tenant(updated)
+        # Fail-closed ordering (PRD 06 B-7B / B7B-D5): the required audit write precedes the
+        # irreversible put_tenant commit, so a failed durable audit write rejects the transition
+        # with NO committed partial state. The in-memory default is unaffected (writes never fail).
         self._audit.record(
             actor=actor,
             tenant_id=rec.tenant_id,
@@ -257,6 +260,7 @@ class ProvisioningVerificationService:
             to_state=to_state.value,
             correlation_id=correlation_id,
         )
+        self._store.put_tenant(updated)
         return updated
 
     def _event(self, tenant_id: str, action: str, actor: str, correlation_id: str) -> None:
