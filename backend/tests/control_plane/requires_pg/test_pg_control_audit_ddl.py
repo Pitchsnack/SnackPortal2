@@ -33,11 +33,13 @@ CREATE/DROP SCHEMA) in the environment and invoking:
   python backend/tests/control_plane/requires_pg/test_pg_control_audit_ddl.py
 With SNACKPORTAL_TEST_DSN unset (or psycopg absent) it clean-skips (exit 0).
 
-FORWARD DEFECT (recorded, NOT fixed in B-7A — a B-7B runtime-wiring item): append_audit binds a
-now_iso() *string* into the ts timestamptz column, but list_audit reconstructs
-ControlAuditRecord(timestamp=<datetime>) — the driver returns a datetime for timestamptz while the
-record field is typed `str`. B-7A asserts only that the str->timestamptz write is accepted and the
-stored value round-trips timezone-aware; it does NOT assert timestamp string round-trip fidelity.
+FORWARD DEFECT (recorded in B-7A; RESOLVED in B-7B): append_audit binds a now_iso() *string* into
+the ts timestamptz column. B-7A asserted only that the str->timestamptz write is accepted and the
+stored value round-trips timezone-aware; it did NOT assert timestamp string round-trip fidelity.
+PRD 06 B-7B resolved the asymmetry — postgres_store.list_audit now normalizes the driver datetime to
+a UTC ISO-8601 *string* on read, so ControlAuditRecord.timestamp is a `str` for both adapters — and
+made PostgresControlStore lazy-connect (the connection now opens on first store operation, not at
+construction). This harness still reaches the driver only via the adapter and stays valid under both.
 """
 
 from __future__ import annotations
@@ -289,14 +291,16 @@ def test_b7a_live_pg_control_audit_ddl(admin_dsn: str) -> None:
         assert durable[0].actor == "b7a-durable-actor" and durable[0].action == "b7a.durable", "type-stable fields must round-trip"
         print("PASS: 16.7 cross-instance durability (write via store A; read via fresh store B; type-stable fields match)")
 
-        # check 14a — fail-closed: unreachable DSN must RAISE (derived in memory; never printed) (R3 §16.14)
+        # check 14a — fail-closed: unreachable DSN must RAISE on first operation (derived in memory;
+        # never printed) (R3 §16.14). PRD 06 B-7B made PostgresControlStore lazy-connect, so the
+        # connection — and its failure — now occurs on first use, not at construction.
         unreachable_raised = False
         try:
-            PostgresControlStore(_derive_unreachable_dsn(admin_dsn))
+            PostgresControlStore(_derive_unreachable_dsn(admin_dsn)).list_audit()
         except Exception:
             unreachable_raised = True
-        assert unreachable_raised, "an unreachable DSN must fail closed (raise), never connect silently"
-        print("PASS: 16.14a fail-closed unreachable DSN (construction raised; DSN never printed)")
+        assert unreachable_raised, "an unreachable DSN must fail closed (raise on first op), never connect silently"
+        print("PASS: 16.14a fail-closed unreachable DSN (first-op connect raised; DSN never printed)")
 
         # check 14b — fail-closed: missing table -> list_audit() RAISES, never returns [] (must be LAST table check)
         with conn.cursor() as cur:

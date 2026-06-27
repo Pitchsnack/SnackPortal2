@@ -10,10 +10,22 @@ Not exercised by the stdlib unit suite (requires a live Control DB + installed
 driver); the suite uses the in-memory ControlStore. Stores references only — never
 credentials (D-14): the tenant database association is two columns
 ({store_ref, version}), never the secret value.
+
+Lazy-connect (PRD 06 B-7B / B7B-D11). Construction performs NO ``psycopg.connect`` —
+``__init__`` only records its inputs — so ``ControlPlane`` construction and
+``create_app()`` perform no PostgreSQL I/O even when this durable store is selected. The
+connection opens on the first store operation and FAILS CLOSED there if the descriptor is
+unresolvable / the DSN is invalid / the Control DB is unreachable / the schema is absent.
+Dual construction (references only, D-14): pass a literal ``dsn=`` connection descriptor
+(the B-7A live harness path) OR ``secrets=`` + ``ref=`` to resolve the descriptor from a
+``SecretStore`` by reference (the composition-root durable path — no DSN literal transits
+the composition root). The resolved descriptor is held only for the connect call and is
+never retained on the adapter.
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, List, Optional, Tuple
 
 import psycopg  # type: ignore  # noqa: F401  (driver import confined to this zone)
@@ -29,15 +41,69 @@ from control_plane.records import (
     TenantLifecycleState,
     TenantRecord,
 )
-from shared.secrets import SecretRef
+from shared.secrets import SecretRef, SecretStore
+
+
+def _ts_to_iso(value: Any) -> str:
+    """Normalize a stored ``ts`` value to a UTC ISO-8601 string (same instant).
+
+    A ``timestamptz`` column is returned by the driver as a timezone-aware ``datetime``,
+    but ``ControlAuditRecord.timestamp`` is typed ``str`` — and the in-memory adapter
+    round-trips the written ``now_iso()`` string. Normalize on read (PRD 06 B-7B / B7B-D7)
+    so BOTH adapters return ``str`` representing the same instant, without retyping the
+    record (``records.py`` is unchanged). A naive datetime is assumed UTC; an already-``str``
+    value passes through (defensive)."""
+    if isinstance(value, datetime):
+        dt = value.astimezone(timezone.utc) if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+        return dt.isoformat()
+    return str(value)
 
 
 class PostgresControlStore(ControlStore):
-    def __init__(self, dsn: str, schema_version: int = 1) -> None:
-        # dsn is a connection descriptor for the CONTROL database (resolved by the
-        # composition root via a SecretStore; not retained beyond connection setup).
-        self._conn = psycopg.connect(dsn)
+    def __init__(
+        self,
+        dsn: Optional[str] = None,
+        schema_version: int = 1,
+        *,
+        secrets: Optional[SecretStore] = None,
+        ref: Optional[SecretRef] = None,
+    ) -> None:
+        # Lazy-connect: record inputs only; NO psycopg.connect here (B7B-D11). Exactly one
+        # connection source is required — a literal dsn= OR a secret reference (secrets=, ref=).
+        if (dsn is None) == (ref is None):
+            raise ValueError("PostgresControlStore requires exactly one of dsn= or (secrets=, ref=)")
+        if ref is not None and secrets is None:
+            raise ValueError("PostgresControlStore ref= requires a SecretStore (secrets=)")
+        self._dsn = dsn
+        self._secrets = secrets
+        self._ref = ref
         self._schema_version = schema_version
+        self._conn_cache: Any = None
+
+    @property
+    def _conn(self) -> Any:
+        """Lazily open and cache the Control-DB connection (no I/O until first use)."""
+        if self._conn_cache is None:
+            self._conn_cache = self._open()
+        return self._conn_cache
+
+    def _open(self) -> Any:
+        """Resolve the Control-DB descriptor (by reference or literal) and open the connection.
+
+        Fail-closed: ``PermissionError`` (ref not allow-listed), ``LookupError`` (unresolved
+        ref), and connect errors all propagate — the caller's operation is rejected and no
+        partial state is committed. The resolved descriptor is dropped immediately (D-14)."""
+        descriptor: Optional[str] = None
+        try:
+            if self._ref is not None:
+                assert self._secrets is not None  # guaranteed by __init__
+                descriptor = self._secrets.resolve(self._ref).material  # in-memory only
+            else:
+                assert self._dsn is not None  # guaranteed by __init__ (exactly one source)
+                descriptor = self._dsn
+            return psycopg.connect(descriptor)
+        finally:
+            descriptor = None  # never retained on the adapter
 
     # -- control metadata -----------------------------------------------------
     def is_reachable(self) -> bool:
@@ -225,7 +291,7 @@ class PostgresControlStore(ControlStore):
                     action=r[2],
                     from_state=r[3],
                     to_state=r[4],
-                    timestamp=r[5],
+                    timestamp=_ts_to_iso(r[5]),  # driver datetime -> UTC ISO-8601 str (B7B-D7)
                     correlation_id=r[6],
                 )
                 for r in cur.fetchall()
