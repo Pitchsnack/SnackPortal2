@@ -1,12 +1,19 @@
-"""PRD 06 B-7C-1 — control_audit DDL blob-drift guard (architecture; no PostgreSQL).
+"""PRD 06 B-7C-1 (+ B-7C-1R) — reviewed Control-DB DDL blob-drift guard (architecture; no PostgreSQL).
 
-The B-7A and B-7B live-PG harnesses pin the reviewed control_audit DDL by LF-normalized git-blob SHA-1
-(002 = 887d0cbc…, 003 = c787c537…) and STOP if the applied bytes drift. Those harnesses are
-``--ignore``'d by the default suite, so DDL/pin drift would otherwise surface only on a manual live run.
-This default-suite guard is the SINGLE SOURCE OF TRUTH: it recomputes the blob SHA-1 of the DDL files and
-asserts (a) the DDL matches the known pins, and (b) BOTH requires_pg harness files pin the SAME current
-value. A DDL revision therefore fails CI here until the harness pins are updated in lockstep — no live
-database required, and the harnesses are read-only (never applied/modified).
+The live-PG harnesses pin their reviewed Control-DB DDL by LF-normalized git-blob SHA-1 and STOP if the
+applied bytes drift: the B-7A/B-7B control_audit harnesses pin 002 (887d0cbc…) and 003 (c787c537…); the
+B-4 distinctness-ledger harness (test_pg_distinctness_ledger.py) pins 001 (30956ff1…) via the variable
+``_REVIEWED_DDL_BLOB``. Those harnesses are ``--ignore``'d by the default suite, so DDL/pin drift would
+otherwise surface only on a manual live run. This default-suite guard is the SINGLE SOURCE OF TRUTH: it
+recomputes the blob SHA-1 of the DDL files and asserts (a) each DDL matches its known pin, and (b) every
+requires_pg harness that pins a DDL pins the SAME current value. A DDL revision therefore fails CI here
+until the harness pin(s) are updated in lockstep — no live database required, and the harnesses are
+read-only (never applied/modified).
+
+B-7C-1R (B7C1-AR-1) extended this guard from 002/003 (control_audit) to also cover 001
+(001_distinctness_ledger.sql), which test_pg_distinctness_ledger.py pins under ``_REVIEWED_DDL_BLOB`` —
+a different variable name than the control_audit harnesses' ``_REVIEWED_002_BLOB``/``_REVIEWED_003_BLOB``,
+so 001 has its own check (it is NOT folded into the 002/003 harness loop).
 
 Pure stdlib (hashlib); imports no database driver; standalone-runnable:
   python tests/architecture/test_b7c1_control_audit_ddl_blob_pins.py
@@ -36,6 +43,13 @@ _HARNESSES = [
     _scan.BACKEND_ROOT / "tests" / "control_plane" / "requires_pg" / "test_pg_control_store_runtime_wiring.py",
 ]
 
+# PRD 06 B-7C-1R (B7C1-AR-1): also pin 001_distinctness_ledger.sql. The B-4 distinctness-ledger live-PG
+# harness pins it by the SAME LF-normalized git-blob SHA-1, but under the variable name _REVIEWED_DDL_BLOB
+# (NOT _REVIEWED_001_BLOB / _REVIEWED_002_BLOB) — so it gets its own check below, not the 002/003 loop.
+_DDL_001 = _CONTROL / "001_distinctness_ledger.sql"
+_PIN_001 = "30956ff1e85e8dab1c9f55cbfc121ee9212f3ca0"
+_DISTINCTNESS_HARNESS = _scan.BACKEND_ROOT / "tests" / "control_plane" / "requires_pg" / "test_pg_distinctness_ledger.py"
+
 
 def _git_blob_sha1(path: pathlib.Path) -> str:
     data = path.read_bytes().replace(b"\r\n", b"\n")  # autocrlf normalization (the git blob is LF)
@@ -64,5 +78,30 @@ def test_requires_pg_harness_pins_match_current_ddl() -> None:
         assert m003.group(1) == computed_003, f"{harness.name} _REVIEWED_003_BLOB diverges from the current 003 DDL blob"
 
 
+def test_distinctness_ledger_ddl_blob_matches_pin() -> None:
+    # B-7C-1R: 001 distinctness-ledger DDL (separate from the control_audit 002/003 pins).
+    assert _git_blob_sha1(_DDL_001) == _PIN_001, (
+        f"001_distinctness_ledger.sql drifted from pin {_PIN_001}; a governed DDL change must update this guard "
+        f"and the test_pg_distinctness_ledger.py _REVIEWED_DDL_BLOB pin in lockstep"
+    )
+
+
+def test_distinctness_harness_pin_matches_current_ddl() -> None:
+    # B-7C-1R: the B-4 harness pins 001 under _REVIEWED_DDL_BLOB (a different variable name than the
+    # control_audit harnesses' _REVIEWED_002_BLOB/_REVIEWED_003_BLOB) — so this is a separate check.
+    computed_001 = _git_blob_sha1(_DDL_001)
+    text = _DISTINCTNESS_HARNESS.read_text(encoding="utf-8")
+    m001 = re.search(r'_REVIEWED_DDL_BLOB\s*=\s*"([0-9a-f]{40})"', text)
+    assert m001, "test_pg_distinctness_ledger.py must pin _REVIEWED_DDL_BLOB (001 distinctness-ledger DDL)"
+    assert m001.group(1) == computed_001, "test_pg_distinctness_ledger.py _REVIEWED_DDL_BLOB diverges from the current 001 DDL blob"
+
+
 if __name__ == "__main__":
-    _scan.run([test_control_audit_ddl_blobs_match_known_pins, test_requires_pg_harness_pins_match_current_ddl])
+    _scan.run(
+        [
+            test_control_audit_ddl_blobs_match_known_pins,
+            test_requires_pg_harness_pins_match_current_ddl,
+            test_distinctness_ledger_ddl_blob_matches_pin,
+            test_distinctness_harness_pin_matches_current_ddl,
+        ]
+    )
