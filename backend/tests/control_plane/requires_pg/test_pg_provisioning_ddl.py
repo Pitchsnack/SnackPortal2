@@ -19,7 +19,9 @@ WHAT EACH TEMPLATE IS (and where it lands):
   *schema* would not isolate it — a scratch *database* does).
 * ``003_provisioning_role.sql`` — a CLUSTER-level role (``sp2_provisioner``: ``NOLOGIN`` + ``CREATEDB``).
   Roles are cluster-scoped, not database-scoped, so this is applied against the admin connection and the
-  role is ``DROP``ed at start and in ``finally``.
+  role is ``DROP``ed at start and in ``finally``. AT-2 (PRD 06) asserts the full **least-privilege** vector
+  — CREATEDB on, and ``rolsuper``/``rolcreaterole``/``rolreplication``/``rolbypassrls``/``rolcanlogin`` all
+  OFF — so a privilege-escalation edit to ``003`` (e.g. an added SUPERUSER) fails closed.
 
 ISOLATION & SAFETY. 001/002 run inside a uniquely-named scratch DATABASE
 (``sp2_atr4_prov_scratch``) created and ``DROP DATABASE IF EXISTS``'d (autocommit) — it never touches a
@@ -123,6 +125,25 @@ def _assert_blob(ddl_path: pathlib.Path, expected: str) -> None:
     assert actual == expected, f"{ddl_path.name} blob {actual} != reviewed {expected} — STOP (do not fix DDL in ATR-4)"
 
 
+# AT-2 (PRD 06) — sp2_provisioner least-privilege vector. The role needs ONLY CREATEDB; every elevated
+# attribute must be OFF. Asserting the NEGATIVE attributes (not just the positive ones) is what catches a
+# privilege-escalation edit to 003_provisioning_role.sql (e.g. an added SUPERUSER/CREATEROLE).
+_LEAST_PRIV_QUERY = (
+    "SELECT rolcreatedb, rolcanlogin, rolsuper, rolcreaterole, rolreplication, rolbypassrls FROM pg_roles WHERE rolname = %s"
+)
+_LEAST_PRIV_LABELS = ("rolcreatedb", "rolcanlogin", "rolsuper", "rolcreaterole", "rolreplication", "rolbypassrls")
+_EXPECTED_ROLE_ATTRS = (True, False, False, False, False, False)  # CREATEDB only; no super/createrole/replication/bypassrls
+
+
+def _assert_least_privilege(attrs) -> None:
+    actual = tuple(attrs)
+    assert actual == _EXPECTED_ROLE_ATTRS, (
+        "sp2_provisioner least-privilege violated: "
+        + ", ".join(f"{label}={value!r}" for label, value in zip(_LEAST_PRIV_LABELS, actual))
+        + f"; expected {dict(zip(_LEAST_PRIV_LABELS, _EXPECTED_ROLE_ATTRS))}"
+    )
+
+
 # --- the exercise --------------------------------------------------------------------------------
 def test_provisioning_001_002_tenant_db(admin_dsn: str) -> None:
     """001 (schema_version) + 002 (dv_sentinel.marker) applied to a SCRATCH DATABASE; behavioral +
@@ -208,17 +229,16 @@ def test_provisioning_003_cluster_role(admin_dsn: str) -> None:
 
         # apply 003 (DO-block CREATE ROLE … NOLOGIN + ALTER ROLE … CREATEDB + COMMENT)
         _apply(admin, _DDL_003)
-        attrs = admin.execute("SELECT rolcreatedb, rolcanlogin FROM pg_roles WHERE rolname = %s", (_PROV_ROLE,)).fetchone()
+        attrs = admin.execute(_LEAST_PRIV_QUERY, (_PROV_ROLE,)).fetchone()
         assert attrs is not None, "sp2_provisioner must exist after apply"
-        assert attrs[0] is True, f"sp2_provisioner must have CREATEDB (rolcreatedb=true); got {attrs[0]!r}"
-        assert attrs[1] is False, f"sp2_provisioner must be NOLOGIN (rolcanlogin=false); got {attrs[1]!r}"
-        print("PASS: 003 apply (sp2_provisioner exists; rolcreatedb=true, rolcanlogin=false)")
+        _assert_least_privilege(attrs)  # AT-2: CREATEDB only; NO super/createrole/replication/bypassrls/login
+        print("PASS: 003 apply (sp2_provisioner least-privilege: CREATEDB+NOLOGIN; no super/createrole/replication/bypassrls)")
 
         # idempotency — re-apply; the DO-block is IF-NOT-EXISTS-guarded, ALTER/COMMENT are no-ops
         _apply(admin, _DDL_003)
-        attrs2 = admin.execute("SELECT rolcreatedb, rolcanlogin FROM pg_roles WHERE rolname = %s", (_PROV_ROLE,)).fetchone()
-        assert attrs2 == (True, False), f"re-applying 003 must preserve role attributes; got {attrs2!r}"
-        print("PASS: 003 idempotency (re-apply: no error; rolcreatedb=true, rolcanlogin=false unchanged)")
+        attrs2 = admin.execute(_LEAST_PRIV_QUERY, (_PROV_ROLE,)).fetchone()
+        _assert_least_privilege(attrs2)  # AT-2: least-privilege vector preserved across idempotent re-apply
+        print("PASS: 003 idempotency (re-apply: no error; least-privilege vector unchanged)")
     finally:
         admin.execute(f"DROP ROLE IF EXISTS {_PROV_ROLE}")  # cluster-role cleanup
         admin.close()
