@@ -37,6 +37,13 @@ No runtime source change · no CI-workflow change · no live-PG workflow / Postg
 no API-Gateway / Auth-Router / Database-Router change · **B5-BLK-4 remains OPEN** · **Physical Multi-Database
 MVP mandatory** — B-7C-1R does **not** prove tenant physical multi-database routing.
 
+## Completeness (B-7C-1R2)
+
+This guard's `001`/`002`/`003` coverage is itself completeness-protected: the default-suite meta-guard
+`tests/architecture/test_b7c1r2_control_ddl_pin_completeness.py` (PRD 06 B-7C-1R2) fails CI if a future
+`infrastructure/db/control/004_*.sql` or a new `requires_pg` `_REVIEWED_*_BLOB` pin is added without
+extending this guard — see `docs/runtime/b7c1r2_ddl_pin_completeness_meta_guard.md`.
+
 ## Next
 
 The live durable-path CI workflow (ephemeral PostgreSQL, path-filtered/scheduled/manual, secret-free) is
