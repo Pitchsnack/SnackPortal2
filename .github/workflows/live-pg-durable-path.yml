@@ -93,6 +93,7 @@ jobs:
             tests/control_plane/requires_pg/test_pg_distinctness_ledger.py \
             tests/control_plane/requires_pg/test_pg_control_audit_ddl.py \
             tests/control_plane/requires_pg/test_pg_control_store_runtime_wiring.py \
+            tests/control_plane/requires_pg/test_pg_provisioning_ddl.py \
             tests/lineage_service/requires_pg/test_pg_append_only.py \
             tests/lineage_service/requires_pg/test_pg_chain_serialization.py \
             tests/lineage_service/requires_pg/test_pg_privilege.py \
