@@ -1,0 +1,121 @@
+name: live-pg-durable-path
+# PRD 06 B-7C-2 — Advisory, secret-free live-PostgreSQL durable-path evidence.
+#
+# Runs the requires_pg durable-path harnesses (excluded from the default suite) against an EPHEMERAL,
+# disposable PostgreSQL service. NOT a required check (DRIFT-08: branch protection unavailable on this
+# private repo). Changes NO default pytest behavior, NO runtime source, NO DDL, NO requires_pg harness.
+#
+# SAFETY: SNACKPORTAL_TEST_DSN below points ONLY at the ephemeral localhost service container; it is NOT a
+# repository/organization/environment secret, carries no password, and must NEVER point at production or
+# Supabase. POSTGRES_HOST_AUTH_METHOD=trust is safe ONLY because the service is an ephemeral, single-job,
+# localhost-only container holding no real data.
+#
+# The requires_pg files are STANDALONE scripts (each `python <file>` drives _pg.run()), NOT pytest tests —
+# so they are invoked directly, and a clean SKIP (exit 0, no DB exercised) is treated as a NON-VACUITY
+# FAILURE unless real PASS evidence is present. test_b3a_multi_database_topology.py is EXCLUDED: it requires
+# four physically distinct clusters and cannot run on a single ephemeral service (it is the physical
+# multi-DB topology proof that B-7C-2 explicitly does NOT make).
+on:
+  workflow_dispatch:
+    inputs:
+      inject_bad_dsn:
+        description: "Negative control: point the DSN at a dead port to prove fail-closed (default false)"
+        type: boolean
+        default: false
+  schedule:
+    - cron: "0 6 * * 1" # weekly, Monday 06:00 UTC
+  push:
+    paths:
+      - "infrastructure/db/**"
+      - "backend/tests/**/requires_pg/**"
+      - ".github/workflows/live-pg-durable-path.yml"
+  pull_request:
+    paths:
+      - "infrastructure/db/**"
+      - "backend/tests/**/requires_pg/**"
+      - ".github/workflows/live-pg-durable-path.yml"
+
+# Own least-privilege floor (a new workflow does not inherit ci.yml's top-level default).
+permissions:
+  contents: read
+
+jobs:
+  live-pg:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: postgres:17 # matches local 17.10; harness floor is PG>=11; no PG17-only feature used
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust # safe ONLY: ephemeral, localhost-only, disposable, no real data
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Ephemeral CI service DSN — NOT a secret, no password, NEVER production/Supabase.
+      SNACKPORTAL_TEST_DSN: postgresql://postgres@localhost:5432/postgres
+      # Fail fast instead of hanging on a lock / long statement.
+      PGOPTIONS: "-c lock_timeout=5000 -c statement_timeout=60000"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install package (brings the psycopg[binary] runtime dependency)
+        run: pip install .
+      - name: Prove the database driver is present
+        run: python -c "import psycopg; print('psycopg', psycopg.__version__)"
+      - name: Wait for PostgreSQL readiness
+        run: |
+          for i in $(seq 1 30); do
+            pg_isready -h localhost -p 5432 -U postgres && exit 0
+            sleep 2
+          done
+          echo "::error::PostgreSQL service did not become ready"
+          exit 1
+      - name: (optional) inject bad DSN — manual negative control
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.inject_bad_dsn }}
+        run: echo "SNACKPORTAL_TEST_DSN=postgresql://postgres@localhost:5/postgres" >> "$GITHUB_ENV"
+      - name: Run live-PG durable-path harnesses (standalone; fail-closed on SKIP)
+        run: |
+          set -uo pipefail
+          fail=0
+          for h in \
+            tests/control_plane/requires_pg/test_pg_distinctness.py \
+            tests/control_plane/requires_pg/test_pg_distinctness_ledger.py \
+            tests/control_plane/requires_pg/test_pg_control_audit_ddl.py \
+            tests/control_plane/requires_pg/test_pg_control_store_runtime_wiring.py \
+            tests/lineage_service/requires_pg/test_pg_append_only.py \
+            tests/lineage_service/requires_pg/test_pg_chain_serialization.py \
+            tests/lineage_service/requires_pg/test_pg_privilege.py \
+            tests/lineage_service/requires_pg/test_pg_traversal.py ; do
+            echo "::group::$h"
+            out="$(python "$h" 2>&1)"
+            code=$?
+            echo "$out"
+            echo "::endgroup::"
+            if [ $code -ne 0 ]; then
+              echo "::error::$h exited $code"; fail=1; continue
+            fi
+            if echo "$out" | grep -q "SKIP"; then
+              echo "::error::$h SKIPPED (no DSN/driver reachable) — non-vacuity failure"; fail=1; continue
+            fi
+            if echo "$out" | grep -Eq "^(FAIL|ERROR):"; then
+              echo "::error::$h reported FAIL/ERROR"; fail=1; continue
+            fi
+            if ! echo "$out" | grep -Eq "(^PASS:|ALL[ A-Z0-9-]*PASSED)"; then
+              echo "::error::$h produced no PASS evidence (non-vacuity failure)"; fail=1; continue
+            fi
+          done
+          if [ $fail -ne 0 ]; then
+            echo "::error::live-PG durable-path job failed (see per-harness errors above)"
+          fi
+          exit $fail
