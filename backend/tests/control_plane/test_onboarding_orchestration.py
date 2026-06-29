@@ -26,6 +26,9 @@ from control_plane.adapters.providers.in_memory_distinctness import (  # noqa: E
 )
 from control_plane.adapters.providers.in_memory_probe import InMemoryTenantDatabaseProbe  # noqa: E402
 from control_plane.adapters.providers.in_memory_store import InMemoryControlStore  # noqa: E402
+from control_plane.adapters.providers.in_memory_tenant_schema_applicator import (  # noqa: E402
+    InMemoryTenantSchemaApplicator,
+)
 from control_plane.audit import ControlPlaneAudit  # noqa: E402
 from control_plane.distinctness import (  # noqa: E402
     DistinctnessEvidence,
@@ -56,6 +59,9 @@ EXPECTED_EVENT_ACTIONS = {
     "DatabaseProvisionFailed",
     "DatabaseAssociated",
     "SecretReferenceRegistered",
+    "TenantSchemaApplicationStarted",
+    "TenantSchemaApplicationSucceeded",
+    "TenantSchemaApplicationFailed",
     "DistinctnessVerificationStarted",
     "DistinctnessVerificationPassed",
     "DistinctnessVerificationFailed",
@@ -119,7 +125,7 @@ def _orchestrator(
         nonprod_control_db_evidence(),
         supported_schema_versions=["1"],
     )
-    return OnboardingOrchestrator(registry, operator or InMemoryProvisioningOperator(), gate, audit)
+    return OnboardingOrchestrator(registry, operator or InMemoryProvisioningOperator(), gate, audit, InMemoryTenantSchemaApplicator())
 
 
 def _actions(store: InMemoryControlStore) -> List[str]:

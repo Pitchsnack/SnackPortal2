@@ -19,6 +19,7 @@ from .adapters.providers.in_memory_distinctness import (
 )
 from .adapters.providers.in_memory_probe import InMemoryTenantDatabaseProbe
 from .adapters.providers.in_memory_store import InMemoryControlStore
+from .adapters.providers.in_memory_tenant_schema_applicator import InMemoryTenantSchemaApplicator
 from .audit import ControlPlaneAudit
 from .bootstrap import BootstrapController
 from .directory import GlobalDirectory
@@ -31,6 +32,7 @@ from .provisioning import (
     InMemoryProvisioningOperator,
     ProvisioningOperator,
     ProvisioningVerificationService,
+    TenantSchemaApplicator,
 )
 from .readiness import ReadinessFramework
 from .registry import TenantRegistry
@@ -68,6 +70,15 @@ CONTROL_STORE_ENV = "SP2_CP_CONTROL_STORE"
 CONTROL_STORE_DSN_REF_ENV = "SP2_CP_CONTROL_STORE_DSN_REF"
 DEFAULT_CONTROL_STORE_DSN_REF = "control/control-store-dsn"
 
+# Tenant schema-applicator selection (PRD 07B; D15-ARCH-SPEC-01 §8 Step 2b). Unset/empty ->
+# in-memory (controlled non-production default; construction performs no I/O). The real applicator
+# (which applies the existing provisioning + lineage DDL to a freshly provisioned tenant database in
+# a single atomic, fail-closed transaction) is exercised live by the PRD 07B requires_pg harness,
+# which composes it DIRECTLY with a tenant-DSN secret store; composition-level live selection
+# requires the same controlled-non-prod wiring as SP2_CP_PROVISIONING_ADAPTER and is delivered in a
+# later phase — any non-default value defers here (fail closed) rather than half-wire it.
+TENANT_SCHEMA_APPLICATOR_ENV = "SP2_CP_TENANT_SCHEMA_APPLICATOR"
+
 
 class ControlPlane:
     """Assembled control plane. Construction performs no I/O and no bootstrap."""
@@ -88,7 +99,8 @@ class ControlPlane:
         # D-15 orchestration wiring (B-1, controlled non-production). Adapter selected by
         # env (OB-1); default is in-memory. Construction performs no I/O.
         self.operator, self.provisioning = self._build_provisioning()
-        self.onboarding = OnboardingOrchestrator(self.registry, self.operator, self.provisioning, self.audit)
+        self.schema_applicator = self._build_schema_applicator()
+        self.onboarding = OnboardingOrchestrator(self.registry, self.operator, self.provisioning, self.audit, self.schema_applicator)
 
     def _build_store(self) -> ControlStore:
         """Select the Control-Store backend (controlled non-production; PRD 06 B-7B).
@@ -148,6 +160,24 @@ class ControlPlane:
             supported_schema_versions=supported,
         )
         return operator, provisioning
+
+    def _build_schema_applicator(self) -> TenantSchemaApplicator:
+        """Select the tenant schema applicator (controlled non-prod; PRD 07B; D15 Step 2b).
+
+        Default (env unset/empty) is the in-memory applicator — construction performs no I/O and
+        applies no DDL. Any other value defers (fail closed): the real PostgreSQL applicator is
+        built and live-proven by the PRD 07B requires_pg harness (which composes it directly with a
+        tenant-DSN secret store), but composition-level live selection needs the same
+        controlled-non-prod wiring as ``_build_provisioning`` (SP2_CP_PROVISIONING_ADAPTER) — that
+        is a later phase, so this does not half-wire it against the trust-anchor-only secret store.
+        """
+        kind = (os.environ.get(TENANT_SCHEMA_APPLICATOR_ENV) or "in_memory").strip().lower()
+        if kind in ("", "in_memory"):
+            return InMemoryTenantSchemaApplicator()
+        raise NotImplementedError(
+            f"{TENANT_SCHEMA_APPLICATOR_ENV}={kind!r} (live applicator) is composed directly by the "
+            "PRD 07B requires_pg harness; composition-level live wiring is delivered in a later phase"
+        )
 
     def _build_ledger(self) -> DistinctnessLedger:
         """Select the distinctness-evidence ledger (controlled non-prod; PRD 06 B-2).

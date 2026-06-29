@@ -25,6 +25,7 @@ from .distinctness import DistinctnessOutcome, DistinctnessResult
 from .provisioning import (
     ProvisioningOperator,
     ProvisioningVerificationService,
+    TenantSchemaApplicator,
     tenant_database_name,
 )
 from .records import TenantLifecycleState
@@ -44,11 +45,13 @@ class OnboardingOrchestrator:
         operator: ProvisioningOperator,
         provisioning: ProvisioningVerificationService,
         audit: ControlPlaneAudit,
+        schema_applicator: TenantSchemaApplicator,
     ) -> None:
         self._registry = registry
         self._operator = operator
         self._provisioning = provisioning
         self._audit = audit
+        self._schema_applicator = schema_applicator
 
     def onboard(
         self,
@@ -102,6 +105,19 @@ class OnboardingOrchestrator:
             self._emit(tenant_id, events.DATABASE_PROVISION_FAILED, actor, correlation_id)
             return DistinctnessOutcome(DistinctnessResult.VERIFICATION_INCOMPLETE, "provision_failed")
         self._emit(tenant_id, events.DATABASE_PROVISION_SUCCEEDED, actor, correlation_id)
+
+        # 2b) Apply tenant schema (D15-ARCH-SPEC-01 §8 Step 2b; PRD 07B). A freshly provisioned
+        # database has no schema yet; apply the existing provisioning + lineage DDL (idempotent,
+        # single atomic transaction, fail-closed) BEFORE verify — whose readiness probe reads
+        # schema_version. Fail-closed: a failed apply leaves the tenant not-Ready (never routable)
+        # and never reaches the gate (mirrors the provision-failure branch above).
+        self._emit(tenant_id, events.TENANT_SCHEMA_APPLICATION_STARTED, actor, correlation_id)
+        try:
+            self._schema_applicator.apply_schema(tenant_id, target=target, association_ref=association_ref)
+        except Exception:
+            self._emit(tenant_id, events.TENANT_SCHEMA_APPLICATION_FAILED, actor, correlation_id)
+            return DistinctnessOutcome(DistinctnessResult.VERIFICATION_INCOMPLETE, "schema_application_failed")
+        self._emit(tenant_id, events.TENANT_SCHEMA_APPLICATION_SUCCEEDED, actor, correlation_id)
 
         # 3) Associate (the association reference was recorded at registration — IC-002 §69).
         self._emit(tenant_id, events.SECRET_REFERENCE_REGISTERED, actor, correlation_id)
