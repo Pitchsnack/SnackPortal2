@@ -14,10 +14,10 @@ These harnesses are **standalone scripts**, not pytest tests: each takes a `conn
 `_pg.run()` in its `__main__` block (there is no pytest fixture). The workflow therefore invokes each via
 `python <file>` — **not** `pytest` — and applies a **non-vacuity gate** (below).
 
-**Run set (8 harnesses):**
+**Run set (9 harnesses):**
 
 - `tests/control_plane/requires_pg/` — `test_pg_distinctness.py`, `test_pg_distinctness_ledger.py`,
-  `test_pg_control_audit_ddl.py`, `test_pg_control_store_runtime_wiring.py`
+  `test_pg_control_audit_ddl.py`, `test_pg_control_store_runtime_wiring.py`, `test_pg_provisioning_ddl.py`
 - `tests/lineage_service/requires_pg/` — `test_pg_append_only.py`, `test_pg_chain_serialization.py`,
   `test_pg_privilege.py`, `test_pg_traversal.py`
 
@@ -64,11 +64,14 @@ repo). It runs and reports, but governance enforcement remains process-level (Gu
   is one cluster).
 - It does **not** close **B5-BLK-4** (which remains **OPEN**).
 - It does **not** complete the **Physical Multi-Database MVP** (which remains mandatory).
-- It does **not** guard the **lineage** DDL: `tests/lineage_service/requires_pg/_pg.py` now *applies*
-  `infrastructure/db/lineage/{001,002,003}.sql` live in CI, but there is still **no blob-drift guard** for it —
-  **ATR-1 remains OPEN and tracked, not fixed**.
-- It does **not** assert every Control-DB DDL is applied by a live harness: `infrastructure/db/provisioning/*.sql`
-  is applied by **no** harness (ATR-4 / INV-D remains open).
+- It did **not**, at B-7C-2 time, add a blob-drift guard for the **lineage** DDL:
+  `tests/lineage_service/requires_pg/_pg.py` *applies* `infrastructure/db/lineage/{001,002,003}.sql` live in CI.
+  *(Superseded: **ATR-1 is now CLOSED** — PR #31 added the required-suite lineage blob-drift guard
+  `backend/tests/architecture/test_non_control_ddl_blob_drift.py`.)*
+- It did **not**, at B-7C-2 time, assert that the provisioning DDL is exercised by a live harness.
+  *(Superseded by ATR-4: `infrastructure/db/provisioning/{001,002,003}.sql` is now applied live by
+  `tests/control_plane/requires_pg/test_pg_provisioning_ddl.py` — the 5th control_plane harness in the run set
+  above.)*
 
 ## Boundaries
 
