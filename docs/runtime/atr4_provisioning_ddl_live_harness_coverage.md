@@ -86,7 +86,9 @@ change · no production DB/DSN/secret · no Supabase credential · no Database-R
 Auth-Router / frontend change · **B5-BLK-4 OPEN** · **Physical Multi-Database MVP mandatory** — ATR-4 is
 test-coverage hardening only.
 
-> **Note (non-blocking):** `b7c2_live_pg_durable_path_ci.md` still says the run set is "8 harnesses" and
-> that provisioning is "applied by no harness". That prose is now partially superseded (the harness exists
-> and the loop is 9), but it is left byte-unchanged here to keep the ATR-4 change set to exactly four
-> files; reconciling it is a tracked follow-up.
+> **Note (reconciled by AT-5):** the `b7c2_live_pg_durable_path_ci.md` mismatch this note originally flagged
+> (it described an "8 harnesses" run set with provisioning applied by no harness) has been **reconciled by
+> AT-5**: `b7c2` now states a **9-harness** run set that lists `test_pg_provisioning_ddl.py`, and the
+> docs-vs-workflow harness count is held in lockstep by the required-CI guard
+> `backend/tests/architecture/test_live_pg_docs_workflow_consistency.py`. The historical "8 → 9" transition
+> (above) is retained as history.
