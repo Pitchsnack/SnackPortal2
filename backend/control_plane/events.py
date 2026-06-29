@@ -20,6 +20,12 @@ DATABASE_PROVISION_FAILED = "DatabaseProvisionFailed"
 DATABASE_ASSOCIATED = "DatabaseAssociated"
 SECRET_REFERENCE_REGISTERED = "SecretReferenceRegistered"
 
+# Tenant schema application (D15-ARCH-SPEC-01 §8 Step 2b; PRD 07B) — applying the existing
+# provisioning + lineage DDL to a freshly provisioned tenant database, before verification.
+TENANT_SCHEMA_APPLICATION_STARTED = "TenantSchemaApplicationStarted"
+TENANT_SCHEMA_APPLICATION_SUCCEEDED = "TenantSchemaApplicationSucceeded"
+TENANT_SCHEMA_APPLICATION_FAILED = "TenantSchemaApplicationFailed"
+
 # Physical Distinctness Verification (§9)
 DISTINCTNESS_VERIFICATION_STARTED = "DistinctnessVerificationStarted"
 DISTINCTNESS_VERIFICATION_PASSED = "DistinctnessVerificationPassed"

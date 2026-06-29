@@ -95,6 +95,26 @@ class InMemoryProvisioningOperator(ProvisioningOperator):
         self.provisioned.discard(target)
 
 
+class TenantSchemaApplicationError(Exception):
+    """Non-sensitive tenant-schema-application error (fail-closed; mapped to a non-routable outcome)."""
+
+
+class TenantSchemaApplicator(ABC):
+    """Applies a freshly provisioned tenant database's schema before verification (D15 Step 2b).
+
+    The `ProvisioningOperator` only CREATEs the physically distinct database; this applies its
+    schema — the existing provisioning + lineage DDL templates — so the readiness probe can observe
+    `schema_version`. Concrete adapters that touch a real cluster live under `adapters/providers/**`
+    and run in controlled non-production only. Fail-closed: any failure raises
+    `TenantSchemaApplicationError` and commits NO partial schema (the concrete adapter applies all
+    templates in a single atomic transaction). The per-tenant credential is resolved by reference
+    in-memory (D-14) inside the adapter and is never returned or logged. This authors no DDL: it
+    applies the already-reviewed templates as-is."""
+
+    @abstractmethod
+    def apply_schema(self, tenant_id: str, *, target: str, association_ref: SecretRef) -> None: ...
+
+
 class ProvisioningVerificationService:
     """The D15 readiness gate: reachability + schema + Physical Distinctness -> Ready."""
 
