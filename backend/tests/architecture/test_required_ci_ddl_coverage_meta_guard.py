@@ -48,6 +48,7 @@ _COVERAGE: dict[str, list[str]] = {
     "control": ["test_b7c1_control_audit_ddl_blob_pins.py"],
     "provisioning": ["test_non_control_ddl_blob_drift.py"],
     "lineage": ["test_non_control_ddl_blob_drift.py"],
+    "tenant": ["test_tenant_ddl_blob_drift.py"],
 }
 
 
