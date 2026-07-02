@@ -21,6 +21,10 @@ stored in a table or in these templates).
 | `001_distinctness_ledger.sql` | The durable, reference-only **distinctness ledger** (`control_distinctness_ledger`): the per-tenant Physical Distinctness evidence inventory the D15 readiness gate consults for tenant-vs-tenant collision detection. One latest row per tenant (inventory, not audit history). Columns mirror `DistinctnessEvidence` + `tenant_id` + `recorded_at`. | §9.2 input 8; IC-010 §P; D15-ARCH-SPEC-01 §6 |
 | `002_provisioning_audit.sql` | The durable, append-only, reference-only **provisioning audit store** (`control_audit`): the audit-history table the wired adapter `postgres_store.py` already targets. Columns mirror `ControlAuditRecord` (adapter-INSERT-compatible: `id` DB-generated; `tenant_id`/`from_state`/`to_state` NULLABLE). Distinct from the `001` inventory and from IC-004/D-23 lineage. **Created, not applied.** | D-34; IC-002; IC-001; IC-010 §J; PRD 06 B-7 |
 | `003_provisioning_audit_append_only.sql` | DB-level **append-only enforcement** for `control_audit`: a portable PL/pgSQL trigger rejecting UPDATE/DELETE/TRUNCATE (mirrors `lineage/002_append_only.sql`). **Created, not applied.** | D-34; PRD 06 B-7 |
+| `004_control_tenants.sql` | The **tenant registry** (`control_tenants`): the wired-but-previously-DDL-less table `postgres_store.py` already targets (put/get_tenant). All-text typing (unmodified-adapter str round-trip), plus `tenant_type` (`'customer'` default / `'control_internal'`) with a partial-unique **Control Internal Tenant singleton** index. Runtime `tenant_type` plumbing deferred. **Created, not applied.** | IC-002; D-14; D-33; MCC exec-auth V2 §9.1 |
+| `005_control_memberships.sql` | The **membership registry** (`control_memberships`): principal↔tenant eligibility rows the wired adapter targets (put/list_memberships). Composite PK `(principal_ref, tenant_id)`; no FK (store parity). **Created, not applied.** | D-04; D-32; MCC exec-auth V2 §9.2 |
+| `006_control_federation.sql` | The **per-tenant OIDC federation config** (`control_federation`) the wired adapter targets (put/get_federation). PK `tenant_id`; jwks by reference only; no FK. **Created, not applied.** | IC-002; IC-005; MCC exec-auth V2 §9.3 |
+| `007_control_directory.sql` | The **global discovery directory** (`control_directory`) the wired adapter targets — the contract-neutral Global Registry representation for the MVP (dedicated `global_startups`/`global_investors` deferred to a later Control Registry PRD). `attributes` is plain `jsonb`. Known runtime write defect documented as **MCC-AR-1** (adapter binds a plain dict; psycopg 3 needs `Jsonb(...)` — fix deferred, reads unaffected). **Created, not applied.** | D-31; IC-001; D-35-R2; MCC exec-auth V2 §9.4/§13 |
 
 ## Scope boundary (PRD 06 B-2 — NOT authorized)
 
@@ -32,6 +36,18 @@ provisioning audit store (the sink **contract** is **B-6**; the `control_audit` 
 authored under **B-7**, created-not-applied — see below). The control-plane runtime default
 remains the in-memory distinctness ledger; the durable Control-DB ledger is opt-in and exercised
 live only in B-4.
+
+## Scope boundary (MCC — Control-DB registry DDL)
+
+`004_control_tenants.sql` – `007_control_directory.sql` are **created, not applied**. MCC authors the
+missing DDL for the **existing wired** Control-store tables (the ones `postgres_store.py` already
+INSERTs/SELECTs); it does **not** modify the adapter/records runtime (the `tenant_type` plumbing and the
+**MCC-AR-1** directory-JSONB write fix are deferred), does **not** add cross-table FKs, does **not** author
+tenant business schema / `agents` / dedicated `global_*` tables, does **not** define Control Internal Tenant
+access semantics, and does **not** close B5-BLK-4. Applying + exercising the DDL live is the MCC proof
+harness (`backend/tests/control_plane/requires_pg/test_pg_control_schema_mcc.py`, manual/local) or ops/IaC
+(07D). Blob pins live in `tests/architecture/test_b7c1_control_audit_ddl_blob_pins.py` (in lockstep with the
+harness pins).
 
 ## Scope boundary (PRD 06 B-7 — provisioning audit DDL)
 
