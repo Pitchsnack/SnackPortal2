@@ -15,6 +15,11 @@ B-7C-1R (B7C1-AR-1) extended this guard from 002/003 (control_audit) to also cov
 a different variable name than the control_audit harnesses' ``_REVIEWED_002_BLOB``/``_REVIEWED_003_BLOB``,
 so 001 has its own check (it is NOT folded into the 002/003 harness loop).
 
+MCC (Control DB Schema) extended it again to cover the Control-DB registry DDL 004-007
+(control_tenants / control_memberships / control_federation / control_directory — the wired-but-previously-
+DDL-less tables postgres_store.py already targets), pinned in lockstep with the MCC live-PG harness
+``test_pg_control_schema_mcc.py`` (``_REVIEWED_004_BLOB``..``_REVIEWED_007_BLOB``; Option P).
+
 Pure stdlib (hashlib); imports no database driver; standalone-runnable:
   python tests/architecture/test_b7c1_control_audit_ddl_blob_pins.py
 """
@@ -49,6 +54,28 @@ _HARNESSES = [
 _DDL_001 = _CONTROL / "001_distinctness_ledger.sql"
 _PIN_001 = "30956ff1e85e8dab1c9f55cbfc121ee9212f3ca0"
 _DISTINCTNESS_HARNESS = _scan.BACKEND_ROOT / "tests" / "control_plane" / "requires_pg" / "test_pg_distinctness_ledger.py"
+
+# MCC (Control DB Schema): pin the Control-DB registry DDL 004-007 — control_tenants / control_memberships /
+# control_federation / control_directory, the wired-but-previously-DDL-less tables postgres_store.py already
+# targets. The MCC live-PG harness (test_pg_control_schema_mcc.py) pins the same blobs under
+# _REVIEWED_004_BLOB / _REVIEWED_005_BLOB / _REVIEWED_006_BLOB / _REVIEWED_007_BLOB (Option P; MCC exec-auth
+# V2 §15) — cross-checked below so a DDL revision fails CI here until guard + harness pins move in lockstep.
+_DDL_004 = _CONTROL / "004_control_tenants.sql"
+_DDL_005 = _CONTROL / "005_control_memberships.sql"
+_DDL_006 = _CONTROL / "006_control_federation.sql"
+_DDL_007 = _CONTROL / "007_control_directory.sql"
+_PIN_004 = "8194408e62f08533e649612981f10089b8a3b1b0"
+_PIN_005 = "a0df9ec58b6825aa298b1b9656cc0028d9831c14"
+_PIN_006 = "c929af89da85ec7614b716bdb40af611da9613f2"
+_PIN_007 = "aa6066a7398cfb81e8e96067927023c3f11bb391"
+_MCC_HARNESS = _scan.BACKEND_ROOT / "tests" / "control_plane" / "requires_pg" / "test_pg_control_schema_mcc.py"
+# (harness var name, guard pin, DDL path) — var names are LITERAL so the b7c1r2 meta-guard's pin-var scan sees them.
+_MCC_PINS = [
+    ("_REVIEWED_004_BLOB", _PIN_004, _DDL_004),
+    ("_REVIEWED_005_BLOB", _PIN_005, _DDL_005),
+    ("_REVIEWED_006_BLOB", _PIN_006, _DDL_006),
+    ("_REVIEWED_007_BLOB", _PIN_007, _DDL_007),
+]
 
 
 def _git_blob_sha1(path: pathlib.Path) -> str:
@@ -96,6 +123,25 @@ def test_distinctness_harness_pin_matches_current_ddl() -> None:
     assert m001.group(1) == computed_001, "test_pg_distinctness_ledger.py _REVIEWED_DDL_BLOB diverges from the current 001 DDL blob"
 
 
+def test_mcc_control_registry_ddl_blobs_match_known_pins() -> None:
+    # MCC: 004-007 Control-DB registry DDL (control_tenants/memberships/federation/directory).
+    for _var, pin, ddl in _MCC_PINS:
+        assert _git_blob_sha1(ddl) == pin, (
+            f"{ddl.name} drifted from pin {pin}; a governed DDL change must update this guard "
+            f"and the test_pg_control_schema_mcc.py harness pin in lockstep"
+        )
+
+
+def test_mcc_harness_pins_match_current_ddl() -> None:
+    # MCC Option P lockstep: the live-PG harness pins 004-007 under _REVIEWED_004_BLOB.._REVIEWED_007_BLOB;
+    # each harness pin must equal the CURRENT blob of its DDL (single source of truth = the DDL bytes).
+    text = _MCC_HARNESS.read_text(encoding="utf-8")
+    for var, _pin, ddl in _MCC_PINS:
+        m = re.search(var + r'\s*=\s*"([0-9a-f]{40})"', text)
+        assert m, f"test_pg_control_schema_mcc.py must pin {var} ({ddl.name})"
+        assert m.group(1) == _git_blob_sha1(ddl), f"test_pg_control_schema_mcc.py {var} diverges from the current {ddl.name} blob"
+
+
 if __name__ == "__main__":
     _scan.run(
         [
@@ -103,5 +149,7 @@ if __name__ == "__main__":
             test_requires_pg_harness_pins_match_current_ddl,
             test_distinctness_ledger_ddl_blob_matches_pin,
             test_distinctness_harness_pin_matches_current_ddl,
+            test_mcc_control_registry_ddl_blobs_match_known_pins,
+            test_mcc_harness_pins_match_current_ddl,
         ]
     )
