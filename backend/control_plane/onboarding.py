@@ -17,6 +17,8 @@ Guarantees:
 
 from __future__ import annotations
 
+from typing import Optional
+
 from shared.secrets import SecretRef
 
 from . import events
@@ -30,6 +32,31 @@ from .provisioning import (
 )
 from .records import TenantLifecycleState
 from .registry import TenantRegistry
+
+# PRD 07D-1 (decision D-A): the CANONICAL tenant DSN secret-reference convention. Onboarding mints
+# `tenant/<tenant_id>/dsn`; the reference is resolvable by BOTH the control-plane tenant-DSN
+# provider (adapters/providers/env_tenant_dsn_secret_store.py) and — by the same REPLICATED, never
+# imported, env/file convention — the database-router-side EnvTenantSecretStore, so one
+# materialized secret serves both sides (D3). References only, never a DSN value (D-14).
+TENANT_DSN_REF_PREFIX = "tenant/"
+TENANT_DSN_REF_SUFFIX = "/dsn"
+
+
+def tenant_dsn_ref(tenant_id: str) -> str:
+    """The canonical tenant DSN secret reference (PRD 07D-1 D-A): ``tenant/<tenant_id>/dsn``."""
+    return f"{TENANT_DSN_REF_PREFIX}{tenant_id}{TENANT_DSN_REF_SUFFIX}"
+
+
+def tenant_id_from_dsn_ref(store_ref: str) -> Optional[str]:
+    """Inverse of ``tenant_dsn_ref``: the tenant_id if ``store_ref`` is canonical-shaped, else None.
+
+    Non-canonical references (e.g. caller-supplied raw refs passed to ``reassociate``) return None
+    so callers can fall back to treating the reference as an opaque store location."""
+    if store_ref.startswith(TENANT_DSN_REF_PREFIX) and store_ref.endswith(TENANT_DSN_REF_SUFFIX):
+        inner = store_ref[len(TENANT_DSN_REF_PREFIX) : -len(TENANT_DSN_REF_SUFFIX)]
+        if inner and "/" not in inner:
+            return inner
+    return None
 
 
 class OnboardingError(Exception):
@@ -70,10 +97,13 @@ class OnboardingOrchestrator:
         no-op that returns a non-routable outcome (idempotency guard) — it does NOT
         re-provision or re-verify.
         """
-        # Association reference (D-14): in controlled non-production the secret-store
-        # reference is the provisioned target name; the registry stays authoritative (D-07).
+        # Association reference (D-14; PRD 07D-1 D-A): the CANONICAL tenant DSN secret reference
+        # `tenant/<tenant_id>/dsn` — a secret-store LOCATION resolvable by the control-plane
+        # tenant-DSN provider and (same replicated convention) the database-router side. The
+        # provisioned target name is carried separately below; the registry stays authoritative
+        # (D-07). The old raw-target-name ref style (`sp2_tenant_<id>`) is no longer minted.
         target = tenant_database_name(tenant_id)
-        association_ref = SecretRef(store_ref=target, version="1")
+        association_ref = SecretRef(store_ref=tenant_dsn_ref(tenant_id), version="1")
 
         # Idempotency guard (SAFETY-A3): never re-provision/re-verify an already-progressed tenant.
         existing = self._registry.get_tenant_status(tenant_id)

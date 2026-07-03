@@ -88,7 +88,7 @@ from control_plane.adapters.providers.in_memory_tenant_schema_applicator import 
 )
 from control_plane.audit import ControlPlaneAudit  # noqa: E402
 from control_plane.distinctness import DistinctnessResult  # noqa: E402
-from control_plane.onboarding import OnboardingOrchestrator  # noqa: E402
+from control_plane.onboarding import OnboardingOrchestrator, tenant_dsn_ref, tenant_id_from_dsn_ref  # noqa: E402
 from control_plane.provisioning import (  # noqa: E402
     ProvisioningVerificationService,
     TenantSchemaApplicationError,
@@ -201,14 +201,19 @@ def _cleanup(psycopg, admin_dsn: str, tenant_ids) -> None:
 
 
 class _HarnessSecretStore(SecretStore):
-    """Test-only D-14 secret store: a SecretRef whose store_ref is a database name resolves to the
-    admin DSN with that database substituted. Material is built in-memory at resolve() time only."""
+    """Test-only D-14 secret store. Since PRD 07D-1 onboarding mints the CANONICAL tenant ref
+    `tenant/<tenant_id>/dsn` (D-A) — a canonical-shaped SecretRef resolves to the admin DSN with
+    the tenant's database (`tenant_database_name`) substituted; any other store_ref is treated as
+    the literal database name (the pre-07D-1 shape, still used by this harness's direct-applicator
+    checks and the Control-DB reference). Material is built in-memory at resolve() time only."""
 
     def __init__(self, admin_dsn: str) -> None:
         self._admin = admin_dsn
 
     def resolve(self, ref: SecretRef) -> SecretValue:
-        return SecretValue(material=_pg.swap_db(self._admin, ref.store_ref))
+        tenant_id = tenant_id_from_dsn_ref(ref.store_ref)
+        dbname = tenant_database_name(tenant_id) if tenant_id is not None else ref.store_ref
+        return SecretValue(material=_pg.swap_db(self._admin, dbname))
 
     def current_version(self, store_ref: str) -> str:
         return "1"
@@ -267,7 +272,9 @@ def test_e2e_onboard_applies_schema_and_reaches_ready(admin_dsn: str) -> None:
         assert out_a.result is DistinctnessResult.VERIFIED, out_a.reason
         rec_a = store.get_tenant(tids[0])
         assert rec_a is not None and rec_a.lifecycle_state is TenantLifecycleState.READY
-        print("PASS: C1 tenant A — provision -> apply schema -> verify VERIFIED -> READY")
+        # PRD 07D-1 (D-A): the association minted on the way to Ready is the CANONICAL ref shape.
+        assert rec_a.database_association_ref.store_ref == tenant_dsn_ref(tids[0]), rec_a.database_association_ref
+        print("PASS: C1 tenant A — provision -> apply schema -> verify VERIFIED -> READY (canonical tenant/<id>/dsn ref)")
 
         ta = psycopg.connect(_pg.swap_db(admin_dsn, tenant_database_name(tids[0])))
         try:

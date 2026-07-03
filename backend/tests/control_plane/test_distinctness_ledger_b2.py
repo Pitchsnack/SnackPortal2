@@ -2,7 +2,8 @@
 
 Covers the durable `DistinctnessLedger` adapter (structure + construction-no-I/O + SQL/row
 reconstruction via a fake connection + fail-closed reads), the preserved in-memory default
-(env-unset composition + inventory semantics), the deferred-selection guard, and the B-2
+(env-unset composition + inventory semantics), the 07D-1 selection contract ('postgres' composes
+the durable ledger lazily; unknown values fail closed with ValueError), and the B-2
 baselines (no new IC-002 state / audit vocabulary; the `ControlStore` port and the
 `DistinctnessLedger` ABC are frozen; the DDL is reference-only / additive / created-not-applied).
 
@@ -323,18 +324,20 @@ def test_default_ledger_is_in_memory() -> None:
             os.environ[cp_main.DISTINCTNESS_LEDGER_ENV] = saved
 
 
-def test_unsupported_ledger_selection_defers_to_b4() -> None:
-    # AC-5: a non-default selection defers to B-4 with NotImplementedError (no silent fallback).
+def test_postgres_ledger_selection_composes_durable_lazily() -> None:
+    # PRD 07D-1 (was: deferred): 'postgres' now SELECTS the durable Control-DB-backed ledger
+    # through ControlPlane() composition — still lazy-connect (construction opens NO connection;
+    # the connect recorder proves zero I/O) over the B-7B control-store secret binding.
     saved = os.environ.get(cp_main.DISTINCTNESS_LEDGER_ENV)
     os.environ[cp_main.DISTINCTNESS_LEDGER_ENV] = "postgres"
+    calls = []
+    restore_c = _patch_connect(lambda *a, **k: calls.append((a, k)))
     try:
-        raised = False
-        try:
-            cp_main.ControlPlane()
-        except NotImplementedError:
-            raised = True
-        assert raised, "durable ledger selection must defer to B-4"
+        cp = cp_main.ControlPlane()
+        assert isinstance(cp.provisioning._ledger, ledger_mod.PostgresDistinctnessLedger), "postgres must select the durable ledger"
+        assert calls == [], "durable-ledger selection must open no connection at construction (lazy)"
     finally:
+        restore_c()
         if saved is None:
             os.environ.pop(cp_main.DISTINCTNESS_LEDGER_ENV, None)
         else:
@@ -753,7 +756,9 @@ def test_resolve_failure_fails_closed_all_methods() -> None:
 
 
 def test_ledger_flag_normalization_table() -> None:
-    # WP-H5: only unset/''/'in_memory' (after strip+lower) map to in-memory; every other token defers.
+    # WP-H5 (07D-1 update): only unset/''/'in_memory' (after strip+lower) map to in-memory;
+    # 'postgres' SELECTS the durable ledger (composition activation); every OTHER token fails
+    # closed with ValueError (never a silent fallback).
     for value in (None, "", "in_memory", " in_memory ", "IN_MEMORY", "In_Memory"):
         restore = _with_ledger_env(value)
         try:
@@ -761,37 +766,43 @@ def test_ledger_flag_normalization_table() -> None:
             assert isinstance(cp.provisioning._ledger, InMemoryDistinctnessLedger), f"{value!r} -> in-memory"
         finally:
             restore()
-    for value in ("postgres", "durable", "control_db", "true", "x"):
+    restore = _with_ledger_env("postgres")
+    try:
+        cp = cp_main.ControlPlane()
+        assert isinstance(cp.provisioning._ledger, ledger_mod.PostgresDistinctnessLedger), "'postgres' -> durable"
+    finally:
+        restore()
+    for value in ("durable", "control_db", "true", "x"):
         restore = _with_ledger_env(value)
         try:
             raised = False
             try:
                 cp_main.ControlPlane()
-            except NotImplementedError:
+            except ValueError:
                 raised = True
-            assert raised, f"{value!r} must defer with NotImplementedError (no silent fallback)"
+            assert raised, f"{value!r} must fail closed with ValueError (no silent fallback)"
         finally:
             restore()
 
 
-def test_deferred_selection_raises_with_zero_io() -> None:
-    # WP-H13: the deferred/unsupported selection is a pure string check — it raises NotImplementedError
-    # with NO psycopg.connect before raising (no partial side effect / no live I/O).
+def test_unknown_selection_raises_with_zero_io() -> None:
+    # WP-H13 (07D-1 update): the unsupported selection is a pure string check — it raises
+    # ValueError with NO psycopg.connect before raising (no partial side effect / no live I/O).
     connect_calls = []
     restore_c = _patch_connect(lambda *a, **k: connect_calls.append((a, k)))
     try:
-        for value in ("postgres", "durable", "true", "x"):
+        for value in ("durable", "control_db", "true", "x"):
             restore_e = _with_ledger_env(value)
             try:
                 raised = False
                 try:
                     cp_main.ControlPlane()
-                except NotImplementedError:
+                except ValueError:
                     raised = True
-                assert raised, f"{value!r} must raise NotImplementedError"
+                assert raised, f"{value!r} must raise ValueError"
             finally:
                 restore_e()
-        assert connect_calls == [], "deferred selection must not open a connection before raising"
+        assert connect_calls == [], "a rejected selection must not open a connection before raising"
     finally:
         restore_c()
 
@@ -823,7 +834,7 @@ def test_adapter_sql_columns_subset_of_ddl() -> None:
 _TESTS = [
     test_inmemory_inventory_semantics,
     test_default_ledger_is_in_memory,
-    test_unsupported_ledger_selection_defers_to_b4,
+    test_postgres_ledger_selection_composes_durable_lazily,
     test_durable_adapter_conforms_to_abc,
     test_durable_adapter_construction_opens_no_connection,
     test_controlplane_construction_opens_no_connection,
@@ -844,7 +855,7 @@ _TESTS = [
     test_read_select_ddl_alignment,
     test_resolve_failure_fails_closed_all_methods,
     test_ledger_flag_normalization_table,
-    test_deferred_selection_raises_with_zero_io,
+    test_unknown_selection_raises_with_zero_io,
     test_ddl_set_equality_pk_and_nullability,
     test_adapter_sql_columns_subset_of_ddl,
     test_no_new_lifecycle_states,
