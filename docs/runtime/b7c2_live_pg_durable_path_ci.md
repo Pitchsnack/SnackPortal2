@@ -14,12 +14,18 @@ These harnesses are **standalone scripts**, not pytest tests: each takes a `conn
 `_pg.run()` in its `__main__` block (there is no pytest fixture). The workflow therefore invokes each via
 `python <file>` — **not** `pytest` — and applies a **non-vacuity gate** (below).
 
-**Run set (9 harnesses):**
+**Run set (12 harnesses):**
 
 - `tests/control_plane/requires_pg/` — `test_pg_distinctness.py`, `test_pg_distinctness_ledger.py`,
-  `test_pg_control_audit_ddl.py`, `test_pg_control_store_runtime_wiring.py`, `test_pg_provisioning_ddl.py`
+  `test_pg_control_audit_ddl.py`, `test_pg_control_store_runtime_wiring.py`, `test_pg_provisioning_ddl.py`,
+  `test_pg_onboarding_e2e_schema_application.py`, `test_pg_control_schema_mcc.py`,
+  `test_pg_tenant_business_schema_07c.py`
 - `tests/lineage_service/requires_pg/` — `test_pg_append_only.py`, `test_pg_chain_serialization.py`,
   `test_pg_privilege.py`, `test_pg_traversal.py`
+
+The 07B-e2e, MCC, and 07C harnesses were added to the run set by the **Governed CI Live-PG Bundle** (their
+green now covers the composed 13-file Step-2b transaction + System Primary seed, the MCC Control-DB registry
+DDL, and the 07C tenant business schema — proofs that were previously manual-only).
 
 **Excluded:** `test_pg_distinctness`'s sibling `test_b3a_multi_database_topology.py` is **NOT** run here — it
 requires **four physically distinct clusters** (`SP2_B3A_CONTROL_DB_DSN` / `_ACME_` / `_ZETA_` / `_NOVA_`) and

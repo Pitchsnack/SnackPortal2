@@ -97,7 +97,10 @@ jobs:
             tests/lineage_service/requires_pg/test_pg_append_only.py \
             tests/lineage_service/requires_pg/test_pg_chain_serialization.py \
             tests/lineage_service/requires_pg/test_pg_privilege.py \
-            tests/lineage_service/requires_pg/test_pg_traversal.py ; do
+            tests/lineage_service/requires_pg/test_pg_traversal.py \
+            tests/control_plane/requires_pg/test_pg_onboarding_e2e_schema_application.py \
+            tests/control_plane/requires_pg/test_pg_control_schema_mcc.py \
+            tests/control_plane/requires_pg/test_pg_tenant_business_schema_07c.py ; do
             echo "::group::$h"
             out="$(python "$h" 2>&1)"
             code=$?
