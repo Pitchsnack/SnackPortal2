@@ -1,11 +1,21 @@
-"""PRD 07B — onboarding Step 2b (tenant schema application) wiring (in-memory; no I/O).
+"""PRD 07B / PRD 07B.1 — onboarding Step 2b (tenant schema application) wiring (no live PG).
 
 Pins the schema-application step the onboarding orchestrator runs between database provision and
 verification: ordering, fail-closed semantics, the idempotency guard, the in-memory applicator port
 contract, and the controlled-non-prod composition (default in-memory; the live applicator is
-composed directly by the requires_pg harness, so composition-level selection defers). Pure stdlib;
-no driver; no live PostgreSQL (that is the requires_pg harness). Standalone-runnable:
+composed directly by the requires_pg harness, so composition-level selection defers). No live
+PostgreSQL (that is the requires_pg harness); the PRD 07B.1 tests import the postgres applicator
+module (the psycopg dependency is import-only here — the b7b default-suite precedent) and exercise
+it against a RECORDING fake connection, never a real one. Standalone-runnable:
 `python tests/control_plane/test_onboarding_step2b_schema_application.py`.
+
+PRD 07B.1 additions pin the composed Step-2b surface: `default_tenant_schema_ddl_paths()` returns
+the six 07B bootstrap templates FIRST then the seven 07C tenant business files in the 07C-owned
+machine-readable TENANT_DDL_APPLY_ORDER (asserted against the guard's AST — C7 Option 2: no
+duplicated tenant pins); the System Primary seed is in-applicator, in-transaction, executed after
+the DDL loop and before the single commit; a seed failure is wrapped fail-closed as
+`TenantSchemaApplicationError` with rollback; 07B.1 authors no DDL and introduces no
+queue-manager / reservation / claim-lock construct.
 
 The deeper "no tenant reaches Ready on live PG without Step 2b" non-vacuity is proven by
 `requires_pg/test_pg_onboarding_e2e_schema_application.py`; here the load-bearing-ness is shown at
@@ -14,15 +24,18 @@ unit level (a failing applicator fails closed and never reaches the gate).
 
 from __future__ import annotations
 
+import ast
 import os
 import pathlib
 import sys
-from typing import List, Optional, Tuple
+from types import SimpleNamespace
+from typing import Any, List, Optional, Tuple
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))  # backend on path
 
 from control_plane import events  # noqa: E402
 from control_plane import main as cp_main  # noqa: E402
+from control_plane.adapters.providers import postgres_tenant_schema_applicator as applicator_mod  # noqa: E402
 from control_plane.adapters.providers.in_memory_distinctness import (  # noqa: E402
     InMemoryDistinctnessEvidenceProvider,
     nonprod_control_db_evidence,
@@ -44,10 +57,95 @@ from control_plane.provisioning import (  # noqa: E402
 )
 from control_plane.records import TenantLifecycleState  # noqa: E402
 from control_plane.registry import TenantRegistry  # noqa: E402
-from shared.secrets import SecretRef  # noqa: E402
+from shared.secrets import SecretRef, SecretStore, SecretValue  # noqa: E402
 
 _ORG = "org_ref_x"
 _FED = "fed_ref_x"
+
+# The six 07B bootstrap templates (provisioning then lineage), the head of the composed order.
+_BOOTSTRAP_SIX = [
+    "001_tenant_database.sql",
+    "002_distinctness_sentinel.sql",
+    "003_provisioning_role.sql",
+    "001_lineage_schema.sql",
+    "002_append_only.sql",
+    "003_roles.sql",
+]
+
+
+def _tenant_apply_order_from_guard() -> List[str]:
+    """TENANT_DDL_APPLY_ORDER parsed from 07C's machine-readable guard authority.
+
+    AST literal extraction — no import, no side effects. C7 Option 2: 07B.1 asserts against the
+    07C-owned order; it does not restate an independent order or duplicate blob pins."""
+    guard = pathlib.Path(__file__).resolve().parents[1] / "architecture" / "test_tenant_ddl_blob_drift.py"
+    for node in ast.parse(guard.read_text(encoding="utf-8")).body:
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "TENANT_DDL_APPLY_ORDER" for t in node.targets):
+            order = ast.literal_eval(node.value)
+            assert isinstance(order, list) and order, "TENANT_DDL_APPLY_ORDER must be a non-empty list"
+            return order
+    raise AssertionError("TENANT_DDL_APPLY_ORDER not found in the 07C tenant blob-drift guard")
+
+
+class _StaticSecretStore(SecretStore):
+    """Test-only D-14 store: resolves any ref to an opaque non-DSN marker (never connected to)."""
+
+    def resolve(self, ref: SecretRef) -> SecretValue:
+        return SecretValue(material="resolved-descriptor-by-ref-only")
+
+    def current_version(self, store_ref: str) -> str:
+        return "1"
+
+
+class _RecordingCursor:
+    def __init__(self, conn: "_RecordingConn") -> None:
+        self._conn = conn
+
+    def __enter__(self) -> "_RecordingCursor":
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        return None
+
+    def execute(self, sql: str, params: Any = None) -> None:
+        if self._conn.fail_on is not None and self._conn.fail_on in sql:
+            raise RuntimeError("forced statement failure")
+        self._conn.executed.append(sql)
+
+
+class _RecordingConn:
+    """Recording fake connection: captures executed SQL and commit/rollback ordering; no I/O."""
+
+    def __init__(self, fail_on: Optional[str] = None) -> None:
+        self.executed: List[str] = []
+        self.commits = 0
+        self.rollbacks = 0
+        self.closed = False
+        self.fail_on = fail_on
+
+    def cursor(self) -> _RecordingCursor:
+        return _RecordingCursor(self)
+
+    def commit(self) -> None:
+        self.commits += 1
+
+    def rollback(self) -> None:
+        self.rollbacks += 1
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _apply_with_fake_conn(conn: _RecordingConn) -> None:
+    """Run the REAL postgres applicator against the recording fake (module psycopg swapped and
+    restored — no pytest fixture, so the file stays standalone-runnable)."""
+    saved = applicator_mod.psycopg
+    applicator_mod.psycopg = SimpleNamespace(connect=lambda *a, **k: conn)  # type: ignore[assignment]
+    try:
+        app = applicator_mod.PostgresTenantSchemaApplicator(_StaticSecretStore())
+        app.apply_schema("t1", target=tenant_database_name("t1"), association_ref=SecretRef(store_ref="sp2_tenant_t1", version="1"))
+    finally:
+        applicator_mod.psycopg = saved
 
 
 class _RecordingApplicator(TenantSchemaApplicator):
@@ -201,6 +299,70 @@ def test_schema_applicator_postgres_deferred() -> None:
             os.environ[cp_main.TENANT_SCHEMA_APPLICATOR_ENV] = saved
 
 
+# --- PRD 07B.1: composed 13-file sequencing + in-transaction System Primary seed ------------------
+def test_07b1_default_paths_compose_13_files_bootstrap_then_tenant() -> None:
+    paths = applicator_mod.default_tenant_schema_ddl_paths()
+    names = [p.name for p in paths]
+    assert len(names) == 13, f"composed Step-2b DDL path count must be 13, got {len(names)}: {names}"
+    assert names[:6] == _BOOTSTRAP_SIX, f"the six 07B bootstrap templates must come FIRST: {names[:6]}"
+    families = [p.parent.name for p in paths]
+    assert families == ["provisioning"] * 3 + ["lineage"] * 3 + ["tenant"] * 7, families
+    missing = [str(p) for p in paths if not p.is_file()]
+    assert not missing, f"referenced (read-only) DDL templates must exist: {missing}"
+
+
+def test_07b1_tenant_order_matches_07c_authority() -> None:
+    # C7 Option 2: the appended seven MUST equal 07C's machine-readable TENANT_DDL_APPLY_ORDER,
+    # read from the guard itself (07C owns the order and the blob pins; 07B.1 duplicates neither).
+    names = [p.name for p in applicator_mod.default_tenant_schema_ddl_paths()]
+    assert names[6:] == _tenant_apply_order_from_guard(), (
+        f"appended tenant files {names[6:]} must equal the 07C TENANT_DDL_APPLY_ORDER authority"
+    )
+
+
+def test_07b1_seed_sql_shape() -> None:
+    seed = applicator_mod._SYSTEM_PRIMARY_SEED_SQL
+    assert "INSERT INTO agents (agent_kind, agent_status, supervised_by_agent_id)" in seed
+    assert "SELECT 'system_primary', 'active', NULL" in seed
+    # exact idempotency predicate pinned by PRD 07B.1 §10:
+    assert "WHERE NOT EXISTS (SELECT 1 FROM agents WHERE agent_kind = 'system_primary')" in seed
+    seed_columns = [c.strip() for c in seed.split("(", 1)[1].split(")", 1)[0].split(",")]
+    assert seed_columns == ["agent_kind", "agent_status", "supervised_by_agent_id"], seed_columns
+    assert "id" not in seed_columns, "seed must omit id (GENERATED ALWAYS)"
+    assert "queue" not in seed.lower() and "is_queue_manager" not in seed.lower()
+
+
+def test_07b1_seed_executes_after_ddl_loop_before_commit() -> None:
+    conn = _RecordingConn()
+    _apply_with_fake_conn(conn)
+    expected_ddl = [p.read_text(encoding="utf-8") for p in applicator_mod.default_tenant_schema_ddl_paths()]
+    assert conn.executed[:-1] == expected_ddl, "all 13 templates must execute first, in order"
+    assert conn.executed[-1] == applicator_mod._SYSTEM_PRIMARY_SEED_SQL, "the seed must be the LAST statement"
+    assert conn.commits == 1 and conn.rollbacks == 0, "single commit AFTER the seed; no rollback"
+    assert conn.closed, "connection must be closed"
+
+
+def test_07b1_seed_failure_wrapped_fail_closed() -> None:
+    # a failing seed must roll the WHOLE transaction back and surface as TenantSchemaApplicationError
+    conn = _RecordingConn(fail_on="INSERT INTO agents")
+    raised = False
+    try:
+        _apply_with_fake_conn(conn)
+    except TenantSchemaApplicationError:
+        raised = True
+    assert raised, "a seed failure must be classified as TenantSchemaApplicationError (fail-closed)"
+    assert conn.commits == 0 and conn.rollbacks == 1, "seed failure: rollback, never commit"
+    assert conn.closed, "connection must be closed even on failure"
+
+
+def test_07b1_applicator_authors_no_ddl_and_no_forbidden_terms() -> None:
+    src = pathlib.Path(applicator_mod.__file__).read_text(encoding="utf-8")
+    assert "CREATE TABLE" not in src, "07B.1 must not author DDL in runtime source (07C owns the agents table)"
+    lowered = src.lower()
+    for term in ("queue_manager", "is_queue_manager", "reservation", "claim_lock"):
+        assert term not in lowered, f"forbidden construct in the applicator source: {term}"
+
+
 _TESTS = [
     test_step2b_emitted_between_provision_and_verify,
     test_step2b_failure_fails_closed_and_skips_verify,
@@ -211,6 +373,12 @@ _TESTS = [
     test_non_vacuity_step2b_is_load_bearing,
     test_schema_applicator_default_in_memory,
     test_schema_applicator_postgres_deferred,
+    test_07b1_default_paths_compose_13_files_bootstrap_then_tenant,
+    test_07b1_tenant_order_matches_07c_authority,
+    test_07b1_seed_sql_shape,
+    test_07b1_seed_executes_after_ddl_loop_before_commit,
+    test_07b1_seed_failure_wrapped_fail_closed,
+    test_07b1_applicator_authors_no_ddl_and_no_forbidden_terms,
 ]
 
 if __name__ == "__main__":
