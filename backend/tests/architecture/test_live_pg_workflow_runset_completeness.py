@@ -1,0 +1,154 @@
+"""Governed CI Live-PG Bundle (ATR-9) — live-PG workflow run-set COMPLETENESS guard (default suite; no DB).
+
+The advisory ``live-pg-durable-path.yml`` workflow runs the ``requires_pg`` durable-path harnesses in a
+``for h in … ; do`` loop. Before this guard, nothing tied the loop to the harnesses that EXIST — which is
+exactly how the 07B-e2e, MCC, and 07C harnesses (≈45% of the live evidence, including everything proving
+the newest schema slices and the composed Step-2b transaction) silently stayed OUT of CI while the
+workflow reported green (07C-AT-1 / 07C-PM-2 / PM-07B1-1).
+
+This pure-stdlib guard derives ground truth FROM DISK — it does NOT hardcode the known omissions — so a
+FUTURE harness added under any ``backend/tests/*/requires_pg/`` without a matching CI loop entry fails the
+default suite immediately:
+
+* **INV-A** — every discovered on-disk harness that is not an explicit, justified MANUAL_ONLY exception is
+  an active workflow loop entry (disk − exceptions ⊆ loop).
+* **INV-B** — every workflow loop entry exists on disk (loop ⊆ disk): no phantom / renamed entry rots in CI.
+* **INV-C** — every MANUAL_ONLY exception exists on disk: exceptions cannot go stale.
+* **INV-D** — the loop parses and is non-empty: the guard cannot pass vacuously on an unparseable workflow.
+
+COEXISTENCE. Complements (never contradicts) ``test_live_pg_docs_workflow_consistency.py`` — AT-5 pins the
+loop COUNT and the docs↔workflow consistency; this guard pins SET completeness. The loop regex idiom is
+REPLICATED from the AT-5/ATR-4 guards (self-containment precedent — those guards are not imported and not
+edited). Helpers (``_pg.py``) are excluded by the ``test_*.py`` discovery pattern; ``__pycache__`` never
+matches it. No ``_REVIEWED_*`` name appears here; no ``_COVERAGE`` registration applies (that meta-guard is
+DDL-family-scoped).
+
+Scope: run-set completeness only. Does NOT prove the harnesses PASS (the workflow's fail-closed
+non-vacuity gate owns that), does NOT make the advisory workflow a required check (MCC-PM-2), and does NOT
+close B5-BLK-4. Pure stdlib; standalone-runnable:
+
+    python tests/architecture/test_live_pg_workflow_runset_completeness.py
+"""
+
+from __future__ import annotations
+
+import pathlib
+import re
+import sys
+import tempfile
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import _scan  # noqa: E402
+
+_WORKFLOW = _scan.REPO_ROOT / ".github" / "workflows" / "live-pg-durable-path.yml"
+_TESTS_ROOT = _scan.BACKEND_ROOT / "tests"
+
+# The ONLY allowed omissions from the CI loop — explicit, named, justified. Adding a key here is a
+# governed decision (it consciously keeps a live proof manual-only).
+MANUAL_ONLY_EXCEPTIONS = {
+    "tests/control_plane/requires_pg/test_b3a_multi_database_topology.py": (
+        "requires four physically distinct clusters (SP2_B3A_*_DSN, four distinct system_identifiers); "
+        "cannot run on the single ephemeral CI service — the B-7C-2 exclusion, documented in the "
+        "workflow header and the b7c2 runtime doc"
+    ),
+}
+
+# SAME loop idiom as the AT-5 / ATR-4 guards (replicated for self-containment, not imported).
+_LOOP_RE = re.compile(r"for\s+h\s+in\s+(?P<loop>.+?);\s*do", re.DOTALL)
+_ENTRY_RE = re.compile(r"\S+\.py")
+
+
+# --- pure helpers (no I/O beyond reads; exercised by the non-vacuity tests) -----------------------
+def _loop_entries(workflow_text: str) -> list[str] | None:
+    """Harness path tokens inside the workflow's ``for h in … ; do`` loop, or None if unparseable."""
+    m = _LOOP_RE.search(workflow_text)
+    return _ENTRY_RE.findall(m.group("loop")) if m else None
+
+
+def _discovered_harnesses(tests_root: pathlib.Path = _TESTS_ROOT) -> set[str]:
+    """All on-disk requires_pg harnesses in workflow path form (tests/<svc>/requires_pg/test_*.py).
+
+    The ``test_*.py`` pattern excludes helpers (``_pg.py``) by construction; ``__pycache__`` cannot match."""
+    return {f"tests/{p.relative_to(tests_root).as_posix()}" for p in tests_root.glob("*/requires_pg/test_*.py")}
+
+
+# --- INV-D: the loop parses and is non-empty -------------------------------------------------------
+def test_inv_d_workflow_loop_parses_nonempty() -> None:
+    assert _WORKFLOW.is_file(), f"live-pg workflow missing: {_WORKFLOW}"
+    entries = _loop_entries(_WORKFLOW.read_text(encoding="utf-8"))
+    assert entries is not None, "could not parse the `for h in … ; do` run loop — guard would be vacuous"
+    assert entries, "the live-pg workflow run loop is EMPTY — no harness would run"
+
+
+# --- INV-A: every non-exempt disk harness is in CI -------------------------------------------------
+def test_inv_a_all_disk_harnesses_in_ci_or_exempt() -> None:
+    entries = set(_loop_entries(_WORKFLOW.read_text(encoding="utf-8")) or [])
+    missing = _discovered_harnesses() - set(MANUAL_ONLY_EXCEPTIONS) - entries
+    assert not missing, (
+        f"requires_pg harness(es) exist on disk but are NOT in the live-pg CI loop and NOT a justified "
+        f"MANUAL_ONLY exception: {sorted(missing)}. Add them to the workflow loop (same PR) or add an "
+        f"explicit justified exception here — silent omission is how 07B-e2e/MCC/07C fell out of CI."
+    )
+
+
+# --- INV-B: every CI loop entry exists on disk ------------------------------------------------------
+def test_inv_b_no_phantom_ci_entries() -> None:
+    entries = set(_loop_entries(_WORKFLOW.read_text(encoding="utf-8")) or [])
+    phantoms = entries - _discovered_harnesses()
+    assert not phantoms, f"live-pg CI loop entry(ies) do not exist on disk (renamed/removed harness rotting in CI): {sorted(phantoms)}"
+
+
+# --- INV-C: exceptions cannot go stale --------------------------------------------------------------
+def test_inv_c_exceptions_exist_on_disk() -> None:
+    stale = set(MANUAL_ONLY_EXCEPTIONS) - _discovered_harnesses()
+    assert not stale, f"MANUAL_ONLY exception(s) no longer exist on disk — remove them: {sorted(stale)}"
+    for path, reason in MANUAL_ONLY_EXCEPTIONS.items():
+        assert reason.strip(), f"MANUAL_ONLY exception {path} must carry a written justification"
+
+
+# --- non-vacuity (tempfile only; never mutates governed files; standalone-runnable like the INVs) ---
+def test_nv_missing_harness_detected() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        (root / "svc" / "requires_pg").mkdir(parents=True)
+        (root / "svc" / "requires_pg" / "test_pg_probe.py").write_text("x = 1\n", encoding="utf-8")
+        (root / "svc" / "requires_pg" / "_pg.py").write_text("helper\n", encoding="utf-8")
+        discovered = _discovered_harnesses(root)
+        assert discovered == {"tests/svc/requires_pg/test_pg_probe.py"}  # helper excluded by pattern
+        loop = _loop_entries("for h in \\\n  tests/other/requires_pg/test_pg_other.py ; do\n done") or []
+        assert discovered - set(loop), "a disk harness absent from the loop WOULD fail INV-A"
+
+
+def test_nv_phantom_entry_detected() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        (root / "svc" / "requires_pg").mkdir(parents=True)
+        loop = _loop_entries("for h in \\\n  tests/svc/requires_pg/test_pg_ghost.py ; do\n done") or []
+        assert set(loop) - _discovered_harnesses(root) == {"tests/svc/requires_pg/test_pg_ghost.py"}
+        # a loop entry with no disk file WOULD fail INV-B
+
+
+def test_nv_stale_exception_detected() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        assert {"tests/svc/requires_pg/test_pg_gone.py"} - _discovered_harnesses(pathlib.Path(tmp))
+        # an exception key with no disk file WOULD fail INV-C
+
+
+def test_nv_unparseable_and_empty_loop_detected() -> None:
+    assert _loop_entries("no loop here at all") is None  # unparseable WOULD fail INV-D
+    assert _loop_entries("for h in  ; do\n done") == []  # empty loop WOULD fail INV-D
+
+
+if __name__ == "__main__":
+    _scan.run(
+        [
+            test_inv_d_workflow_loop_parses_nonempty,
+            test_inv_a_all_disk_harnesses_in_ci_or_exempt,
+            test_inv_b_no_phantom_ci_entries,
+            test_inv_c_exceptions_exist_on_disk,
+            test_nv_missing_harness_detected,
+            test_nv_phantom_entry_detected,
+            test_nv_stale_exception_detected,
+            test_nv_unparseable_and_empty_loop_detected,
+        ]
+    )

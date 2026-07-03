@@ -56,7 +56,8 @@ _ATR4 = _scan.REPO_ROOT / "docs" / "runtime" / "atr4_provisioning_ddl_live_harne
 
 # Reviewed expectation. A legitimate future change to the harness set must update the workflow, the b7c2
 # "Run set (N harnesses)" prose, AND this constant in lockstep (same discipline as the blob-drift guards).
-EXPECTED_HARNESS_COUNT = 9
+# 9 → 12 by the Governed CI Live-PG Bundle (adds 07B-e2e + MCC + 07C harnesses to the loop).
+EXPECTED_HARNESS_COUNT = 12
 # Full loop path (workflow loop) and bare filename (doc run-set prose).
 _PROVISIONING_RELPATH = "tests/control_plane/requires_pg/test_pg_provisioning_ddl.py"
 _PROVISIONING_FILENAME = "test_pg_provisioning_ddl.py"
