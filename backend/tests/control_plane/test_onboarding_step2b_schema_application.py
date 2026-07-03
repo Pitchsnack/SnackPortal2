@@ -2,8 +2,8 @@
 
 Pins the schema-application step the onboarding orchestrator runs between database provision and
 verification: ordering, fail-closed semantics, the idempotency guard, the in-memory applicator port
-contract, and the controlled-non-prod composition (default in-memory; the live applicator is
-composed directly by the requires_pg harness, so composition-level selection defers). No live
+contract, and the controlled-non-prod composition (default in-memory; since PRD 07D-1 the
+'postgres' value SELECTS the real applicator lazily, and unknown values fail closed). No live
 PostgreSQL (that is the requires_pg harness); the PRD 07B.1 tests import the postgres applicator
 module (the psycopg dependency is import-only here — the b7b default-suite precedent) and exercise
 it against a RECORDING fake connection, never a real one. Standalone-runnable:
@@ -37,7 +37,6 @@ from control_plane import events  # noqa: E402
 from control_plane import main as cp_main  # noqa: E402
 from control_plane.adapters.providers import postgres_tenant_schema_applicator as applicator_mod  # noqa: E402
 from control_plane.adapters.providers.in_memory_distinctness import (  # noqa: E402
-    InMemoryDistinctnessEvidenceProvider,
     nonprod_control_db_evidence,
 )
 from control_plane.adapters.providers.in_memory_probe import InMemoryTenantDatabaseProbe  # noqa: E402
@@ -47,7 +46,7 @@ from control_plane.adapters.providers.in_memory_tenant_schema_applicator import 
 )
 from control_plane.audit import ControlPlaneAudit  # noqa: E402
 from control_plane.distinctness import DistinctnessResult  # noqa: E402
-from control_plane.onboarding import OnboardingOrchestrator  # noqa: E402
+from control_plane.onboarding import OnboardingOrchestrator, tenant_dsn_ref  # noqa: E402
 from control_plane.provisioning import (  # noqa: E402
     InMemoryProvisioningOperator,
     ProvisioningVerificationService,
@@ -180,7 +179,9 @@ def _orchestrator(store: InMemoryControlStore, *, applicator: Optional[TenantSch
         store,
         audit,
         InMemoryTenantDatabaseProbe(schema_version="1"),
-        InMemoryDistinctnessEvidenceProvider(),
+        # 07D-1: the composition root's canonical-ref-aware in-memory evidence (the association
+        # carries `tenant/<id>/dsn`, not the target name — the base provider alone would misroute).
+        cp_main.CanonicalTenantRefInMemoryEvidence(),
         nonprod_control_db_evidence(),
         supported_schema_versions=["1"],
     )
@@ -240,8 +241,10 @@ def test_step2b_invoked_with_tenant_association() -> None:
     tenant_id, target, association_ref = rec.calls[0]
     assert tenant_id == "t1"
     assert target == tenant_database_name("t1")
-    # The association passed to the applicator references the tenant target (D-14: by reference only).
-    assert association_ref.store_ref == tenant_database_name("t1")
+    # The association passed to the applicator is the CANONICAL tenant DSN reference (PRD 07D-1
+    # D-A; D-14: by reference only) — the provisioned target name travels separately (above).
+    assert association_ref.store_ref == tenant_dsn_ref("t1") == "tenant/t1/dsn"
+    assert association_ref.store_ref != tenant_database_name("t1"), "the ref is a secret location, not the target name"
 
 
 def test_in_memory_applicator_records_and_never_fails() -> None:
@@ -288,18 +291,25 @@ def test_schema_applicator_default_in_memory() -> None:
             os.environ[cp_main.TENANT_SCHEMA_APPLICATOR_ENV] = saved
 
 
-def test_schema_applicator_postgres_deferred() -> None:
-    # The live applicator is composed directly by the requires_pg harness; composition-level
-    # selection defers (fail closed), mirroring the SP2_CP_PROVISIONING_ADAPTER deferral.
+def test_schema_applicator_postgres_selectable_and_unknown_fails_closed() -> None:
+    # PRD 07D-1 (was: deferred): 'postgres' now SELECTS the real applicator through ControlPlane()
+    # composition (lazy — construction applies nothing and opens no connection); any unknown value
+    # still fails closed (ValueError; never a silent fallback).
     saved = os.environ.get(cp_main.TENANT_SCHEMA_APPLICATOR_ENV)
-    os.environ[cp_main.TENANT_SCHEMA_APPLICATOR_ENV] = "postgres"
     try:
-        raised = False
-        try:
-            cp_main.ControlPlane()
-        except NotImplementedError:
-            raised = True
-        assert raised, "postgres schema-applicator selection must defer (composed directly by the harness)"
+        os.environ[cp_main.TENANT_SCHEMA_APPLICATOR_ENV] = "postgres"
+        cp = cp_main.ControlPlane()
+        assert isinstance(cp.schema_applicator, applicator_mod.PostgresTenantSchemaApplicator), (
+            "postgres must select the real schema applicator"
+        )
+        for value in ("durable", "true", "x"):
+            os.environ[cp_main.TENANT_SCHEMA_APPLICATOR_ENV] = value
+            raised = False
+            try:
+                cp_main.ControlPlane()
+            except ValueError:
+                raised = True
+            assert raised, f"{value!r} must fail closed (ValueError)"
     finally:
         if saved is None:
             os.environ.pop(cp_main.TENANT_SCHEMA_APPLICATOR_ENV, None)
@@ -394,7 +404,7 @@ _TESTS = [
     test_idempotent_onboard_does_not_reapply,
     test_non_vacuity_step2b_is_load_bearing,
     test_schema_applicator_default_in_memory,
-    test_schema_applicator_postgres_deferred,
+    test_schema_applicator_postgres_selectable_and_unknown_fails_closed,
     test_07b1_default_paths_compose_13_files_bootstrap_then_tenant,
     test_07b1_tenant_order_matches_07c_authority,
     test_07b1_seed_sql_shape,
