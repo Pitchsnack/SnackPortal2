@@ -1,9 +1,10 @@
-"""PRD 07B — tenant schema-application wiring, end-to-end on live PostgreSQL (standalone-only).
+"""PRD 07B / PRD 07B.1 — tenant schema-application wiring, end-to-end on live PostgreSQL (standalone-only).
 
 Proves the onboarding lifecycle now reaches Ready on a REAL physically-distinct tenant database
 because onboarding Step 2b applies the tenant schema before verification:
 
-    register -> provision physical DB (CREATE DATABASE) -> APPLY SCHEMA (Step 2b) -> associate ->
+    register -> provision physical DB (CREATE DATABASE) -> APPLY SCHEMA (Step 2b: 6 bootstrap +
+    7 tenant templates + System Primary seed, ONE transaction) -> associate ->
     verify (probe reads schema_version; Physical Distinctness VERIFIED) -> Ready.
 
 It composes the REAL adapters directly (PostgresProvisioningOperator, PostgresTenantSchemaApplicator,
@@ -21,9 +22,31 @@ CHECKS:
       raises TenantSchemaApplicationError.
   C5  idempotent re-apply: applying twice is a no-op (schema_version stays one row; lineage intact).
   C6  secret hygiene (D-14): the DSN never appears in the operational audit records.
-  C7  blob pins: the six applied DDL templates equal their reviewed git blobs (drift FAILs — do not fix DDL here).
+  C7  blob pins: the SIX 07B bootstrap templates equal their reviewed git blobs (drift FAILs — do not fix
+      DDL here). The seven 07C tenant files are pinned by 07C's OWN guard/harness (C7 Option 2): this
+      harness asserts their MEMBERSHIP and ORDER against 07C's TENANT_DDL_APPLY_ORDER authority only —
+      it deliberately duplicates no tenant pins and introduces no _REVIEWED_* names (b7c1r2 stays clean).
   C8  NON-VACUITY: with a no-op applicator (no Step 2b effect) the real tenant DB has no schema_version, so
       verify fails closed and the tenant is NOT Ready; with the real applicator it reaches Ready.
+PRD 07B.1 CHECKS (composed Step-2b + System Primary seed):
+  C9  the composed Step-2b applied 13 files (6 bootstrap first, then the 7 tenant files in
+      TENANT_DDL_APPLY_ORDER) — full 14-table tenant business schema present after Ready.
+  C10 a freshly provisioned tenant DB has EXACTLY ONE system_primary Agent (before any human exists).
+  C11 the seeded row is agent_kind='system_primary', agent_status='active', supervised_by_agent_id NULL.
+  C12 idempotent full-set re-apply leaves exactly one system_primary row.
+  C13 a duplicate direct system_primary INSERT fails on the 07C singleton constraint.
+  C14 system_primary DELETE and kind-flip UPDATE remain blocked by the 07C trigger after bootstrap.
+  C15 no human Agent is required for Ready (zero humans in the fresh tenant).
+  C16 no queue-manager / reservation / claim table exists.
+  C17 no tenant_id column exists in the tenant business tables (tenancy is PHYSICAL).
+  C18 the Control-DB reference holds no tenant operational tables.
+  C19 SEED RACE (07C-AT-5): a TRUE two-connection race on the seed path — the loser (driven through the
+      applicator seam) is classified fail-closed as TenantSchemaApplicationError; exactly one SP remains.
+      Reachability caveat: the normal path cannot race two same-DB Step-2b applies (CREATE DATABASE
+      precludes it), so the race is isolated at the seed seam per the exec-auth package §14 allowance.
+  C20 LATE FAILURE (07C-AT-2): (a) a failure AFTER all 13 composed files rolls back the ENTIRE
+      transaction (no bootstrap schema, no tenant schema, no SP row persists); (b) a seed-time failure
+      likewise rolls back all 13 applied files (fail-closed, no partial schema).
 
 DRIVER CONTAINMENT. This file imports NO database driver statically and does NOT import the postgres
 adapters at module top level (psycopg is reached only via importlib.import_module after a DSN check; the
@@ -43,12 +66,15 @@ written here holds a DSN/secret. All scratch databases and the cluster roles are
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib
 import os
 import pathlib
 import sys
 import tempfile
+import threading
+import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import _pg  # noqa: E402  (standalone live-PG runner: SNACKPORTAL_TEST_DSN, available()/run()/swap_db)
@@ -86,6 +112,37 @@ _DDL_BLOBS = [
 _CTL_DB = "sp2_b7b_e2e_ctl"  # scratch Control-DB reference (distinct from any tenant DB)
 _CLUSTER_ROLES = ("sp2_provisioner", "lineage_writer", "lineage_reader")  # cluster-scoped; created by 003 templates
 _ORG, _FED = "org_ref_x", "fed_ref_x"
+
+# PRD 07C V5's full tenant business table census (the 07B.1 composed apply must produce exactly these
+# ON TOP of the bootstrap objects; census mirrors the 07C harness).
+_TENANT_BUSINESS_TABLES = (
+    "agents",
+    "ai_agents",
+    "startups",
+    "investors",
+    "deals",
+    "startup_ownership",
+    "investor_ownership",
+    "deal_ownership",
+    "startup_ai_ownership",
+    "investor_ai_ownership",
+    "deal_ai_ownership",
+    "startup_contacts",
+    "investor_contacts",
+    "startup_investors",
+)
+
+
+def _tenant_apply_order_from_guard() -> list:
+    """TENANT_DDL_APPLY_ORDER parsed from 07C's machine-readable guard authority (AST literal —
+    no import, no side effects). C7 Option 2: this harness asserts membership/order against the
+    07C-owned list; it deliberately duplicates NO tenant blob pins and names NO _REVIEWED_* pin
+    (the b7c1r2 meta-guard scans this directory for _REVIEWED_* — tenant pins are 07C's)."""
+    guard = pathlib.Path(__file__).resolve().parents[2] / "architecture" / "test_tenant_ddl_blob_drift.py"
+    for node in ast.parse(guard.read_text(encoding="utf-8")).body:
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "TENANT_DDL_APPLY_ORDER" for t in node.targets):
+            return ast.literal_eval(node.value)
+    raise AssertionError("TENANT_DDL_APPLY_ORDER not found in the 07C tenant blob-drift guard")
 
 
 # --- helpers (stdlib only; driver reached solely via importlib.import_module) ---------------------
@@ -226,6 +283,97 @@ def test_e2e_onboard_applies_schema_and_reaches_ready(admin_dsn: str) -> None:
             ta.close()
         print("PASS: C1 tenant A physical schema present (schema_version=1, lineage(+segment), dv_sentinel.marker, 3 roles)")
 
+        # ---- PRD 07B.1: composed Step-2b + System Primary probes (autocommit: error probes are own txns)
+        from control_plane.adapters.providers.postgres_tenant_schema_applicator import (
+            default_tenant_schema_ddl_paths,
+        )
+
+        pa = psycopg.connect(_pg.swap_db(admin_dsn, tenant_database_name(tids[0])))
+        pa.autocommit = True
+        try:
+            with pa.cursor() as cur:
+                # C9 — the composed transaction applied the full tenant business schema, and the
+                # applicator's composed order is 6 bootstrap files then 07C's TENANT_DDL_APPLY_ORDER
+                # (membership/order asserted against the 07C authority — C7 Option 2, no pin duplication).
+                for table in _TENANT_BUSINESS_TABLES:
+                    assert _one(cur, "SELECT to_regclass(%s)", (table,)) is not None, f"{table} must exist after Ready"
+                names = [p.name for p in default_tenant_schema_ddl_paths()]
+                assert len(names) == 13, f"composed Step-2b path count must be 13: {names}"
+                assert names[:6] == [p.name for p, _sha in _DDL_BLOBS], "the six 07B bootstrap templates must come first"
+                assert names[6:] == _tenant_apply_order_from_guard(), (
+                    f"appended tenant files {names[6:]} must equal 07C's TENANT_DDL_APPLY_ORDER"
+                )
+                print("PASS: C9 composed Step-2b applied 13 files (6 bootstrap + 7 tenant in 07C order); full tenant schema present")
+
+                # C10 + C11 + C15 — exactly one seeded System Primary; correct shape; zero humans needed.
+                assert _one(cur, "SELECT count(*) FROM agents WHERE agent_kind = 'system_primary'") == 1
+                assert _one(cur, "SELECT count(*) FROM agents") == 1, "the SP seed must be the ONLY agents row"
+                cur.execute("SELECT agent_status, supervised_by_agent_id FROM agents WHERE agent_kind = 'system_primary'")
+                status, supervisor = cur.fetchone()
+                assert status == "active" and supervisor is None, (status, supervisor)
+                assert _one(cur, "SELECT count(*) FROM agents WHERE agent_kind = 'human'") == 0
+                print("PASS: C10/C11/C15 exactly one system_primary (active, unsupervised); zero humans required for Ready")
+
+                # C13 — duplicate direct SP insert rejected by the 07C singleton (own txn under autocommit).
+                dup_raised = False
+                try:
+                    cur.execute(
+                        "INSERT INTO agents (agent_kind, agent_status, supervised_by_agent_id) VALUES ('system_primary', 'active', NULL)"
+                    )
+                except Exception:
+                    dup_raised = True
+                assert dup_raised, "a second system_primary row must be rejected by ux_agents_single_system_primary"
+                print("PASS: C13 duplicate system_primary insert rejected (07C singleton)")
+
+                # C14 — the 07C protective trigger still blocks DELETE and kind-flip after bootstrap.
+                del_raised = False
+                try:
+                    cur.execute("DELETE FROM agents WHERE agent_kind = 'system_primary'")
+                except Exception:
+                    del_raised = True
+                assert del_raised, "system_primary DELETE must be rejected by trg_agents_protect_system_primary"
+                flip_raised = False
+                try:
+                    cur.execute("UPDATE agents SET agent_kind = 'human' WHERE agent_kind = 'system_primary'")
+                except Exception:
+                    flip_raised = True
+                assert flip_raised, "system_primary kind-flip must be rejected by trg_agents_protect_system_primary"
+                assert _one(cur, "SELECT count(*) FROM agents WHERE agent_kind = 'system_primary'") == 1
+                print("PASS: C14 system_primary DELETE and kind-flip remain blocked by the 07C trigger after bootstrap")
+
+                # C16 — no queue-manager / reservation / claim structures (name check Python-side:
+                # a literal % in SQL would collide with the driver's placeholder parsing).
+                cur.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")
+                names_in_db = [r[0] for r in cur.fetchall()]
+                offenders = [t for t in names_in_db if any(tok in t for tok in ("queue", "reservation", "claim"))]
+                assert not offenders, f"no queue/reservation/claim table may exist: {offenders}"
+                print("PASS: C16 no queue-manager / reservation / claim table exists")
+
+                # C17 — tenancy is PHYSICAL: no TENANT BUSINESS table carries a tenant_id column
+                # (the 07C V5 §13 invariant, scoped exactly as 07C's own guard scopes it). The
+                # bootstrap `import_job` table's tenant_id (lineage/001, blob-pinned since Phase 6)
+                # is the PRE-EXISTING IC-003 import-provenance field — not shared-DB tenancy.
+                cur.execute("SELECT table_name FROM information_schema.columns WHERE table_schema = 'public' AND column_name = 'tenant_id'")
+                tid_tables = {r[0] for r in cur.fetchall()}
+                business_offenders = tid_tables & set(_TENANT_BUSINESS_TABLES)
+                assert not business_offenders, f"no tenant business table may carry tenant_id: {sorted(business_offenders)}"
+                assert tid_tables <= {"import_job"}, f"unexpected tenant_id column beyond IC-003 import_job: {sorted(tid_tables)}"
+                print("PASS: C17 no tenant_id column in the tenant business tables (physical multi-DB; import_job's is IC-003)")
+        finally:
+            pa.close()
+
+        # C18 — the Control-DB reference holds NO tenant operational tables.
+        ctl = psycopg.connect(_pg.swap_db(admin_dsn, _CTL_DB))
+        try:
+            with ctl.cursor() as cur:
+                for table in ("agents", "startups", "investors", "deals"):
+                    assert _one(cur, "SELECT to_regclass(%s)", (table,)) is None, (
+                        f"tenant operational table {table} must NOT exist in the Control DB"
+                    )
+        finally:
+            ctl.close()
+        print("PASS: C18 Control-DB reference holds no tenant operational tables")
+
         out_b = _onboard(orch, tids[1], "c-b")
         assert out_b.result is DistinctnessResult.VERIFIED, out_b.reason
         rec_b = store.get_tenant(tids[1])
@@ -337,10 +485,207 @@ def test_schema_application_idempotent_reapply(admin_dsn: str) -> None:
             with t.cursor() as cur:
                 assert _one(cur, "SELECT count(*) FROM schema_version") == 1, "re-apply must not re-seed (idempotent)"
                 assert _one(cur, "SELECT to_regclass('lineage')") is not None, "lineage must remain present"
+                # C12 (PRD 07B.1): the full-set re-apply (13 files + seed, twice) leaves EXACTLY ONE
+                # System Primary — the WHERE NOT EXISTS seed and the DROP-TRIGGER-recreate are both no-ops.
+                assert _one(cur, "SELECT count(*) FROM agents WHERE agent_kind = 'system_primary'") == 1, (
+                    "full-set idempotent retry must preserve exactly one system_primary row"
+                )
+                assert _one(cur, "SELECT count(*) FROM agents") == 1, "re-apply must not add agents rows"
         finally:
             t.close()
         print("PASS: C5 idempotent re-apply (no error; schema_version=1 row; lineage present)")
+        print("PASS: C12 full-set idempotent retry preserves exactly one system_primary row")
     finally:
+        _drop_db(psycopg, admin_dsn, target)
+        for role in _CLUSTER_ROLES:
+            _drop_role(psycopg, admin_dsn, role)
+
+
+def test_composed_late_failure_and_seed_failure_rollback(admin_dsn: str) -> None:
+    """C20 (07C-AT-2): rollback proofs for the COMPOSED 13-file Step-2b transaction.
+    (a) a failing statement AFTER all 13 composed files rolls the ENTIRE transaction back — no
+    bootstrap schema, no tenant schema, no System Primary row persists; (b) a seed-time failure
+    (the module seed SQL patched to hit a nonexistent table — test-only, restored in finally)
+    likewise rolls back all 13 applied files. Fail-closed both ways: TenantSchemaApplicationError."""
+    psycopg = _psycopg()
+    from control_plane.adapters.providers import postgres_tenant_schema_applicator as applicator_mod
+    from control_plane.adapters.providers.postgres_provisioning_operator import PostgresProvisioningOperator
+
+    tid = "b7b1late"
+    target = tenant_database_name(tid)
+    secret_store = _HarnessSecretStore(admin_dsn)
+    operator = PostgresProvisioningOperator(admin_dsn)
+    ref = SecretRef(store_ref=target, version="1")
+
+    fd, bad_name = tempfile.mkstemp(suffix=".sql")
+    os.close(fd)
+    bad_path = pathlib.Path(bad_name)
+    bad_path.write_text("SELECT * FROM __sp2_late_failure_after_composed_tenant_ddl__;\n", encoding="utf-8")
+    try:
+        _drop_db(psycopg, admin_dsn, target)
+        operator.provision(tid, target=target)
+
+        # (a) LATE failure: all 13 real templates apply, then a failing 14th path -> whole txn back.
+        late = applicator_mod.PostgresTenantSchemaApplicator(
+            secret_store, ddl_paths=[*applicator_mod.default_tenant_schema_ddl_paths(), bad_path]
+        )
+        raised = False
+        try:
+            late.apply_schema(tid, target=target, association_ref=ref)
+        except TenantSchemaApplicationError:
+            raised = True
+        assert raised, "a late failure after the 13 composed files must raise TenantSchemaApplicationError"
+        t = psycopg.connect(_pg.swap_db(admin_dsn, target))
+        try:
+            with t.cursor() as cur:
+                assert _one(cur, "SELECT to_regclass('schema_version')") is None, "bootstrap schema must roll back"
+                assert _one(cur, "SELECT to_regclass('agents')") is None, "tenant schema must roll back"
+                assert _one(cur, "SELECT to_regclass('deals')") is None, "tenant schema must roll back entirely"
+        finally:
+            t.close()
+        print("PASS: C20a late failure after the 13 composed files -> ENTIRE transaction rolled back (no partial schema, no SP)")
+
+        # (b) SEED-time failure: the seed itself fails -> all 13 applied DDL files roll back.
+        original_seed = applicator_mod._SYSTEM_PRIMARY_SEED_SQL
+        applicator_mod._SYSTEM_PRIMARY_SEED_SQL = "INSERT INTO __sp2_seed_failure_probe__ VALUES (1)"
+        try:
+            real = applicator_mod.PostgresTenantSchemaApplicator(secret_store)
+            raised2 = False
+            try:
+                real.apply_schema(tid, target=target, association_ref=ref)
+            except TenantSchemaApplicationError:
+                raised2 = True
+            assert raised2, "a seed-time failure must raise TenantSchemaApplicationError"
+        finally:
+            applicator_mod._SYSTEM_PRIMARY_SEED_SQL = original_seed
+        t2 = psycopg.connect(_pg.swap_db(admin_dsn, target))
+        try:
+            with t2.cursor() as cur:
+                assert _one(cur, "SELECT to_regclass('schema_version')") is None, "seed failure must roll back bootstrap DDL"
+                assert _one(cur, "SELECT to_regclass('agents')") is None, "seed failure must roll back tenant DDL"
+        finally:
+            t2.close()
+        print("PASS: C20b seed-time failure -> all 13 applied DDL files rolled back (fail-closed, no partial schema)")
+
+        # sanity: with the REAL seed restored, the same tenant DB then bootstraps cleanly end-to-end.
+        applicator_mod.PostgresTenantSchemaApplicator(secret_store).apply_schema(tid, target=target, association_ref=ref)
+        t3 = psycopg.connect(_pg.swap_db(admin_dsn, target))
+        try:
+            with t3.cursor() as cur:
+                assert _one(cur, "SELECT count(*) FROM agents WHERE agent_kind = 'system_primary'") == 1
+        finally:
+            t3.close()
+        print("PASS: C20 recovery — after the rollbacks the real composed apply still succeeds with one SP")
+    finally:
+        _drop_db(psycopg, admin_dsn, target)
+        for role in _CLUSTER_ROLES:
+            _drop_role(psycopg, admin_dsn, role)
+        try:
+            bad_path.unlink()
+        except Exception:
+            pass
+
+
+def test_seed_race_two_connection_classification(admin_dsn: str) -> None:
+    """C19 (07C-AT-5): TRUE two-connection System Primary seed race, classified fail-closed.
+
+    Two independent connections run the SEED PATH with deterministic overlap: connection W executes
+    the seed and holds it UNCOMMITTED; the loser — the REAL applicator with ddl_paths=[] (isolating
+    exactly the in-transaction seed seam) — passes WHERE NOT EXISTS (no committed SP visible),
+    INSERTs, and blocks on the 07C singleton index; once W commits, the loser's raw UniqueViolation
+    is classified by apply_schema as TenantSchemaApplicationError (never a raw driver exception past
+    the boundary), its transaction rolls back, and exactly one System Primary row remains.
+
+    REACHABILITY CAVEAT (exec-auth package §14): the normal onboarding path cannot naturally race
+    two same-DB Step-2b applies (provision's CREATE DATABASE serializes/precludes it), so the race
+    is isolated at the Step-2b seed seam after schema creation, as the package explicitly allows."""
+    psycopg = _psycopg()
+    from control_plane.adapters.providers import postgres_tenant_schema_applicator as applicator_mod
+    from control_plane.adapters.providers.postgres_provisioning_operator import PostgresProvisioningOperator
+
+    tid = "b7b1race"
+    target = tenant_database_name(tid)
+    secret_store = _HarnessSecretStore(admin_dsn)
+    operator = PostgresProvisioningOperator(admin_dsn)
+
+    w = None
+    try:
+        _drop_db(psycopg, admin_dsn, target)
+        operator.provision(tid, target=target)
+        # Schema WITHOUT a seed (the applicator always seeds): apply the 13 read-only templates
+        # directly so the agents table exists with ZERO rows, leaving the seed race fully open.
+        setup = psycopg.connect(_pg.swap_db(admin_dsn, target))
+        try:
+            with setup.cursor() as cur:
+                for path in applicator_mod.default_tenant_schema_ddl_paths():
+                    cur.execute(path.read_text(encoding="utf-8"))
+            setup.commit()
+        finally:
+            setup.close()
+
+        # Connection W: the WINNING seed — executed and held UNCOMMITTED (overlap window open).
+        w = psycopg.connect(_pg.swap_db(admin_dsn, target))
+        w.execute(applicator_mod._SYSTEM_PRIMARY_SEED_SQL)
+
+        # The LOSER: the real applicator seed seam in a second connection, on its own thread
+        # (its INSERT will block on the singleton index until W's transaction resolves).
+        outcome: dict = {}
+
+        def _loser() -> None:
+            try:
+                loser = applicator_mod.PostgresTenantSchemaApplicator(secret_store, ddl_paths=[])
+                loser.apply_schema(tid, target=target, association_ref=SecretRef(store_ref=target, version="1"))
+                outcome["result"] = "no-error"
+            except TenantSchemaApplicationError:
+                outcome["result"] = "classified"  # fail-closed, wrapped — NOT a raw driver exception
+            except Exception as exc:  # a raw driver exception leaking past the boundary = FAIL
+                outcome["result"] = f"raw:{type(exc).__name__}"
+
+        loser_thread = threading.Thread(target=_loser)
+        loser_thread.start()
+
+        # Deterministic overlap proof: wait until the loser is visibly LOCK-blocked on W's txn.
+        mon = psycopg.connect(admin_dsn, autocommit=True)
+        try:
+            deadline = time.time() + 30
+            blocked = False
+            while time.time() < deadline:
+                with mon.cursor() as cur:
+                    n = _one(
+                        cur,
+                        "SELECT count(*) FROM pg_stat_activity WHERE datname = %s AND wait_event_type = 'Lock'",
+                        (target,),
+                    )
+                if n and n >= 1:
+                    blocked = True
+                    break
+                time.sleep(0.05)
+            assert blocked, "the losing seed never blocked on the singleton — two-connection overlap not established"
+        finally:
+            mon.close()
+        print("PASS: C19 overlap established (loser LOCK-blocked on the singleton while winner uncommitted)")
+
+        w.commit()  # winner commits -> loser's INSERT raises the singleton UniqueViolation
+        loser_thread.join(timeout=30)
+        assert not loser_thread.is_alive(), "loser thread must finish after the winner commits"
+        assert outcome.get("result") == "classified", (
+            f"the losing concurrent seed must be classified as TenantSchemaApplicationError, got: {outcome.get('result')}"
+        )
+
+        check = psycopg.connect(_pg.swap_db(admin_dsn, target))
+        try:
+            with check.cursor() as cur:
+                assert _one(cur, "SELECT count(*) FROM agents WHERE agent_kind = 'system_primary'") == 1
+                assert _one(cur, "SELECT count(*) FROM agents") == 1, "the loser must leave NO second row (rolled back)"
+        finally:
+            check.close()
+        print("PASS: C19 two-connection seed race — one SP committed; loser classified fail-closed (TenantSchemaApplicationError)")
+    finally:
+        if w is not None:
+            try:
+                w.close()  # close BEFORE the drop so an aborted winner txn cannot block it
+            except Exception:
+                pass
         _drop_db(psycopg, admin_dsn, target)
         for role in _CLUSTER_ROLES:
             _drop_role(psycopg, admin_dsn, role)
@@ -353,5 +698,7 @@ if __name__ == "__main__":
             test_non_vacuity_without_step2b_verify_fails,
             test_schema_application_atomic_rollback,
             test_schema_application_idempotent_reapply,
+            test_composed_late_failure_and_seed_failure_rollback,
+            test_seed_race_two_connection_classification,
         ]
     )
