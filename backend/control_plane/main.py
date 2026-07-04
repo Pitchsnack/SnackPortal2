@@ -106,6 +106,35 @@ TENANT_SCHEMA_APPLICATOR_ENV = "SP2_CP_TENANT_SCHEMA_APPLICATOR"
 # control-store widening pattern); the composition root holds NO DSN literal.
 PROVISIONING_ADMIN_DSN_REF = "control/provisioning-admin-dsn"
 
+# PRD 07D-2a (AT-07D1-9): the LIVE-side selector family for the coherence matrix. If ANY of these
+# selects 'postgres', ALL FOUR selectors (these three + SP2_CP_CONTROL_STORE) must be 'postgres'
+# (RULE 1) — otherwise construction fails closed. Hazards each mix would open (source-verified):
+# provisioning=postgres + in-memory control store -> real physical databases recorded only in
+# volatile memory (orphans on every restart — the largest orphan source); applicator=postgres +
+# in-memory provisioning -> real DDL applied to an un-provisioned/arbitrary target; ledger=postgres
+# without the full postgres path -> FABRICATED in-memory evidence durably recorded in the real
+# control_distinctness_ledger plus durable fake READY rows (fail-open). Control-store-standalone
+# 'postgres' (RULE 2) remains ALLOWED — the established, live-proven B-7B durable audit/registry
+# posture (it creates nothing physical). All-in_memory and all-postgres are the two sanctioned
+# compositions (RULE 3).
+_LIVE_SELECTOR_ENVS: Tuple[str, str, str] = (
+    PROVISIONING_ADAPTER_ENV,
+    TENANT_SCHEMA_APPLICATOR_ENV,
+    DISTINCTNESS_LEDGER_ENV,
+)
+
+
+def _proven_control_evidence(evidence: Optional[DistinctnessEvidence]) -> Optional[DistinctnessEvidence]:
+    """PRD 07D-2a (AT-07D1-8): accept Control-DB evidence ONLY with a PROVEN write-sentinel.
+
+    A gather whose sentinel was not written AND read back (``sentinel_written=False`` or a missing
+    token) must not count as resolved Control-DB evidence — one of the gate's five DV-C7A
+    comparison legs (token equality) would be silently inert. Returning None routes the lazy gate
+    into its existing fail-closed branch (``ProvisioningError``; no tenant reaches Ready)."""
+    if evidence is None or not evidence.sentinel_written or not evidence.sentinel_token:
+        return None
+    return evidence
+
 
 class CanonicalTenantRefInMemoryEvidence(InMemoryDistinctnessEvidenceProvider):
     """In-memory distinctness evidence aware of the canonical tenant refs minted since 07D-1.
@@ -190,6 +219,8 @@ class ControlPlane:
     """Assembled control plane. Construction performs no I/O and no bootstrap."""
 
     def __init__(self, store: ControlStore | None = None) -> None:
+        # PRD 07D-2a: fail-closed selector coherence BEFORE any builder runs (AT-07D1-9).
+        self._check_selector_coherence()
         # An explicit store wins (tests / the B-7A harness). Otherwise the Control-Store is
         # selected by env (B-7B); the default is in-memory and construction performs no I/O.
         self.store = store if store is not None else self._build_store()
@@ -207,6 +238,38 @@ class ControlPlane:
         self.operator, self.provisioning = self._build_provisioning()
         self.schema_applicator = self._build_schema_applicator()
         self.onboarding = OnboardingOrchestrator(self.registry, self.operator, self.provisioning, self.audit, self.schema_applicator)
+
+    @staticmethod
+    def _selector_value(env_name: str) -> str:
+        """One selector's effective value — normalized BYTE-EQUAL to the builders (07D-2a R1-10).
+
+        A value like ``'  IN_MEMORY  '`` must classify identically here and in ``_build_store`` /
+        ``_build_provisioning`` / ``_build_schema_applicator`` / ``_build_ledger``."""
+        return (os.environ.get(env_name) or "in_memory").strip().lower()
+
+    def _check_selector_coherence(self) -> None:
+        """PRD 07D-2a selector-coherence matrix (AT-07D1-9) — fail closed at construction.
+
+        RULE 1: 'postgres' on ANY live-side selector (provisioning / schema applicator /
+        distinctness ledger) requires ALL FOUR selectors (incl. the control store) to be
+        'postgres'; any mix raises ValueError. RULE 2: control-store-standalone 'postgres' stays
+        ALLOWED (the live-proven B-7B durable audit/registry posture — creates nothing physical;
+        see the 07D-2a documented residual). RULE 3: all-in_memory and all-postgres are allowed.
+        Reads the four ENV VALUES ONLY (never the effective store object — the explicit ``store=``
+        constructor param remains a deliberate bypass used by the B-7B selector tests). Performs
+        no I/O; unknown selector tokens are left to the builders' existing per-selector
+        fail-closed ValueError (the outcome is ValueError either way)."""
+        selectors = (CONTROL_STORE_ENV, *_LIVE_SELECTOR_ENVS)
+        values = {name: self._selector_value(name) for name in selectors}
+        live = [name for name in _LIVE_SELECTOR_ENVS if values[name] == "postgres"]
+        if live and any(values[name] != "postgres" for name in selectors):
+            mixed = ", ".join(f"{name}={values[name]!r}" for name in selectors)
+            raise ValueError(
+                "incoherent selector combination (PRD 07D-2a RULE 1): selecting 'postgres' for "
+                "provisioning, the tenant schema applicator, or the distinctness ledger requires "
+                f"ALL FOUR selectors to be 'postgres' — got {mixed}. Half-live compositions "
+                "manufacture orphans or record fabricated evidence (fail closed)."
+            )
 
     def _build_store(self) -> ControlStore:
         """Select the Control-Store backend (controlled non-production; PRD 06 B-7B).
@@ -310,11 +373,15 @@ class ControlPlane:
         def _control_evidence() -> Optional[DistinctnessEvidence]:
             # D-C: REAL Control-DB evidence — gathered against the control-store DB reference at
             # first verification (lazy). The provider fails closed (returns None) on any error;
-            # the gate then raises rather than verifying against placeholder evidence.
-            return control_evidence_provider.gather(
-                control_ref,
-                sentinel_token=uuid.uuid4().hex,
-                sentinel_namespace=NONPROD_CONTROL_SENTINEL_NAMESPACE,
+            # 07D-2a (AT-07D1-8) additionally requires a PROVEN write-sentinel — an unproven
+            # gather is treated as unavailable. The gate then raises rather than verifying
+            # against placeholder or unproven evidence.
+            return _proven_control_evidence(
+                control_evidence_provider.gather(
+                    control_ref,
+                    sentinel_token=uuid.uuid4().hex,
+                    sentinel_namespace=NONPROD_CONTROL_SENTINEL_NAMESPACE,
+                )
             )
 
         gate = _LazyControlEvidenceGate(

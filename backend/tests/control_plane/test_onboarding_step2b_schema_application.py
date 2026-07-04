@@ -292,16 +292,38 @@ def test_schema_applicator_default_in_memory() -> None:
 
 
 def test_schema_applicator_postgres_selectable_and_unknown_fails_closed() -> None:
-    # PRD 07D-1 (was: deferred): 'postgres' now SELECTS the real applicator through ControlPlane()
-    # composition (lazy — construction applies nothing and opens no connection); any unknown value
-    # still fails closed (ValueError; never a silent fallback).
-    saved = os.environ.get(cp_main.TENANT_SCHEMA_APPLICATOR_ENV)
+    # PRD 07D-1 (was: deferred), under the PRD 07D-2a coherence matrix: applicator-ALONE=postgres
+    # is now a FORBIDDEN mix (RULE 1 — real DDL against an un-provisioned/arbitrary target); the
+    # real applicator is selected via the ALL-FOUR-postgres composition (lazy — construction
+    # applies nothing and opens no connection); any unknown value still fails closed (ValueError).
+    all_envs = (
+        cp_main.CONTROL_STORE_ENV,
+        cp_main.PROVISIONING_ADAPTER_ENV,
+        cp_main.TENANT_SCHEMA_APPLICATOR_ENV,
+        cp_main.DISTINCTNESS_LEDGER_ENV,
+    )
+    saved = {name: os.environ.get(name) for name in all_envs}
     try:
+        # applicator-alone -> forbidden mix (fail closed at construction).
+        for name in all_envs:
+            os.environ.pop(name, None)
         os.environ[cp_main.TENANT_SCHEMA_APPLICATOR_ENV] = "postgres"
+        raised = False
+        try:
+            cp_main.ControlPlane()
+        except ValueError:
+            raised = True
+        assert raised, "applicator-alone=postgres must fail closed (07D-2a RULE 1 forbidden mix)"
+        # all-four postgres -> the real applicator is selected (lazy).
+        for name in all_envs:
+            os.environ[name] = "postgres"
         cp = cp_main.ControlPlane()
         assert isinstance(cp.schema_applicator, applicator_mod.PostgresTenantSchemaApplicator), (
-            "postgres must select the real schema applicator"
+            "all-four postgres must select the real schema applicator"
         )
+        # unknown applicator values still fail closed (with the other selectors unset).
+        for name in all_envs:
+            os.environ.pop(name, None)
         for value in ("durable", "true", "x"):
             os.environ[cp_main.TENANT_SCHEMA_APPLICATOR_ENV] = value
             raised = False
@@ -311,10 +333,11 @@ def test_schema_applicator_postgres_selectable_and_unknown_fails_closed() -> Non
                 raised = True
             assert raised, f"{value!r} must fail closed (ValueError)"
     finally:
-        if saved is None:
-            os.environ.pop(cp_main.TENANT_SCHEMA_APPLICATOR_ENV, None)
-        else:
-            os.environ[cp_main.TENANT_SCHEMA_APPLICATOR_ENV] = saved
+        for name, old in saved.items():
+            if old is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = old
 
 
 # --- PRD 07B.1: composed 13-file sequencing + in-transaction System Primary seed ------------------

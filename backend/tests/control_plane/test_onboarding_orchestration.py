@@ -288,20 +288,31 @@ def test_onboard_mints_canonical_tenant_ref() -> None:
     assert tenant_id_from_dsn_ref("sp2_tenant_t1") is None  # non-canonical -> opaque (no parse)
 
 
+_ALL_SELECTOR_ENVS = (
+    cp_main.CONTROL_STORE_ENV,
+    cp_main.PROVISIONING_ADAPTER_ENV,
+    cp_main.TENANT_SCHEMA_APPLICATOR_ENV,
+    cp_main.DISTINCTNESS_LEDGER_ENV,
+)
+
+
 def test_postgres_adapter_selectable_lazily() -> None:
-    # PRD 07D-1 (was: deferred to B-4): 'postgres' now SELECTS the real operator through
-    # ControlPlane() composition; construction stays lazy (no I/O — the operator resolves the
-    # admin DSN reference per-operation only). The unknown-value fail-closed check is below.
-    saved = os.environ.get(cp_main.PROVISIONING_ADAPTER_ENV)
-    os.environ[cp_main.PROVISIONING_ADAPTER_ENV] = "postgres"
+    # PRD 07D-1 (was: deferred to B-4), under the 07D-2a coherence matrix: the real operator is
+    # selected via the ALL-FOUR-postgres composition (RULE 3 — provisioning-alone is now a
+    # forbidden mix, RULE 1); construction stays lazy (no I/O — the operator resolves the admin
+    # DSN reference per-operation only). The unknown-value fail-closed check is below.
+    saved = {name: os.environ.get(name) for name in _ALL_SELECTOR_ENVS}
+    for name in _ALL_SELECTOR_ENVS:
+        os.environ[name] = "postgres"
     try:
         cp = cp_main.ControlPlane()
         assert isinstance(cp.operator, PostgresProvisioningOperator), "postgres must select the real operator"
     finally:
-        if saved is None:
-            os.environ.pop(cp_main.PROVISIONING_ADAPTER_ENV, None)
-        else:
-            os.environ[cp_main.PROVISIONING_ADAPTER_ENV] = saved
+        for name, old in saved.items():
+            if old is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = old
 
 
 def test_provisioning_adapter_unknown_value_fails_closed() -> None:
@@ -396,6 +407,116 @@ def test_tenant_dsn_provider_unresolved_fails_closed() -> None:
             os.environ[key] = saved
 
 
+# --- PRD 07D-2a: tenant-id admission guardrail (AT-07D1-11) ---------------------------------------
+_BAD_TENANT_IDS = ("", "control", "Control", "CONTROL", "a-b", "a/b", "a\\b", "a.b", "A_b", "a b", "té")
+_GOOD_TENANT_IDS = ("a", "t1", "tenant_1", "acme", "zeta", "nova")
+
+
+def test_tenant_id_admission_rejects_bad_ids_with_zero_effects() -> None:
+    # PRD 07D-2a (AT-07D1-11): a bad tenant id is rejected BEFORE any effect — no store write, no
+    # audit record, no provision() call, no lifecycle transition, no PERSISTED secret reference.
+    # (onboard() constructs an in-memory SecretRef string first — side-effect-free by design.)
+    from control_plane.registry import RegistryError
+
+    for bad in _BAD_TENANT_IDS:
+        store = InMemoryControlStore()
+        operator = InMemoryProvisioningOperator()
+        orch = _orchestrator(store, operator=operator)
+        raised = False
+        try:
+            orch.onboard(bad, organization_ref=_ORG, federation_config_ref=_FED, actor="ops_ref", correlation_id="c-adm")
+        except RegistryError:
+            raised = True
+        assert raised, f"bad tenant id {bad!r} must be rejected with RegistryError"
+        assert store.get_tenant(bad) is None, f"{bad!r}: no registry row may be written"
+        assert store.list_audit() == [], f"{bad!r}: no audit record may be written"
+        assert operator.provisioned == set(), f"{bad!r}: provision() must never be called"
+
+
+def test_tenant_id_admission_accepts_representative_ids() -> None:
+    # Representative safe ids (incl. the shapes every existing suite/harness id uses) still pass
+    # registration; a full onboard still reaches READY for a canonical example.
+    store = InMemoryControlStore()
+    orch = _orchestrator(store)
+    for good in _GOOD_TENANT_IDS:
+        rec = orch._registry.register_tenant(
+            tenant_id=good,
+            organization_ref=_ORG,
+            expected_schema_version="1",
+            database_association_ref=SecretRef(store_ref=tenant_dsn_ref(good), version="1"),
+            federation_config_ref=_FED,
+            actor="ops_ref",
+            correlation_id="c-adm-ok",
+        )
+        assert rec.tenant_id == good
+    # end-to-end: a fresh orchestrator onboards a valid id to READY (admission does not regress).
+    store2 = InMemoryControlStore()
+    assert _onboard(_orchestrator(store2), tenant_id="t1").result is DistinctnessResult.VERIFIED
+
+
+# --- PRD 07D-2a: secret precedence / version pins (AT-07D1-10; Q4 = pin current behavior) ----------
+def test_tenant_dsn_provider_env_wins_over_file_when_both_set() -> None:
+    # BOTH forms set -> the ENV value is returned and the file is silently ignored (the current
+    # deterministic behavior on BOTH sides of the replicated convention — pinned, not changed).
+    ref = SecretRef(store_ref=tenant_dsn_ref("t7"), version="1")
+    key = EnvTenantDsnSecretStore._env_key(ref.store_ref, ref.version)
+    saved = os.environ.get(key)
+    with tempfile.TemporaryDirectory() as tmp:
+        secret_file = pathlib.Path(tmp) / f"{ref.store_ref}@{ref.version}"
+        secret_file.parent.mkdir(parents=True, exist_ok=True)
+        secret_file.write_text("file-material\n", encoding="utf-8")
+        os.environ[key] = "env-material"
+        try:
+            provider = EnvTenantDsnSecretStore(secret_dir=tmp)
+            assert provider.resolve(ref).material == "env-material", "env must win over file (pinned behavior)"
+        finally:
+            if saved is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = saved
+
+
+def test_tenant_dsn_provider_version_2_via_both_forms() -> None:
+    # Version "2" resolves via the env form AND the file form (nothing pins version "1" only).
+    ref_v2 = SecretRef(store_ref=tenant_dsn_ref("t8"), version="2")
+    key = EnvTenantDsnSecretStore._env_key(ref_v2.store_ref, ref_v2.version)
+    assert key.endswith("_V2"), key
+    saved = os.environ.get(key)
+    os.environ[key] = "env-material-v2"
+    try:
+        assert EnvTenantDsnSecretStore().resolve(ref_v2).material == "env-material-v2"
+    finally:
+        if saved is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = saved
+    with tempfile.TemporaryDirectory() as tmp:
+        secret_file = pathlib.Path(tmp) / f"{ref_v2.store_ref}@2"
+        secret_file.parent.mkdir(parents=True, exist_ok=True)
+        secret_file.write_text("file-material-v2\n", encoding="utf-8")
+        assert EnvTenantDsnSecretStore(secret_dir=tmp).resolve(ref_v2).material == "file-material-v2"
+
+
+def test_tenant_dsn_provider_current_version_token_pinned() -> None:
+    # current_version uses the literal LOWERCASE 'current' token (…_Vcurrent; only the store_ref
+    # is uppercased) and defaults to "1" when unpinned — identical on the router side (pinned).
+    store_ref = tenant_dsn_ref("t7")
+    key = EnvTenantDsnSecretStore._env_key(store_ref, "current")
+    assert key == "SNACKPORTAL_TENANT_SECRET_TENANT_T7_DSN_Vcurrent", key
+    saved = os.environ.get(key)
+    provider = EnvTenantDsnSecretStore(secret_dir=None)
+    try:
+        os.environ.pop(key, None)
+        assert provider.current_version(store_ref) == "1", "unpinned current_version must default to '1'"
+        os.environ[key] = "3"
+        assert provider.current_version(store_ref) == "3"
+    finally:
+        if saved is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = saved
+
+
 def test_tenant_dsn_provider_replicates_router_convention() -> None:
     # D3 alignment WITHOUT importing database_router (AC-15/AC-84): both provider SOURCES carry the
     # IDENTICAL env-key mapping expression, the same env prefix, the same 'tenant/' prefix guard,
@@ -438,6 +559,11 @@ _TESTS = [
     test_tenant_dsn_provider_file_resolution,
     test_tenant_dsn_provider_unresolved_fails_closed,
     test_tenant_dsn_provider_replicates_router_convention,
+    test_tenant_id_admission_rejects_bad_ids_with_zero_effects,
+    test_tenant_id_admission_accepts_representative_ids,
+    test_tenant_dsn_provider_env_wins_over_file_when_both_set,
+    test_tenant_dsn_provider_version_2_via_both_forms,
+    test_tenant_dsn_provider_current_version_token_pinned,
 ]
 
 if __name__ == "__main__":

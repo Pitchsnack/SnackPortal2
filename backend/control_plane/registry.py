@@ -9,6 +9,7 @@ deferred* to Build Phase 4. Stores references only — never credentials (D-14).
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 from typing import Optional
 
@@ -25,6 +26,17 @@ PHASE_4_STATES = (
     TenantLifecycleState.READY,
     TenantLifecycleState.FAILED,
 )
+
+# PRD 07D-2a tenant-id admission (AT-07D1-11). LOWERCASE-only so two tenant ids can never alias
+# through the case-flattening tenant secret env-key convention (`tenant/A_b/dsn` and
+# `tenant/a_b/dsn` compute the SAME env key — a silent shared-credential hazard). The charset is
+# the lowercase subset of the provisioning operator's _SAFE_IDENTIFIER, so the admission gate and
+# the CREATE DATABASE target gate enforce one alphabet (defence in depth: reject at registration,
+# before any physical resource, persisted secret reference, sentinel namespace, or lifecycle
+# transition exists). 'control' is RESERVED: it would collide with the Control-DB vocabulary and
+# the control sentinel namespace (`dv_sentinel_control`).
+_TENANT_ID_SHAPE = re.compile(r"^[a-z0-9_]+$")
+_RESERVED_TENANT_IDS = frozenset({"control"})
 
 
 class RegistryError(Exception):
@@ -52,6 +64,15 @@ class TenantRegistry:
         actor: str,
         correlation_id: str,
     ) -> TenantRecord:
+        # PRD 07D-2a admission guard (AT-07D1-11): reject BEFORE any effect — no store write, no
+        # audit record, no provision(), no lifecycle transition, no persisted secret reference
+        # (fail closed). Checked ahead of the idempotent existing-return so an invalid id can
+        # never be read back either. The tenant_id is an identifier, never a secret (D-14-safe
+        # to echo in the error).
+        if tenant_id.lower() in _RESERVED_TENANT_IDS:
+            raise RegistryError(f"invalid tenant_id {tenant_id!r}: reserved identifier")
+        if not _TENANT_ID_SHAPE.match(tenant_id):
+            raise RegistryError(f"invalid tenant_id {tenant_id!r}: must match ^[a-z0-9_]+$")
         existing = self._store.get_tenant(tenant_id)
         if existing is not None:
             return existing  # idempotent by tenant_id (IC-002)

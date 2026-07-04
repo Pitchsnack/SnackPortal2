@@ -299,6 +299,33 @@ def _with_ledger_env(value):
     return restore
 
 
+# PRD 07D-2a: the durable ledger is selectable only in the ALL-FOUR-postgres composition (coherence
+# matrix RULE 1 — ledger=postgres alone, or ledger+control-store without provisioning, would let
+# fabricated in-memory evidence be durably recorded). These tests therefore compose all four.
+_ALL_SELECTOR_ENVS = (
+    cp_main.CONTROL_STORE_ENV,
+    cp_main.PROVISIONING_ADAPTER_ENV,
+    cp_main.TENANT_SCHEMA_APPLICATOR_ENV,
+    cp_main.DISTINCTNESS_LEDGER_ENV,
+)
+
+
+def _with_all_selectors_postgres():
+    """Set ALL FOUR selectors to 'postgres'; returns a restore() callable."""
+    saved = {name: os.environ.get(name) for name in _ALL_SELECTOR_ENVS}
+    for name in _ALL_SELECTOR_ENVS:
+        os.environ[name] = "postgres"
+
+    def restore():
+        for name, old in saved.items():
+            if old is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = old
+
+    return restore
+
+
 # --- preserved in-memory default + inventory semantics ------------------------------------------
 def test_inmemory_inventory_semantics() -> None:
     led = InMemoryDistinctnessLedger()
@@ -325,11 +352,11 @@ def test_default_ledger_is_in_memory() -> None:
 
 
 def test_postgres_ledger_selection_composes_durable_lazily() -> None:
-    # PRD 07D-1 (was: deferred): 'postgres' now SELECTS the durable Control-DB-backed ledger
-    # through ControlPlane() composition — still lazy-connect (construction opens NO connection;
-    # the connect recorder proves zero I/O) over the B-7B control-store secret binding.
-    saved = os.environ.get(cp_main.DISTINCTNESS_LEDGER_ENV)
-    os.environ[cp_main.DISTINCTNESS_LEDGER_ENV] = "postgres"
+    # PRD 07D-1 (was: deferred), under the 07D-2a coherence matrix: the durable ledger is selected
+    # via the ALL-FOUR-postgres composition (RULE 1 — ledger-alone is a forbidden mix) — still
+    # lazy-connect (construction opens NO connection; the connect recorder proves zero I/O) over
+    # the B-7B control-store secret binding.
+    restore_e = _with_all_selectors_postgres()
     calls = []
     restore_c = _patch_connect(lambda *a, **k: calls.append((a, k)))
     try:
@@ -338,10 +365,7 @@ def test_postgres_ledger_selection_composes_durable_lazily() -> None:
         assert calls == [], "durable-ledger selection must open no connection at construction (lazy)"
     finally:
         restore_c()
-        if saved is None:
-            os.environ.pop(cp_main.DISTINCTNESS_LEDGER_ENV, None)
-        else:
-            os.environ[cp_main.DISTINCTNESS_LEDGER_ENV] = saved
+        restore_e()
 
 
 # --- durable adapter: structure + construction-no-I/O -------------------------------------------
@@ -766,7 +790,8 @@ def test_ledger_flag_normalization_table() -> None:
             assert isinstance(cp.provisioning._ledger, InMemoryDistinctnessLedger), f"{value!r} -> in-memory"
         finally:
             restore()
-    restore = _with_ledger_env("postgres")
+    # 07D-2a: 'postgres' selects the durable ledger only in the ALL-FOUR composition (RULE 1).
+    restore = _with_all_selectors_postgres()
     try:
         cp = cp_main.ControlPlane()
         assert isinstance(cp.provisioning._ledger, ledger_mod.PostgresDistinctnessLedger), "'postgres' -> durable"
