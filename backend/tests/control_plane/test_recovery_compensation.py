@@ -233,6 +233,24 @@ def test_census_unknown_row_count_fails_closed() -> None:
     assert classify_content(replace(base, user_tables=tables), supported_schema_versions=["1"]) == CONTENT_NON_EMPTY
 
 
+def test_census_surfaced_matview_and_large_object_entries_are_evidence() -> None:
+    # AT-PMV46-1 (PR #46 pre-merge V-1): the adapter surfaces materialized views / foreign
+    # tables as census names with count -1 and large-object presence as a synthetic
+    # pg_catalog entry — every such entry is outside the bootstrap set (or violates its
+    # count rule) => non_empty => evidence, never dropped.
+    base = _bootstrap_inspection("sp2_tenant_t1")
+    snap = dict(base.user_tables)
+    snap["public.evidence_snapshot"] = -1  # a surfaced materialized view (uncounted)
+    assert classify_content(replace(base, user_tables=snap), supported_schema_versions=["1"]) == CONTENT_NON_EMPTY
+    lo = dict(base.user_tables)
+    lo["pg_catalog.pg_largeobject"] = 3  # the synthetic large-object presence entry
+    assert classify_content(replace(base, user_tables=lo), supported_schema_versions=["1"]) == CONTENT_NON_EMPTY
+    shadow = dict(base.user_tables)
+    shadow["public.deals"] = -1  # a matview SHADOWING an allowed bootstrap name (relkind != 'r')
+    assert classify_content(replace(base, user_tables=shadow), supported_schema_versions=["1"]) == CONTENT_NON_EMPTY
+    assert "pg_catalog.pg_largeobject" not in BOOTSTRAP_TABLE_SET, "the synthetic entry must never be bootstrap-compatible"
+
+
 # --- DeprovisionTenantDatabase: positive paths ------------------------------------------------
 def test_deprovision_empty_database_succeeds_and_retains_registry_record() -> None:
     store, audit, registry, op, ledger, inspection, service, _ = _plane()
@@ -499,6 +517,47 @@ def test_toctou_revalidation_refuses_concurrent_ledger_claim() -> None:
     out = _deprovision(service)
     assert not out.completed and out.reason == REASON_LEDGER_COLLISION
     assert op.deprovision_calls == [] and target in op.provisioned
+
+
+def test_final_proof_re_proves_own_evidence_leg() -> None:
+    # AT-PMV46-2 (PR #46 pre-merge V-2 / refuter R7): the §7.1 final proof ITSELF refuses
+    # when the tenant's OWN recorded evidence disagrees with the observed fingerprint — the
+    # own leg is inside the re-validated subset, not only the pre-census check (the
+    # other-tenant loop excludes the own row, so this leg needs its own re-proof).
+    store, audit, registry, op, ledger, inspection, service, _ = _plane()
+    target = tenant_database_name("t1")
+    op.provision("t1", target=target)
+    observed_fingerprint = f"::{target}:db"  # the in-memory double's identity for the target
+    # No own evidence -> the non-content proof passes with the fingerprint leg engaged.
+    assert service._non_content_proof("t1", target, fingerprint=observed_fingerprint) is None
+    # MISMATCHED own evidence -> the final proof refuses (fingerprint_mismatch), fail closed.
+    ledger.record_evidence(
+        "t1",
+        DistinctnessEvidence(
+            system_identifier="cluster_SWAP",
+            database_identity=f"{target}:777",
+            observed_target=target,
+            secret_ref_key=tenant_dsn_ref("t1"),
+            sentinel_namespace="dv_sentinel_t1",
+            sentinel_token="tok",
+            sentinel_written=True,
+        ),
+    )
+    assert service._non_content_proof("t1", target, fingerprint=observed_fingerprint) == REASON_FINGERPRINT_MISMATCH
+    # MATCHING own evidence passes (a healthy previously-verified identity is not a refusal).
+    ledger.record_evidence(
+        "t1",
+        DistinctnessEvidence(
+            system_identifier="",
+            database_identity=f"{target}:db",
+            observed_target=target,
+            secret_ref_key=tenant_dsn_ref("t1"),
+            sentinel_namespace="dv_sentinel_t1",
+            sentinel_token="tok",
+            sentinel_written=True,
+        ),
+    )
+    assert service._non_content_proof("t1", target, fingerprint=observed_fingerprint) is None
 
 
 # --- ScanForOrphans (§9): read-only classification --------------------------------------------
@@ -784,6 +843,7 @@ _TESTS = [
     test_census_agents_seed_rules,
     test_census_schema_version_rules,
     test_census_unknown_row_count_fails_closed,
+    test_census_surfaced_matview_and_large_object_entries_are_evidence,
     test_deprovision_empty_database_succeeds_and_retains_registry_record,
     test_deprovision_bootstrap_only_database_succeeds,
     test_deprovision_quarantined_tenant_is_eligible,
@@ -802,6 +862,7 @@ _TESTS = [
     test_deprovision_accepts_no_database_name_input,
     test_toctou_revalidation_refuses_concurrent_state_change,
     test_toctou_revalidation_refuses_concurrent_ledger_claim,
+    test_final_proof_re_proves_own_evidence_leg,
     test_scan_is_read_only_zero_events_and_never_calls_deprovision,
     test_scan_classifies_eligible_and_active_rows,
     test_scan_reports_database_without_registry_record,

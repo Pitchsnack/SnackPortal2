@@ -78,6 +78,11 @@ control-clone composition (ctlx):
             schema_version rows classify bootstrap-only (R1-3 census) and deprovision.
   07D2B2B-4 non-empty tenant DB preserved: content beyond bootstrap refuses (no DROP),
             emits TenantDeprovisionFailed, and quarantines the eligible FAILED tenant.
+            AT-PMV46-1 (V-1 revision): three INDEPENDENT evidence classes each refuse
+            ALONE — a materialized view (physically stored rows; invisible to a
+            relkind='r'-only census), a large object (pg_largeobject presence probe),
+            and an extra ordinary table; the read-only scan reports non_empty_evidence;
+            the already-QUARANTINED tenant STAYS across repeat refusals (R1-5 live).
   07D2B2B-5 Control DB non-droppable: a dedicated composition whose Control DB sits INSIDE
             the tenant namespace refuses compensation BEFORE any operator call — the
             Control DB survives; the primary Control DB also survives the whole run.
@@ -890,6 +895,10 @@ def test_07d_composition_onboarding(admin_dsn: str) -> None:
         print("PASS: 07D2B2B-3 bootstrap-only tenant DB deprovisioned (schema + seed + schema_version accepted by the R1-3 census)")
 
         # --- 07D2B2B-4: NON-EMPTY tenant DB preserved + quarantined --------------------------------
+        # AT-PMV46-1 (PR #46 pre-merge V-1): three INDEPENDENT evidence classes, each proven
+        # to refuse ALONE — (A) a materialized view (physically stored rows invisible to a
+        # relkind='r'-only census), (B) a large object (pg_largeobject; invisible to any
+        # user-relation scan), (C) an extra ordinary table (the original characterization).
         out_ne = cp.onboarding.onboard(
             tid_ne,
             organization_ref=_ORG,
@@ -899,7 +908,49 @@ def test_07d_composition_onboarding(admin_dsn: str) -> None:
             expected_schema_version="2",
         )
         assert out_ne.result is DistinctnessResult.VERIFICATION_FAILED
-        ne_conn = psycopg.connect(_pg.swap_db(admin_dsn, tenant_database_name(tid_ne)))
+        ne_db = tenant_database_name(tid_ne)
+        # Phase A — MATVIEW-ONLY evidence: the DB is bootstrap-only except a matview with rows.
+        ne_conn = psycopg.connect(_pg.swap_db(admin_dsn, ne_db))
+        try:
+            with ne_conn.cursor() as cur:
+                cur.execute("CREATE MATERIALIZED VIEW evidence_snapshot AS SELECT g AS x FROM generate_series(1, 5) g")
+            ne_conn.commit()
+        finally:
+            ne_conn.close()
+        out_ne_mv = _deprovision(cp, tid_ne, "c-2b2b-ne1")
+        assert not out_ne_mv.completed and out_ne_mv.reason == REASON_CONTENT_NOT_EMPTY, (
+            f"a materialized view ALONE must classify as evidence (V-1): {out_ne_mv}"
+        )
+        assert _db_exists(psycopg, admin_dsn, ne_db), "the matview-bearing DB is PRESERVED (never dropped)"
+        rec_ne = cp.store.get_tenant(tid_ne)
+        assert rec_ne is not None and rec_ne.lifecycle_state is TenantLifecycleState.QUARANTINED, (
+            "an eligible (Failed) tenant with evidence content quarantines (R1-5)"
+        )
+        # The READ-ONLY scan must also see the matview content: non_empty_evidence, unsafe.
+        ne_scan_entry = next(e for e in cp.orphan_scan.scan_for_orphans() if e.database_name == ne_db)
+        assert ne_scan_entry.classification == "non_empty_evidence" and not ne_scan_entry.safe_to_deprovision, ne_scan_entry
+        assert ne_scan_entry.content_class == "non_empty"
+        # Phase B — LARGE-OBJECT-ONLY evidence: drop the matview; leave only a large object.
+        ne_conn = psycopg.connect(_pg.swap_db(admin_dsn, ne_db))
+        try:
+            with ne_conn.cursor() as cur:
+                assert _one(cur, "SELECT count(*) FROM evidence_snapshot") == 5, "matview rows survive Phase A unmodified"
+                cur.execute("DROP MATERIALIZED VIEW evidence_snapshot")
+                cur.execute("SELECT lo_create(0)")
+            ne_conn.commit()
+        finally:
+            ne_conn.close()
+        out_ne_lo = _deprovision(cp, tid_ne, "c-2b2b-ne2")
+        assert not out_ne_lo.completed and out_ne_lo.reason == REASON_CONTENT_NOT_EMPTY, (
+            f"a large object ALONE must classify as evidence (V-1): {out_ne_lo}"
+        )
+        assert _db_exists(psycopg, admin_dsn, ne_db), "the large-object-bearing DB is PRESERVED"
+        rec_ne_lo = cp.store.get_tenant(tid_ne)
+        assert rec_ne_lo is not None and rec_ne_lo.lifecycle_state is TenantLifecycleState.QUARANTINED, (
+            "an already-QUARANTINED tenant STAYS on a further proof failure (R1-5, live)"
+        )
+        # Phase C — EXTRA-TABLE evidence (the original characterization).
+        ne_conn = psycopg.connect(_pg.swap_db(admin_dsn, ne_db))
         try:
             with ne_conn.cursor() as cur:
                 cur.execute("CREATE TABLE evidence_extra (x int)")  # beyond-bootstrap content
@@ -907,23 +958,25 @@ def test_07d_composition_onboarding(admin_dsn: str) -> None:
             ne_conn.commit()
         finally:
             ne_conn.close()
-        out_ne_dep = _deprovision(cp, tid_ne, "c-2b2b-ne1")
+        out_ne_dep = _deprovision(cp, tid_ne, "c-2b2b-ne3")
         assert not out_ne_dep.completed and out_ne_dep.reason == REASON_CONTENT_NOT_EMPTY, out_ne_dep
-        assert _db_exists(psycopg, admin_dsn, tenant_database_name(tid_ne)), "the non-empty DB is PRESERVED (never dropped)"
-        rec_ne = cp.store.get_tenant(tid_ne)
-        assert rec_ne is not None and rec_ne.lifecycle_state is TenantLifecycleState.QUARANTINED, (
-            "an eligible (Failed) tenant with evidence content quarantines (R1-5)"
-        )
+        assert _db_exists(psycopg, admin_dsn, ne_db), "the non-empty DB is PRESERVED (never dropped)"
         ne_acts = [r.action for r in cp.store.list_audit() if r.tenant_id == tid_ne]
         assert events.TENANT_DEPROVISION_FAILED in ne_acts and events.TENANT_QUARANTINED in ne_acts
-        assert "QuarantineTenant" in ne_acts
-        ne_check = psycopg.connect(_pg.swap_db(admin_dsn, tenant_database_name(tid_ne)))
+        assert ne_acts.count("QuarantineTenant") == 1, "exactly ONE quarantine transition (re-quarantine never attempted)"
+        assert ne_acts.count(events.TENANT_DEPROVISION_REQUESTED) == 3
+        assert ne_acts.count(events.TENANT_DEPROVISION_FAILED) == 3, "each explicit request pairs with exactly one Failed"
+        ne_check = psycopg.connect(_pg.swap_db(admin_dsn, ne_db))
         try:
             with ne_check.cursor() as cur:
                 assert _one(cur, "SELECT count(*) FROM evidence_extra") == 1, "the evidence rows survive unmodified"
+                assert _one(cur, "SELECT count(*) FROM pg_largeobject_metadata") == 1, "the large object survives"
         finally:
             ne_check.close()
-        print("PASS: 07D2B2B-4 non-empty tenant DB preserved (no DROP; TenantDeprovisionFailed; FAILED -> QUARANTINED)")
+        print(
+            "PASS: 07D2B2B-4 non-empty tenant DB preserved (matview-only, large-object-only, and extra-table "
+            "evidence EACH refuse alone; no DROP; scan reports non_empty_evidence; FAILED -> QUARANTINED once, then stays)"
+        )
 
         # --- 07D2B2B-5: Control DB non-droppable (fails BEFORE the operator; Control DB survives) --
         # A dedicated composition whose CONTROL database sits INSIDE the tenant namespace

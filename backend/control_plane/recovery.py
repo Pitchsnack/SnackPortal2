@@ -71,9 +71,13 @@ class RecoveryError(Exception):
 class DatabaseInspection:
     """Reference-only physical inspection of ONE candidate database.
 
-    ``user_tables`` maps fully-qualified ``schema.table`` names (all non-system schemas) to
-    row counts; a count of ``-1`` means the adapter could not count safely (fail-closed:
-    classified non-empty). Carries identifiers only — never a credential or payload."""
+    ``user_tables`` maps fully-qualified ``schema.relation`` names (all non-system schemas)
+    to row counts. The postgres adapter surfaces every DATA-BEARING relation (AT-PMV46-1):
+    ordinary tables are counted; materialized views and foreign tables surface with ``-1``;
+    a synthetic ``pg_catalog.pg_largeobject`` entry marks large-object presence. A count of
+    ``-1`` means "not safely countable" (fail-closed: any allowed name carrying ``-1``
+    violates its count rule, and any other name is outside the bootstrap set ⇒ evidence).
+    Carries identifiers only — never a credential or payload."""
 
     database_name: str
     system_identifier: str  # PostgreSQL cluster system identifier ("" in the in-memory plane)
@@ -400,11 +404,12 @@ class RecoveryCompensationService:
         if classify_content(inspection, supported_schema_versions=self._supported) == CONTENT_NON_EMPTY:
             return self._fail(tenant_id, target, REASON_CONTENT_NOT_EMPTY, actor, correlation_id)
 
-        # §7.1 TOCTOU rule (R1-9) + §7 element 5 fingerprint leg: ONE final re-validation of
+        # §7.1 TOCTOU rule (R1-9) + §7 element 5 fingerprint legs: ONE final re-validation of
         # the critical non-content proof IMMEDIATELY before the destructive step — re-reads
         # the registry state, the Control-DB identity, and the full ledger inventory fresh
-        # (now with the observed fingerprint). A concurrent state/ledger/identity change
-        # between the first proof and this point refuses with NO DROP. MR-13 kill site.
+        # (now with the observed fingerprint, covering BOTH the other-tenant loop and the
+        # tenant's OWN recorded evidence — AT-PMV46-2). A concurrent state/ledger/identity
+        # change between the first proof and this point refuses with NO DROP. MR-13 kill site.
         failure = self._non_content_proof(tenant_id, target, fingerprint=inspection.fingerprint)
         if failure is not None:
             return self._fail(tenant_id, target, failure, actor, correlation_id)
@@ -422,8 +427,13 @@ class RecoveryCompensationService:
     def _non_content_proof(self, tenant_id: str, target: str, *, fingerprint: Optional[str]) -> Optional[str]:
         """§7 elements 1, 2 and 5 — the subset the §7.1 re-validation re-proves.
 
-        Returns a non-sensitive failure reason, or None when every element holds. The
-        target is re-derived by the caller from ``tenant_id`` on every call (element 2's
+        Element 5 is re-proven on BOTH legs once the observed fingerprint is known
+        (``fingerprint is not None``): the other-tenant collision loop AND the tenant's
+        OWN recorded identity (AT-PMV46-2). Elements 3 (canonical ref shape) and 4 (the
+        content census) are proven once, before the inspection I/O — the content leg is a
+        documented residual of the deferred 07D-2c atomic operation. Returns a
+        non-sensitive failure reason, or None when every element holds. The target is
+        re-derived by the caller from ``tenant_id`` on every call (element 2's
         recomputation); this function re-reads the registry, the Control-DB identity, and
         the ledger inventory fresh each time (nothing is trusted from an earlier pass)."""
         record = self._registry.get_tenant_status(tenant_id)
@@ -443,6 +453,16 @@ class RecoveryCompensationService:
                 return REASON_LEDGER_COLLISION
             if fingerprint is not None and evidence.fingerprint == fingerprint:
                 return REASON_LEDGER_COLLISION
+        if fingerprint is not None:
+            # AT-PMV46-2 (PR #46 pre-merge V-2): re-prove the OWN-evidence leg of element 5
+            # inside the §7.1 window. The loop above deliberately EXCLUDES this tenant's own
+            # row, so without this re-check a concurrent write of the tenant's own evidence
+            # (e.g. a parallel verifier immediately before its READY commit) landing between
+            # the pre-census fingerprint check and the DROP would be invisible to the final
+            # re-validation. Fail closed: recorded identity must match the observed one.
+            own = dict(self._ledger.evidence_excluding(_NO_TENANT)).get(tenant_id)
+            if own is not None and (own.fingerprint != fingerprint or own.observed_target != target):
+                return REASON_FINGERPRINT_MISMATCH
         return None
 
     def _fail(
