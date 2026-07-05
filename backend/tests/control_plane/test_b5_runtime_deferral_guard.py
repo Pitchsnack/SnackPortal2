@@ -32,6 +32,7 @@ Standalone-runnable:
 
 from __future__ import annotations
 
+import itertools
 import os
 import pathlib
 import sys
@@ -40,13 +41,15 @@ from typing import Dict, Optional
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))  # backend on path
 
 from control_plane import main as cp_main  # noqa: E402
+from control_plane.adapters.providers import postgres_distinctness as pd_mod  # noqa: E402
 from control_plane.adapters.providers import postgres_distinctness_ledger as ledger_mod  # noqa: E402
 from control_plane.adapters.providers.in_memory_store import InMemoryControlStore  # noqa: E402
 from control_plane.adapters.providers.postgres_provisioning_operator import PostgresProvisioningOperator  # noqa: E402
 from control_plane.adapters.providers.postgres_store import PostgresControlStore  # noqa: E402
 from control_plane.adapters.providers.postgres_tenant_schema_applicator import PostgresTenantSchemaApplicator  # noqa: E402
 from control_plane.distinctness import DistinctnessEvidence, InMemoryDistinctnessLedger  # noqa: E402
-from control_plane.provisioning import InMemoryProvisioningOperator  # noqa: E402
+from control_plane.provisioning import InMemoryProvisioningOperator, ProvisioningError  # noqa: E402
+from shared.secrets import SecretRef  # noqa: E402
 
 # ALL FOUR selectors (07D-2a: the coherence matrix spans the control store + the live-side trio).
 _SELECTOR_ENVS = (
@@ -170,6 +173,10 @@ def test_control_store_standalone_postgres_remains_allowed() -> None:
     # PRD 07D-2a RULE 2: control-store-standalone 'postgres' is the live-proven B-7B durable
     # audit/registry posture and MUST keep constructing (lazily) — this pin protects the
     # off-limits B-7B selector tests/harness from a future matrix regression.
+    # PRD 07D-2b.1 extension (AC-10 + AC-7): construction stays allowed, but the MIXED effective
+    # posture (durable store + in-memory live) now fails onboard()/reassociate() closed with
+    # ProvisioningError BEFORE any side effect — closing the documented 07D-2a residual
+    # (durable fake-READY) while keeping the B-7B audit/registry posture fully usable.
     calls: list = []
     restore_c = _patch_connect(lambda *a, **k: calls.append((a, k)))
     env = _all(None)
@@ -180,6 +187,24 @@ def test_control_store_standalone_postgres_remains_allowed() -> None:
         assert isinstance(cp.store, PostgresControlStore), "RULE 2: durable store must be selected"
         assert isinstance(cp.operator, InMemoryProvisioningOperator), "live side stays in-memory"
         assert calls == [], "RULE 2 construction must perform no I/O (lazy-connect)"
+        for attempt in ("onboard", "reassociate"):
+            raised = False
+            try:
+                if attempt == "onboard":
+                    cp.onboarding.onboard(
+                        "b5guard", organization_ref="org_ref", federation_config_ref="fed_ref", actor="ops_ref", correlation_id="c-b5g"
+                    )
+                else:
+                    cp.onboarding.reassociate(
+                        "b5guard",
+                        new_association_ref=SecretRef(store_ref="tenant/b5guard/dsn", version="1"),
+                        actor="ops_ref",
+                        correlation_id="c-b5g2",
+                    )
+            except ProvisioningError:
+                raised = True
+            assert raised, f"07D-2b.1 guard: {attempt}() must fail closed under the standalone posture"
+        assert calls == [], "the guard must deny BEFORE any store/DB access (zero I/O)"
     finally:
         restore_e()
         restore_c()
@@ -235,6 +260,107 @@ def test_unproven_control_evidence_is_rejected() -> None:
     assert cp_main._proven_control_evidence(proven) is proven, "proven evidence must pass through unchanged"
 
 
+def test_sentinel_wrapper_wired_at_call_site() -> None:
+    # PRD 07D-2b.1 (AT-07D2A2-2): prove the sentinel rule is WIRED at the D-C factory call site,
+    # not merely that the helper works (PR #42's mutation pass proved deleting the call-site
+    # wrapper survived the whole suite — this test closes that surviving mutant). Strategy: patch
+    # PostgresDistinctnessEvidenceProvider.gather as a CLASS attribute reached through the adapter
+    # module (the established b5 patch-through-module precedent) to return UNPROVEN evidence, then
+    # prove BOTH: (a) the composed factory nulls it (the wrapper is in the closure), and (b) a
+    # verify() attempt fails closed with ProvisioningError before any transition (AC-19).
+    saved_gather = pd_mod.PostgresDistinctnessEvidenceProvider.gather
+
+    def _unproven_gather(self, ref, *, sentinel_token=None, sentinel_namespace=None):  # noqa: ANN001
+        return _evidence(written=False, token="tok")
+
+    calls: list = []
+    restore_c = _patch_connect(lambda *a, **k: calls.append((a, k)))
+    restore_e = _with_env_map(_all("postgres"))
+    pd_mod.PostgresDistinctnessEvidenceProvider.gather = _unproven_gather  # type: ignore[method-assign]
+    try:
+        cp = cp_main.ControlPlane()
+        factory = cp.provisioning._control_evidence_factory
+        assert factory is not None, "the postgres composition must wire a control-evidence factory"
+        assert factory() is None, "the call site must WRAP gather in _proven_control_evidence (unproven -> None)"
+        raised = False
+        try:
+            cp.provisioning.verify("wiretest", actor="ops_ref", correlation_id="c-wire")
+        except ProvisioningError:
+            raised = True
+        assert raised, "verify() must fail closed (ProvisioningError) when control evidence is unproven"
+        assert calls == [], "the wiring proof must not open any live connection"
+    finally:
+        pd_mod.PostgresDistinctnessEvidenceProvider.gather = saved_gather  # type: ignore[method-assign]
+        restore_e()
+        restore_c()
+
+
+def test_selector_normalization_mixed_case_values() -> None:
+    # PRD 07D-2b.1 (AT-07D2A2-3): the matrix's _selector_value normalization must classify
+    # case/whitespace variants byte-equal to the builders (PR #42's mutation pass proved removing
+    # .strip().lower() survived the suite — under that mutant '  POSTGRES  ' bypasses RULE 1 while
+    # the builder still selects the real adapter: a half-live plane). This test closes the mutant.
+    calls: list = []
+    restore_c = _patch_connect(lambda *a, **k: calls.append((a, k)))
+    try:
+        # (a) a normalized live-side variant ALONE must trip RULE 1 (matrix sees it as live).
+        for variant in ("  POSTGRES  ", "Postgres", " postgres "):
+            env = _all(None)
+            env[cp_main.PROVISIONING_ADAPTER_ENV] = variant
+            restore_e = _with_env_map(env)
+            try:
+                raised = False
+                try:
+                    cp_main.ControlPlane()
+                except ValueError:
+                    raised = True
+                assert raised, f"live selector {variant!r} must normalize to 'postgres' and trip RULE 1"
+            finally:
+                restore_e()
+        # (b) ALL FOUR normalized variants construct the real adapters (RULE 3 under normalization).
+        restore_e = _with_env_map(_all("  POSTGRES  "))
+        try:
+            cp = cp_main.ControlPlane()
+            assert isinstance(cp.store, PostgresControlStore)
+            assert isinstance(cp.operator, PostgresProvisioningOperator)
+        finally:
+            restore_e()
+        assert calls == [], "normalization checks must perform zero I/O"
+    finally:
+        restore_c()
+
+
+def test_selector_matrix_full_enumeration() -> None:
+    # PRD 07D-2b.1 (AT-07D2A2-4): exhaustive {unset, postgres}^4 truth table — EXACTLY three
+    # combinations may construct: all-default (RULE 3), control-store-standalone (RULE 2), and
+    # all-postgres (RULE 3). The other 13 fail closed with ValueError and zero I/O. This replaces
+    # minima-sampling with the full matrix boundary.
+    allowed = {
+        (None, None, None, None),
+        ("postgres", None, None, None),  # control-store standalone (B-7B)
+        ("postgres", "postgres", "postgres", "postgres"),
+    }
+    calls: list = []
+    restore_c = _patch_connect(lambda *a, **k: calls.append((a, k)))
+    try:
+        constructed = set()
+        for combo in itertools.product((None, "postgres"), repeat=4):
+            env = dict(zip(_SELECTOR_ENVS, combo))
+            restore_e = _with_env_map(env)
+            try:
+                try:
+                    cp_main.ControlPlane()
+                    constructed.add(combo)
+                except ValueError:
+                    pass
+            finally:
+                restore_e()
+        assert constructed == allowed, f"constructing set must be EXACTLY the three allowed postures; got {constructed}"
+        assert calls == [], "the enumeration must perform zero I/O"
+    finally:
+        restore_c()
+
+
 if __name__ == "__main__":
     test_default_composition_is_in_memory_no_io()
     test_all_postgres_selection_composes_real_adapters_lazily()
@@ -242,4 +368,7 @@ if __name__ == "__main__":
     test_control_store_standalone_postgres_remains_allowed()
     test_unknown_selector_values_fail_closed()
     test_unproven_control_evidence_is_rejected()
+    test_sentinel_wrapper_wired_at_call_site()
+    test_selector_normalization_mixed_case_values()
+    test_selector_matrix_full_enumeration()
     print("ALL PASSED")

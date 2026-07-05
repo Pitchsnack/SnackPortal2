@@ -46,6 +46,7 @@ from control_plane.distinctness import (  # noqa: E402
 from control_plane.onboarding import OnboardingOrchestrator, tenant_dsn_ref, tenant_id_from_dsn_ref  # noqa: E402
 from control_plane.provisioning import (  # noqa: E402
     InMemoryProvisioningOperator,
+    ProvisioningError,
     ProvisioningOperator,
     ProvisioningVerificationService,
     ProvisionResult,
@@ -408,7 +409,25 @@ def test_tenant_dsn_provider_unresolved_fails_closed() -> None:
 
 
 # --- PRD 07D-2a: tenant-id admission guardrail (AT-07D1-11) ---------------------------------------
-_BAD_TENANT_IDS = ("", "control", "Control", "CONTROL", "a-b", "a/b", "a\\b", "a.b", "A_b", "a b", "té")
+_BAD_TENANT_IDS = (
+    "",
+    "control",
+    "Control",
+    "CONTROL",
+    "a-b",
+    "a/b",
+    "a\\b",
+    "a.b",
+    "A_b",
+    "a b",
+    "té",
+    # PRD 07D-2b.1 (AT-07D2A2-1): with `.match` Python's `$` also matches before ONE trailing
+    # newline, so these were admitted pre-fullmatch and would alias "t1_"/"control_"/"tenant_1_"
+    # through the '\n'->'_' env-key flattening. fullmatch rejects them.
+    "t1\n",
+    "control\n",
+    "tenant_1\n",
+)
 _GOOD_TENANT_IDS = ("a", "t1", "tenant_1", "acme", "zeta", "nova")
 
 
@@ -452,6 +471,93 @@ def test_tenant_id_admission_accepts_representative_ids() -> None:
     # end-to-end: a fresh orchestrator onboards a valid id to READY (admission does not regress).
     store2 = InMemoryControlStore()
     assert _onboard(_orchestrator(store2), tenant_id="t1").result is DistinctnessResult.VERIFIED
+
+
+# --- PRD 07D-2b.1: symmetric effective-posture onboard-time guard (AC-4..8) ------------------------
+def _with_selector_env(values: dict):
+    """Set/clear the four selector env vars (only the given keys set); return a restore() callable."""
+    saved = {name: os.environ.get(name) for name in _ALL_SELECTOR_ENVS}
+    for name in _ALL_SELECTOR_ENVS:
+        os.environ.pop(name, None)
+    for name, value in values.items():
+        if value is not None:
+            os.environ[name] = value
+
+    def restore() -> None:
+        for name, old in saved.items():
+            if old is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = old
+
+    return restore
+
+
+def _assert_onboarding_guarded(cp: "cp_main.ControlPlane") -> None:
+    """Both guarded entry points must raise ProvisioningError pre-effect."""
+    for op in ("onboard", "reassociate"):
+        raised = False
+        try:
+            if op == "onboard":
+                cp.onboarding.onboard("guard_t1", organization_ref=_ORG, federation_config_ref=_FED, actor="ops_ref", correlation_id="c-g1")
+            else:
+                cp.onboarding.reassociate(
+                    "guard_t1",
+                    new_association_ref=SecretRef(store_ref=tenant_dsn_ref("guard_t1"), version="1"),
+                    actor="ops_ref",
+                    correlation_id="c-g2",
+                )
+        except ProvisioningError:
+            raised = True
+        assert raised, f"{op}() must fail closed (ProvisioningError) under a MIXED effective posture"
+
+
+def test_onboard_guard_blocks_durable_store_with_in_memory_live() -> None:
+    # Hazard posture (a) — the documented B-7B residual: durable/postgres control store standalone,
+    # live trio in-memory. Construction stays allowed (B-7B); onboard()/reassociate() fail closed
+    # BEFORE any side effect (the guard raises before any delegation reaches the orchestrator).
+    restore = _with_selector_env({cp_main.CONTROL_STORE_ENV: "postgres"})
+    try:
+        cp = cp_main.ControlPlane()  # constructs lazily (RULE 2) — never blocked
+        _assert_onboarding_guarded(cp)
+    finally:
+        restore()
+
+
+def test_onboard_guard_blocks_reverse_mix_explicit_store_bypass() -> None:
+    # Hazard posture (b) — the REVERSE explicit-constructor bypass: an in-memory store passed via
+    # store= under the all-postgres env composition (the 07D-2a matrix reads env only). Real
+    # physical DBs on a volatile registry would be orphans-on-restart; the guard fails both entry
+    # points closed with PROVEN zero effects (the in-memory store is directly readable).
+    restore = _with_selector_env({name: "postgres" for name in _ALL_SELECTOR_ENVS})
+    try:
+        store = InMemoryControlStore()
+        cp = cp_main.ControlPlane(store=store)  # lazy; no I/O at construction
+        _assert_onboarding_guarded(cp)
+        assert store.get_tenant("guard_t1") is None, "guard must fire before any registry write"
+        assert store.list_audit() == [], "guard must fire before any audit record"
+    finally:
+        restore()
+
+
+def test_onboard_guard_allows_matched_postures() -> None:
+    # MATCHED postures pass through unchanged: the all-in-memory default onboards to READY via the
+    # composed plane, and the all-postgres composition exposes the REAL orchestrator (its onboard
+    # behavior is proven in the live 07D harness; construction here stays lazy/zero-I/O).
+    restore = _with_selector_env({})
+    try:
+        cp = cp_main.ControlPlane()
+        assert isinstance(cp.onboarding, OnboardingOrchestrator), "matched posture must not be wrapped"
+        out = cp.onboarding.onboard("guard_ok", organization_ref=_ORG, federation_config_ref=_FED, actor="ops_ref", correlation_id="c-g3")
+        assert out.result is DistinctnessResult.VERIFIED, "all-in-memory onboarding must still reach READY"
+    finally:
+        restore()
+    restore = _with_selector_env({name: "postgres" for name in _ALL_SELECTOR_ENVS})
+    try:
+        cp = cp_main.ControlPlane()
+        assert isinstance(cp.onboarding, OnboardingOrchestrator), "all-postgres posture must not be wrapped"
+    finally:
+        restore()
 
 
 # --- PRD 07D-2a: secret precedence / version pins (AT-07D1-10; Q4 = pin current behavior) ----------
@@ -561,6 +667,9 @@ _TESTS = [
     test_tenant_dsn_provider_replicates_router_convention,
     test_tenant_id_admission_rejects_bad_ids_with_zero_effects,
     test_tenant_id_admission_accepts_representative_ids,
+    test_onboard_guard_blocks_durable_store_with_in_memory_live,
+    test_onboard_guard_blocks_reverse_mix_explicit_store_bypass,
+    test_onboard_guard_allows_matched_postures,
     test_tenant_dsn_provider_env_wins_over_file_when_both_set,
     test_tenant_dsn_provider_version_2_via_both_forms,
     test_tenant_dsn_provider_current_version_token_pinned,
