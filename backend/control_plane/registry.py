@@ -71,7 +71,10 @@ class TenantRegistry:
         # to echo in the error).
         if tenant_id.lower() in _RESERVED_TENANT_IDS:
             raise RegistryError(f"invalid tenant_id {tenant_id!r}: reserved identifier")
-        if not _TENANT_ID_SHAPE.match(tenant_id):
+        # fullmatch, not match (PRD 07D-2b.1 / AT-07D2A2-1): with `.match` Python's `$` also
+        # matches before ONE trailing newline, so "t1\n" would be admitted and would ALIAS
+        # "t1_" through the '\n'->'_' env-key flattening — the exact hazard this guard closes.
+        if not _TENANT_ID_SHAPE.fullmatch(tenant_id):
             raise RegistryError(f"invalid tenant_id {tenant_id!r}: must match ^[a-z0-9_]+$")
         existing = self._store.get_tenant(tenant_id)
         if existing is not None:

@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 import uuid
 from dataclasses import replace
-from typing import Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, NoReturn, Optional, Tuple
 
 from shared.adapters.providers.env_reference_secret_store import DEFAULT_ALLOWED, EnvReferenceSecretStore
 from shared.secrets import SecretRef
@@ -215,6 +215,60 @@ class _LazyControlEvidenceGate(ProvisioningVerificationService):
         return super().verify(tenant_id, actor=actor, correlation_id=correlation_id)
 
 
+class _MixedPostureOnboardingGuard:
+    """PRD 07D-2b.1: fail-closed onboarding facade for MIXED effective compositions.
+
+    The 07D-2a selector matrix reads ENV VALUES ONLY, so two code-level seams can still compose a
+    MIXED plane: (a) the documented B-7B residual — durable control store + in-memory live side —
+    where ``onboard()``/``reassociate()`` would commit a DURABLE fake-READY row backed by an
+    in-memory fake DB; and (b) the reverse — an explicit in-memory ``store=`` under the
+    all-postgres env composition — where they would create REAL physical databases recorded only
+    in volatile memory (orphans on restart). Under either mixed posture this facade replaces the
+    orchestrator and fails BOTH entry points closed with ``ProvisioningError`` BEFORE any side
+    effect (no registry read/write, no audit record, no provision(), no schema apply, no evidence
+    gather, no lifecycle transition). ``disable_routing`` delegates unchanged — it drops routing
+    evidence and emits events only (never writes Ready) and remains a safe operational companion.
+    Construction of the plane itself is NEVER blocked (the B-7B audit/registry posture stays fully
+    usable — PRD 06 B-7B tests construct and audit only)."""
+
+    def __init__(self, inner: OnboardingOrchestrator, posture: str) -> None:
+        self._inner = inner
+        self._posture = posture
+
+    def _deny(self, operation: str) -> NoReturn:
+        raise ProvisioningError(
+            f"{operation}() is disabled under a MIXED effective composition (PRD 07D-2b.1): "
+            f"{self._posture}. The durable-store standalone posture is audit/registry-only "
+            "(PRD 06 B-7B); full onboarding requires the matched all-postgres composition "
+            "(PRD 07D-1) — fail closed, no side effects were performed."
+        )
+
+    def onboard(
+        self,
+        tenant_id: str,
+        *,
+        organization_ref: str,
+        federation_config_ref: str,
+        actor: str,
+        correlation_id: str,
+        expected_schema_version: str = "1",
+    ) -> DistinctnessOutcome:
+        self._deny("onboard")
+
+    def reassociate(
+        self,
+        tenant_id: str,
+        *,
+        new_association_ref: SecretRef,
+        actor: str,
+        correlation_id: str,
+    ) -> DistinctnessOutcome:
+        self._deny("reassociate")
+
+    def disable_routing(self, tenant_id: str, *, actor: str, correlation_id: str) -> None:
+        self._inner.disable_routing(tenant_id, actor=actor, correlation_id=correlation_id)
+
+
 class ControlPlane:
     """Assembled control plane. Construction performs no I/O and no bootstrap."""
 
@@ -237,7 +291,36 @@ class ControlPlane:
         # env (OB-1); default is in-memory. Construction performs no I/O (lazy-connect).
         self.operator, self.provisioning = self._build_provisioning()
         self.schema_applicator = self._build_schema_applicator()
-        self.onboarding = OnboardingOrchestrator(self.registry, self.operator, self.provisioning, self.audit, self.schema_applicator)
+        # PRD 07D-2b.1: the symmetric effective-posture onboard-time guard wraps the orchestrator
+        # LAST, over the objects actually composed (never env values) — see _guarded_onboarding.
+        self.onboarding = self._guarded_onboarding(
+            OnboardingOrchestrator(self.registry, self.operator, self.provisioning, self.audit, self.schema_applicator)
+        )
+
+    def _guarded_onboarding(self, inner: OnboardingOrchestrator) -> "OnboardingOrchestrator | _MixedPostureOnboardingGuard":
+        """PRD 07D-2b.1 (AC-4..8): symmetric effective-object onboard-time guard.
+
+        Posture is computed from the COMPOSED objects, never env values, so both explicit
+        ``store=`` constructor bypass directions are covered (the 07D-2a matrix reads env only):
+        ``store_kind = durable`` iff the effective store is the Postgres ControlStore;
+        ``live_kind = postgres`` iff the effective operator is the Postgres provisioning operator
+        (``store=`` is this constructor's ONLY explicit parameter, so the live side is always
+        env-composed and matrix-coherent — the operator stands for the whole live trio).
+        MATCHED postures (both in-memory / both postgres) return the orchestrator unchanged;
+        MIXED postures get the fail-closed facade. Performs no I/O (isinstance only)."""
+        # Function-local imports mirror the builders' driver-containment pattern.
+        from .adapters.providers.postgres_provisioning_operator import PostgresProvisioningOperator
+        from .adapters.providers.postgres_store import PostgresControlStore
+
+        store_durable = isinstance(self.store, PostgresControlStore)
+        live_postgres = isinstance(self.operator, PostgresProvisioningOperator)
+        if store_durable == live_postgres:
+            return inner
+        posture = (
+            f"control store={'postgres' if store_durable else 'in_memory'}, "
+            f"provisioning operator={'postgres' if live_postgres else 'in_memory'}"
+        )
+        return _MixedPostureOnboardingGuard(inner, posture)
 
     @staticmethod
     def _selector_value(env_name: str) -> str:

@@ -49,6 +49,14 @@ contract fence above are preserved verbatim):
            orphan); gate-fail (expected '2' vs observed '1') -> FAILED + schema'd orphan; every
            retry is a terminal 'already_onboarded' no-op; deprovision() is NEVER called.
 
+PRD 07D-2b.1 (folded in per the confirmed V2 exec-auth; D1-D9 and 07D2A-1..4 preserved verbatim):
+  07D2A-1+ a trailing-newline bad id (fullmatch hardening, AT-07D2A2-1) and a per-bad-id
+           pg_database ABSENCE assertion (AT-07D2A2-5) strengthen the admission proof.
+  07D2B1-1 the symmetric effective-posture onboard-time guard, live: the standalone durable-store
+           posture constructs (B-7B preserved) but onboard() AND reassociate() fail closed with
+           ProvisioningError pre-effect — zero durable registry/audit/DB footprint proven against
+           the real control DB (closes the 07D-2a documented residual: durable fake-READY).
+
 DRIVER CONTAINMENT. No static database-driver import: psycopg is reached only via importlib after the
 DSN check; the postgres adapter CLASSES are imported lazily inside the exercise for isinstance proof
 only. The composed runtime path reaches the driver solely through the sanctioned provider zone.
@@ -84,7 +92,7 @@ from control_plane import main as cp_main  # noqa: E402
 from control_plane.adapters.providers.env_tenant_dsn_secret_store import EnvTenantDsnSecretStore  # noqa: E402
 from control_plane.distinctness import DistinctnessResult  # noqa: E402
 from control_plane.onboarding import tenant_dsn_ref  # noqa: E402
-from control_plane.provisioning import tenant_database_name  # noqa: E402
+from control_plane.provisioning import ProvisioningError, tenant_database_name  # noqa: E402
 from control_plane.read_api import ControlPlaneReadService  # noqa: E402
 from control_plane.records import TenantLifecycleState  # noqa: E402
 from control_plane.registry import RegistryError  # noqa: E402
@@ -401,7 +409,11 @@ def test_07d_composition_onboarding(admin_dsn: str) -> None:
 
         # === PRD 07D-2a characterization (prevention guardrails; recovery stays 07D-2b) ===========
         # --- 07D2A-1: tenant-id admission (AT-07D1-11) — bad ids rejected with ZERO effects -------
-        for bad in ("d07-bad", "control", "D07UPPER"):
+        # PRD 07D-2b.1 additions: a TRAILING-NEWLINE id ("d07nl\n" — pre-fullmatch it slipped
+        # through `.match`+`$` and aliased "d07nl_" via the '\n'->'_' env-key flattening;
+        # AT-07D2A2-1) and a direct pg_database ABSENCE assertion per bad id, proving the "no
+        # provision footprint" claim against the PHYSICAL layer, not just the store (AT-07D2A2-5).
+        for bad in ("d07-bad", "control", "D07UPPER", "d07nl\n"):
             admission_raised = False
             try:
                 _onboard(cp, bad, "c-07d2a-adm")
@@ -410,6 +422,7 @@ def test_07d_composition_onboarding(admin_dsn: str) -> None:
             assert admission_raised, f"bad tenant id {bad!r} must be rejected with RegistryError"
             assert cp.store.get_tenant(bad) is None, f"{bad!r}: no registry row may be written (durable store)"
             assert all(r.tenant_id != bad for r in cp.store.list_audit()), f"{bad!r}: no audit record may be written"
+            assert not _db_exists(psycopg, admin_dsn, tenant_database_name(bad)), f"{bad!r}: no physical DB may exist"
         print("PASS: 07D2A-1 tenant-id admission (bad ids rejected pre-effect; zero registry/audit/provision footprint)")
 
         # --- 07D2A-2: selector-coherence matrix (AT-07D1-9) — forbidden mix fails closed ----------
@@ -480,6 +493,48 @@ def test_07d_composition_onboarding(admin_dsn: str) -> None:
         print(
             "PASS: 07D2A-4 failure characterization (provision-fail: no orphan; schema-fail [D6]: empty orphan; "
             "gate-fail: schema'd orphan; retries terminal; deprovision never called; registry honest)"
+        )
+
+        # === PRD 07D-2b.1: symmetric effective-posture onboard-time guard — LIVE proof ============
+        # --- 07D2B1-1: the standalone durable-store posture (control_store=postgres, live trio
+        # in-memory) on the SAME scratch control DB. Construction stays allowed (B-7B preserved);
+        # onboard() AND reassociate() fail closed with ProvisioningError BEFORE any durable
+        # footprint — closing the 07D-2a documented residual (durable fake-READY). Zero footprint
+        # is proven against the REAL control DB through the primary composition's durable store.
+        saved_live_selectors = {
+            key: os.environ.pop(key, None)
+            for key in (cp_main.PROVISIONING_ADAPTER_ENV, cp_main.TENANT_SCHEMA_APPLICATOR_ENV, cp_main.DISTINCTNESS_LEDGER_ENV)
+        }
+        try:
+            cp_guard = cp_main.create_app()  # control_store stays 'postgres' -> standalone posture
+            open_stores.append(cp_guard.store)
+            for guard_op in ("onboard", "reassociate"):
+                guard_raised = False
+                try:
+                    if guard_op == "onboard":
+                        cp_guard.onboarding.onboard(
+                            "d07guard", organization_ref=_ORG, federation_config_ref=_FED, actor="ops_ref", correlation_id="c-07d2b1"
+                        )
+                    else:
+                        cp_guard.onboarding.reassociate(
+                            "d07guard",
+                            new_association_ref=SecretRef(store_ref=tenant_dsn_ref("d07guard"), version="1"),
+                            actor="ops_ref",
+                            correlation_id="c-07d2b1r",
+                        )
+                except ProvisioningError:
+                    guard_raised = True
+                assert guard_raised, f"07D-2b.1 guard: {guard_op}() must fail closed under the standalone posture"
+        finally:
+            for key, value in saved_live_selectors.items():
+                if value is not None:
+                    os.environ[key] = value
+        assert cp.store.get_tenant("d07guard") is None, "guard must leave NO durable registry row"
+        assert all(r.tenant_id != "d07guard" for r in cp.store.list_audit()), "guard must leave NO durable audit record"
+        assert not _db_exists(psycopg, admin_dsn, tenant_database_name("d07guard")), "guard must create NO physical DB"
+        print(
+            "PASS: 07D2B1-1 onboard-time guard (standalone durable-store posture: onboard+reassociate "
+            "fail closed pre-effect; zero durable registry/audit/DB footprint)"
         )
 
         # --- D9: clean-skip contract ---------------------------------------------------------------
