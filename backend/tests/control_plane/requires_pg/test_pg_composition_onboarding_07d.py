@@ -35,6 +35,20 @@ CHECKS (the 07D-1 exec-auth V2 §13 D-set):
   D9  clean-skip: with SNACKPORTAL_TEST_DSN unset (or psycopg absent) this file exits 0 via _pg.run's
       SKIP path without touching any database (proven by a separate unset-DSN invocation).
 
+PRD 07D-2a CHARACTERIZATION (folded in per the 07D-2a exec-auth; prevention + documentation of the
+CURRENT semantics — recovery remains the 07D-2b charter; the D1-D9 set and the terminal-retry
+contract fence above are preserved verbatim):
+  07D2A-1  tenant-id admission (AT-07D1-11): bad ids ('d07-bad'/'control'/'D07UPPER') rejected with
+           RegistryError BEFORE any effect — no durable registry row, no audit record, no DB.
+  07D2A-2  selector coherence (AT-07D1-9): a half-live mix (in-memory control store under postgres
+           provisioning) fails closed with ValueError at construction; all-four-postgres constructs.
+  07D2A-3  sentinel proof (AT-07D1-8): the LIVE control evidence resolved during D2 is proven;
+           sentinel_written=False / missing-token variants are rejected by the composition's rule.
+  07D2A-4  failure-injection characterization of the CURRENT landings: provision-fail (unresolvable
+           admin ref) -> PROVISIONING + NO orphan; schema-apply-fail -> D6 (PROVISIONING + EMPTY
+           orphan); gate-fail (expected '2' vs observed '1') -> FAILED + schema'd orphan; every
+           retry is a terminal 'already_onboarded' no-op; deprovision() is NEVER called.
+
 DRIVER CONTAINMENT. No static database-driver import: psycopg is reached only via importlib after the
 DSN check; the postgres adapter CLASSES are imported lazily inside the exercise for isinstance proof
 only. The composed runtime path reaches the driver solely through the sanctioned provider zone.
@@ -73,6 +87,7 @@ from control_plane.onboarding import tenant_dsn_ref  # noqa: E402
 from control_plane.provisioning import tenant_database_name  # noqa: E402
 from control_plane.read_api import ControlPlaneReadService  # noqa: E402
 from control_plane.records import TenantLifecycleState  # noqa: E402
+from control_plane.registry import RegistryError  # noqa: E402
 from shared.adapters.providers.env_reference_secret_store import EnvReferenceSecretStore  # noqa: E402
 from shared.secrets import SecretRef  # noqa: E402
 
@@ -189,7 +204,8 @@ def _actions(cp) -> list:
 def test_07d_composition_onboarding(admin_dsn: str) -> None:
     psycopg = _psycopg()
     tid_a, tid_b, tid_fail, tid_reg, tid_db = "d07a", "d07b", "d07fail", "d07reg", "d07db"
-    all_tids = (tid_a, tid_b, tid_fail, tid_reg, tid_db)
+    tid_pf, tid_gf = "d07pf", "d07gf"  # PRD 07D-2a characterization tenants (provision-fail / gate-fail)
+    all_tids = (tid_a, tid_b, tid_fail, tid_reg, tid_db, tid_pf, tid_gf)
 
     env_keys = [*_SELECTOR_ENV, cp_main.CONTROL_STORE_DSN_REF_ENV, _CTL_SECRET_KEY, _ADMIN_SECRET_KEY]
     env_keys += [_tenant_env_key(t) for t in all_tids]
@@ -209,8 +225,9 @@ def test_07d_composition_onboarding(admin_dsn: str) -> None:
         os.environ.pop(cp_main.CONTROL_STORE_DSN_REF_ENV, None)  # default control-store ref
         os.environ[_CTL_SECRET_KEY] = _pg.swap_db(admin_dsn, _CTL_DB)
         os.environ[_ADMIN_SECRET_KEY] = admin_dsn
-        # tenant A + the idempotency tenants resolve via the ENV form of the shared convention...
-        for tid in (tid_a, tid_reg, tid_db):
+        # tenant A + the idempotency tenants + the 07D-2a characterization tenants resolve via the
+        # ENV form of the shared convention...
+        for tid in (tid_a, tid_reg, tid_db, tid_pf, tid_gf):
             os.environ[_tenant_env_key(tid)] = _pg.swap_db(admin_dsn, tenant_database_name(tid))
         os.environ.pop(_tenant_env_key(tid_fail), None)  # d07fail: deliberately unresolvable (D6)
         # ...tenant B resolves via the FILE form: $SNACKPORTAL_TENANT_SECRET_DIR/tenant/<id>/dsn@1
@@ -381,6 +398,89 @@ def test_07d_composition_onboarding(admin_dsn: str) -> None:
         rec2 = cp2.store.get_tenant(tid_a)
         assert rec2 is not None and rec2.lifecycle_state is TenantLifecycleState.READY
         print("PASS: D8 secret hygiene (references only in registry + audit) + cross-instance durable READY")
+
+        # === PRD 07D-2a characterization (prevention guardrails; recovery stays 07D-2b) ===========
+        # --- 07D2A-1: tenant-id admission (AT-07D1-11) — bad ids rejected with ZERO effects -------
+        for bad in ("d07-bad", "control", "D07UPPER"):
+            admission_raised = False
+            try:
+                _onboard(cp, bad, "c-07d2a-adm")
+            except RegistryError:
+                admission_raised = True
+            assert admission_raised, f"bad tenant id {bad!r} must be rejected with RegistryError"
+            assert cp.store.get_tenant(bad) is None, f"{bad!r}: no registry row may be written (durable store)"
+            assert all(r.tenant_id != bad for r in cp.store.list_audit()), f"{bad!r}: no audit record may be written"
+        print("PASS: 07D2A-1 tenant-id admission (bad ids rejected pre-effect; zero registry/audit/provision footprint)")
+
+        # --- 07D2A-2: selector-coherence matrix (AT-07D1-9) — forbidden mix fails closed ----------
+        os.environ[cp_main.CONTROL_STORE_ENV] = "in_memory"  # provisioning stays postgres -> RULE 1 mix
+        coherence_raised = False
+        try:
+            cp_main.create_app()
+        except ValueError:
+            coherence_raised = True
+        finally:
+            os.environ[cp_main.CONTROL_STORE_ENV] = "postgres"  # restore the all-postgres composition
+        assert coherence_raised, "a half-live selector mix must fail closed at construction (RULE 1)"
+        cp_matrix_ok = cp_main.create_app()  # all-four postgres still constructs (RULE 3)
+        open_stores.append(cp_matrix_ok.store)
+        print("PASS: 07D2A-2 selector coherence (forbidden half-live mix ValueError; all-postgres composition intact)")
+
+        # --- 07D2A-3: control-evidence sentinel proof (AT-07D1-8) ---------------------------------
+        # The live path reaching READY (D2) already proved PROVEN evidence is accepted; here the
+        # rejection rule is exercised against the same helper the composition uses.
+        import dataclasses as _dc
+
+        live_evidence = cp_main._proven_control_evidence  # the composition's acceptance rule
+        proven = cp.provisioning._control  # the REAL control evidence resolved during D2 (proven)
+        assert live_evidence(proven) is proven, "the resolved live control evidence must be PROVEN"
+        unproven = _dc.replace(proven, sentinel_written=False)
+        assert live_evidence(unproven) is None, "sentinel_written=False must not count as resolved evidence"
+        assert live_evidence(_dc.replace(proven, sentinel_token=None)) is None, "a missing token must not count"
+        print("PASS: 07D2A-3 sentinel proof (unproven control evidence rejected; live proven evidence accepted)")
+
+        # --- 07D2A-4: failure-injection characterization (documents CURRENT semantics; 07D-2b owns recovery)
+        # (a) PROVISION failure: unresolvable admin DSN ref -> provision_failed; NO orphan DB.
+        saved_admin = os.environ.pop(_ADMIN_SECRET_KEY)
+        try:
+            out_pf = _onboard(cp, tid_pf, "c-07d2a-pf")
+        finally:
+            os.environ[_ADMIN_SECRET_KEY] = saved_admin
+        assert out_pf.result is not DistinctnessResult.VERIFIED and out_pf.reason == "provision_failed", out_pf
+        rec_pf = cp.store.get_tenant(tid_pf)
+        assert rec_pf is not None and rec_pf.lifecycle_state is TenantLifecycleState.PROVISIONING
+        assert not _db_exists(psycopg, admin_dsn, tenant_database_name(tid_pf)), "provision failed -> NO orphan DB"
+        out_pf_retry = _onboard(cp, tid_pf, "c-07d2a-pf2")
+        assert out_pf_retry.reason == "already_onboarded", "provision-fail retry remains terminal no-op"
+        # (b) SCHEMA-APPLY failure: characterized by D6 above (PROVISIONING + EMPTY orphan +
+        #     terminal no-op retry + deprovision never called).
+        # (c) GATE failure: resolvable ref but expected schema '2' vs observed '1' -> FAILED landing;
+        #     the orphan EXISTS WITH schema (apply succeeded); retry terminal; deprovision uncalled.
+        out_gf = cp.onboarding.onboard(
+            tid_gf,
+            organization_ref=_ORG,
+            federation_config_ref=_FED,
+            actor="ops_ref",
+            correlation_id="c-07d2a-gf",
+            expected_schema_version="2",
+        )
+        assert out_gf.result is DistinctnessResult.VERIFICATION_FAILED, out_gf
+        rec_gf = cp.store.get_tenant(tid_gf)
+        assert rec_gf is not None and rec_gf.lifecycle_state is TenantLifecycleState.FAILED
+        assert _db_exists(psycopg, admin_dsn, tenant_database_name(tid_gf)), "gate-fail orphan DB persists (quarantined)"
+        gf_conn = psycopg.connect(_pg.swap_db(admin_dsn, tenant_database_name(tid_gf)))
+        try:
+            with gf_conn.cursor() as cur:
+                assert _one(cur, "SELECT to_regclass('schema_version')") is not None, "gate-fail orphan HAS schema (apply succeeded)"
+        finally:
+            gf_conn.close()
+        out_gf_retry = _onboard(cp, tid_gf, "c-07d2a-gf2")
+        assert out_gf_retry.result is not DistinctnessResult.VERIFIED and out_gf_retry.reason == "already_onboarded"
+        assert _db_exists(psycopg, admin_dsn, tenant_database_name(tid_gf)), "deprovision() must never be called"
+        print(
+            "PASS: 07D2A-4 failure characterization (provision-fail: no orphan; schema-fail [D6]: empty orphan; "
+            "gate-fail: schema'd orphan; retries terminal; deprovision never called; registry honest)"
+        )
 
         # --- D9: clean-skip contract ---------------------------------------------------------------
         # The SKIP path itself is exercised by a separate unset-DSN invocation of this file (exit 0,
