@@ -21,6 +21,9 @@ class TenantLifecycleState(Enum):
     READY = "Ready"  # set only in Build Phase 4 (needs verification)
     SUSPENDED = "Suspended"
     FAILED = "Failed"  # set only in Build Phase 4 (set by verify)
+    # IC-002 Recovery & Compensation (PRD 07D-2b.2a): isolation-class safety hold. Evidence-
+    # preserving, non-routable, never resumes toward Verifying/Ready; sole egress Decommissioned.
+    QUARANTINED = "Quarantined"
     DECOMMISSIONED = "Decommissioned"
 
 

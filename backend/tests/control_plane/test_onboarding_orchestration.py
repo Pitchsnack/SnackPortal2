@@ -43,7 +43,7 @@ from control_plane.distinctness import (  # noqa: E402
     DistinctnessOutcome,
     DistinctnessResult,
 )
-from control_plane.onboarding import OnboardingOrchestrator, tenant_dsn_ref, tenant_id_from_dsn_ref  # noqa: E402
+from control_plane.onboarding import OnboardingError, OnboardingOrchestrator, tenant_dsn_ref, tenant_id_from_dsn_ref  # noqa: E402
 from control_plane.provisioning import (  # noqa: E402
     InMemoryProvisioningOperator,
     ProvisioningError,
@@ -59,7 +59,20 @@ from shared.secrets import SecretRef  # noqa: E402
 
 # The IC-002 lifecycle states and the D-15 audit vocabulary as merged @ baseline — the
 # baseline guards (no-new-state / no-new-vocab) compare against these exact sets.
-EXPECTED_STATES = {"Registered", "Provisioning", "Verifying", "Ready", "Suspended", "Failed", "Decommissioned"}
+# PRD 07D-2b.2a (IC-002 recovery-core amendment): + Quarantined; + the 7 recovery/compensation
+# event names (exact spellings frozen — the {Started} vs {Requested} asymmetry is intentional;
+# TenantDeprovision* are vocabulary-only until 07D-2b.2b). Kept in LOCKSTEP with the copies in
+# tests/control_plane/test_distinctness_ledger_b2.py.
+EXPECTED_STATES = {
+    "Registered",
+    "Provisioning",
+    "Verifying",
+    "Ready",
+    "Suspended",
+    "Failed",
+    "Quarantined",
+    "Decommissioned",
+}
 EXPECTED_EVENT_ACTIONS = {
     "TenantRegistered",
     "DatabaseProvisionRequested",
@@ -83,6 +96,13 @@ EXPECTED_EVENT_ACTIONS = {
     "TenantReactivated",
     "TenantDecommissionStarted",
     "TenantDecommissionCompleted",
+    "TenantQuarantined",
+    "OnboardingRecoveryStarted",
+    "OnboardingRecoveryCompleted",
+    "OnboardingRecoveryFailed",
+    "TenantDeprovisionRequested",
+    "TenantDeprovisionCompleted",
+    "TenantDeprovisionFailed",
 }
 
 _ORG = "org_ref_x"
@@ -203,12 +223,18 @@ def test_schema_mismatch_fails_closed() -> None:
     assert _state(store) is TenantLifecycleState.FAILED
 
 
-def test_isolation_anomaly_fails_closed() -> None:
+def test_isolation_anomaly_quarantines_at_classification_time() -> None:
+    # PRD 07D-2b.2a (IC-002 Failure Behavior; was test_isolation_anomaly_fails_closed): an
+    # isolation-class anomaly now lands in QUARANTINED (the automatic Verifying→Quarantined
+    # edge), not FAILED — so Failed is by construction non-anomalous. TenantQuarantined marks
+    # the hold; the IsolationAnomaly incident event is preserved. MR-1 kill site.
     store = InMemoryControlStore()
     out = _onboard(_orchestrator(store, evidence=_AnomalyEvidenceProvider(nonprod_control_db_evidence())))
     assert out.result is DistinctnessResult.ISOLATION_ANOMALY
-    assert _state(store) is TenantLifecycleState.FAILED
-    assert events.ISOLATION_ANOMALY in _actions(store)
+    assert _state(store) is TenantLifecycleState.QUARANTINED
+    acts = _actions(store)
+    assert events.TENANT_QUARANTINED in acts
+    assert events.ISOLATION_ANOMALY in acts
 
 
 def test_idempotent_onboard_does_not_reverify() -> None:
@@ -473,6 +499,303 @@ def test_tenant_id_admission_accepts_representative_ids() -> None:
     assert _onboard(_orchestrator(store2), tenant_id="t1").result is DistinctnessResult.VERIFIED
 
 
+# --- PRD 07D-2b.2a: recovery vocabulary, resume, and quarantine integrity --------------------------
+def _register(reg: TenantRegistry, tenant_id: str, correlation_id: str = "c-2b2a-reg") -> None:
+    reg.register_tenant(
+        tenant_id=tenant_id,
+        organization_ref=_ORG,
+        expected_schema_version="1",
+        database_association_ref=SecretRef(store_ref=tenant_dsn_ref(tenant_id), version="1"),
+        federation_config_ref=_FED,
+        actor="ops_ref",
+        correlation_id=correlation_id,
+    )
+
+
+def test_resume_from_provisioning_reaches_ready() -> None:
+    # IC-002 Retry-resume eligibility (07D2B2-1 unit shape): a tenant stranded in PROVISIONING
+    # auto-resumes through the fence dispatch and converges to READY, wrapped in the
+    # OnboardingRecovery start/terminal pair (the resumed provision is attributable).
+    store = InMemoryControlStore()
+    out1 = _onboard(_orchestrator(store, operator=_FailingOperator()))
+    assert out1.reason == "provision_failed"
+    assert _state(store) is TenantLifecycleState.PROVISIONING
+    out2 = _onboard(_orchestrator(store), correlation_id="c-resume")  # cause fixed (same store)
+    assert out2.result is DistinctnessResult.VERIFIED
+    assert _state(store) is TenantLifecycleState.READY
+    acts = _actions(store)
+    assert events.ONBOARDING_RECOVERY_STARTED in acts
+    assert events.ONBOARDING_RECOVERY_COMPLETED in acts
+    assert acts.count(events.DATABASE_PROVISION_REQUESTED) == 2, "the resume must re-drive provision"
+
+
+def test_resume_failure_keeps_started_terminal_pairing() -> None:
+    # MR-2 kill site (IC-002 Audit Requirements): every OnboardingRecoveryStarted pairs with
+    # EXACTLY one terminal record; a resume that fails again stays PROVISIONING (fail closed).
+    store = InMemoryControlStore()
+    orch_fail = _orchestrator(store, operator=_FailingOperator())
+    assert _onboard(orch_fail).reason == "provision_failed"
+    out = _onboard(orch_fail, correlation_id="c-resume-fail")  # resume, cause NOT fixed
+    assert out.result is not DistinctnessResult.VERIFIED
+    assert _state(store) is TenantLifecycleState.PROVISIONING
+    acts = _actions(store)
+    started = acts.count(events.ONBOARDING_RECOVERY_STARTED)
+    terminal = acts.count(events.ONBOARDING_RECOVERY_COMPLETED) + acts.count(events.ONBOARDING_RECOVERY_FAILED)
+    assert started == terminal == 1, f"start/terminal must pair exactly (got {started}/{terminal})"
+    assert events.ONBOARDING_RECOVERY_FAILED in acts
+
+
+def test_failed_tenant_requires_explicit_recover() -> None:
+    # Fence dispatch: FAILED is terminal via onboard() — reason 'recover_required', zero side
+    # effects, no auto-resume, no re-provision (MR-3/MR-4 kill family).
+    store = InMemoryControlStore()
+    orch = _orchestrator(store, probe=InMemoryTenantDatabaseProbe(reachable=False))
+    assert _onboard(orch).result is not DistinctnessResult.VERIFIED
+    assert _state(store) is TenantLifecycleState.FAILED
+    before = store.list_audit()
+    out = _onboard(orch, correlation_id="c-failed-retry")
+    assert out.result is DistinctnessResult.VERIFICATION_INCOMPLETE
+    assert out.reason == "recover_required"
+    assert _state(store) is TenantLifecycleState.FAILED
+    assert store.list_audit() == before, "the terminal fence path must have zero side effects"
+
+
+def test_recover_transient_failed_reaches_ready_only_via_gate() -> None:
+    # R1-5 unit shape (live 07D2B2-2 mirrors this on PostgreSQL): a transient FAILED tenant
+    # recovers explicitly once the cause is fixed — and reaches Ready ONLY through
+    # Verifying/the gate (recovery never sets Ready directly; sole-readiness-writer).
+    store = InMemoryControlStore()
+    orch_broken = _orchestrator(store, probe=InMemoryTenantDatabaseProbe(reachable=False))
+    assert _onboard(orch_broken).result is not DistinctnessResult.VERIFIED
+    assert _state(store) is TenantLifecycleState.FAILED
+    orch = _orchestrator(store)  # probe healthy again (same store)
+    out = orch.recover("t1", actor="ops_ref", correlation_id="c-recover")
+    assert out.result is DistinctnessResult.VERIFIED
+    assert _state(store) is TenantLifecycleState.READY
+    recs = store.list_audit()
+    acts = [r.action for r in recs]
+    assert events.ONBOARDING_RECOVERY_STARTED in acts
+    assert events.ONBOARDING_RECOVERY_COMPLETED in acts
+    ready_writes = [(r.from_state, r.to_state) for r in recs if r.to_state == "Ready"]
+    assert ready_writes == [("Verifying", "Ready")], "Ready must be written ONLY by the gate transition"
+
+
+def test_recover_refuses_ineligible_states_pre_effect() -> None:
+    # Only FAILED is recover-eligible (IC-002 Retry-resume eligibility); every other state —
+    # including QUARANTINED (MR-3 kill site) — refuses fail-closed with ZERO side effects.
+    store = InMemoryControlStore()
+    orch = _orchestrator(store)
+    assert _onboard(orch).result is DistinctnessResult.VERIFIED  # t1 -> READY
+    reg = orch._registry
+    _register(reg, "t_reg")
+    _register(reg, "t_prov")
+    reg.mark_provisioning("t_prov", actor="ops_ref", correlation_id="c-2b2a-p")
+    _register(reg, "t_susp")
+    reg.suspend_tenant("t_susp", actor="ops_ref", correlation_id="c-2b2a-s")
+    _register(reg, "t_dec")
+    reg.decommission_tenant("t_dec", actor="ops_ref", correlation_id="c-2b2a-d")
+    _register(reg, "t_q")
+    reg.mark_provisioning("t_q", actor="ops_ref", correlation_id="c-2b2a-q0")
+    reg.quarantine_tenant("t_q", actor="ops_ref", correlation_id="c-2b2a-q")
+    for tid in ("t1", "t_reg", "t_prov", "t_susp", "t_dec", "t_q", "absent_tenant"):
+        state_before = None if tid == "absent_tenant" else _state(store, tid)
+        audit_before = store.list_audit()
+        raised = False
+        try:
+            orch.recover(tid, actor="ops_ref", correlation_id="c-recover-bad")
+        except OnboardingError:
+            raised = True
+        assert raised, f"recover() must refuse {tid!r} (state {state_before})"
+        assert store.list_audit() == audit_before, f"{tid!r}: refusal must have zero side effects"
+        if state_before is not None:
+            assert _state(store, tid) is state_before
+
+
+def test_recover_anomaly_history_routes_to_quarantined() -> None:
+    # IC-002 defence in depth: a FAILED record whose trail carries IsolationAnomaly (predating
+    # the automatic-quarantine rule) is re-classified by recover() and routed to QUARANTINED —
+    # never resumed toward Verifying/Ready (MR-3 kill site).
+    store = InMemoryControlStore()
+    orch_broken = _orchestrator(store, probe=InMemoryTenantDatabaseProbe(reachable=False))
+    assert _onboard(orch_broken).result is not DistinctnessResult.VERIFIED
+    assert _state(store) is TenantLifecycleState.FAILED
+    # Simulate the pre-2b.2a history: an anomaly record for a tenant resting in Failed.
+    ControlPlaneAudit(store).record(
+        actor="ops_ref", tenant_id="t1", action=events.ISOLATION_ANOMALY, from_state=None, to_state=None, correlation_id="c-hist"
+    )
+    orch = _orchestrator(store)
+    verifies_before = _actions(store).count(events.DISTINCTNESS_VERIFICATION_STARTED)
+    out = orch.recover("t1", actor="ops_ref", correlation_id="c-recover-anom")
+    assert out.result is DistinctnessResult.ISOLATION_ANOMALY
+    assert out.reason == "anomaly_history"
+    assert _state(store) is TenantLifecycleState.QUARANTINED
+    acts = _actions(store)
+    assert acts.count(events.DISTINCTNESS_VERIFICATION_STARTED) == verifies_before, "must NOT re-enter Verifying"
+    assert "QuarantineTenant" in acts
+    assert events.TENANT_QUARANTINED in acts
+    assert events.ONBOARDING_RECOVERY_STARTED in acts
+    assert events.ONBOARDING_RECOVERY_FAILED in acts
+
+
+def test_verify_refuses_quarantined_pre_transition() -> None:
+    # R1-1 / C-1 (MR-Q1 kill site): the gate itself refuses a QUARANTINED tenant BEFORE any
+    # transition — a direct verify() must never walk Quarantined -> Verifying -> Ready.
+    store = InMemoryControlStore()
+    orch = _orchestrator(store, evidence=_AnomalyEvidenceProvider(nonprod_control_db_evidence()))
+    assert _onboard(orch).result is DistinctnessResult.ISOLATION_ANOMALY
+    assert _state(store) is TenantLifecycleState.QUARANTINED
+    before = store.list_audit()
+    raised = False
+    try:
+        orch._provisioning.verify("t1", actor="ops_ref", correlation_id="c-q-verify")
+    except ProvisioningError:
+        raised = True
+    assert raised, "verify() must refuse a QUARANTINED tenant (fail closed, pre-transition)"
+    assert _state(store) is TenantLifecycleState.QUARANTINED
+    assert store.list_audit() == before, "zero side effects (no Verifying transition, no audit write)"
+
+
+def test_quarantined_tenant_all_entry_points_refuse() -> None:
+    # AC-2B2A-14 (extended reading; live 07D2B2-3/-4 mirror this): Quarantined cannot onboard,
+    # recover, reassociate, OR direct-verify toward Ready. onboard() returns the terminal
+    # non-routable shape; the other three raise pre-effect (record byte-unchanged).
+    store = InMemoryControlStore()
+    orch = _orchestrator(store, evidence=_AnomalyEvidenceProvider(nonprod_control_db_evidence()))
+    assert _onboard(orch).result is DistinctnessResult.ISOLATION_ANOMALY
+    rec_before = store.get_tenant("t1")
+    assert rec_before is not None and rec_before.lifecycle_state is TenantLifecycleState.QUARANTINED
+    out = _onboard(orch, correlation_id="c-q-onboard")
+    assert out.result is DistinctnessResult.VERIFICATION_INCOMPLETE
+    assert out.reason == "quarantined"
+    for op in ("recover", "reassociate", "verify"):
+        raised = False
+        try:
+            if op == "recover":
+                orch.recover("t1", actor="ops_ref", correlation_id="c-q-r")
+            elif op == "reassociate":
+                orch.reassociate(
+                    "t1",
+                    new_association_ref=SecretRef(store_ref=tenant_dsn_ref("t1"), version="2"),
+                    actor="ops_ref",
+                    correlation_id="c-q-ra",
+                )
+            else:
+                orch._provisioning.verify("t1", actor="ops_ref", correlation_id="c-q-v")
+        except (OnboardingError, ProvisioningError):
+            raised = True
+        assert raised, f"{op}() must refuse a QUARANTINED tenant"
+    rec_after = store.get_tenant("t1")
+    assert rec_after == rec_before, "no state or association overwrite (all refusals pre-effect)"
+
+
+def test_reassociate_refused_for_decommissioned_pre_effect() -> None:
+    # IC-002 Re-association guard: refused for Decommissioned too, before any state overwrite.
+    store = InMemoryControlStore()
+    orch = _orchestrator(store)
+    _register(orch._registry, "t_dec")
+    orch._registry.decommission_tenant("t_dec", actor="ops_ref", correlation_id="c-dec")
+    rec_before = store.get_tenant("t_dec")
+    audit_before = store.list_audit()
+    raised = False
+    try:
+        orch.reassociate(
+            "t_dec",
+            new_association_ref=SecretRef(store_ref=tenant_dsn_ref("t_dec"), version="2"),
+            actor="ops_ref",
+            correlation_id="c-dec-ra",
+        )
+    except ProvisioningError:
+        raised = True
+    assert raised, "reassociate() must refuse a DECOMMISSIONED tenant"
+    assert store.get_tenant("t_dec") == rec_before
+    assert store.list_audit() == audit_before
+
+
+def test_reassociate_emits_secret_reference_registered() -> None:
+    # AT-07D1-7: re-association registers a NEW association reference — the reference-only
+    # SecretReferenceRegistered marker must appear (previously only first onboarding emitted it).
+    store = InMemoryControlStore()
+    orch = _orchestrator(store)
+    assert _onboard(orch).result is DistinctnessResult.VERIFIED
+    before = _actions(store).count(events.SECRET_REFERENCE_REGISTERED)
+    out = orch.reassociate(
+        "t1",
+        new_association_ref=SecretRef(store_ref=tenant_database_name("t1"), version="2"),
+        actor="ops_ref",
+        correlation_id="c-ra",
+    )
+    assert out.result is DistinctnessResult.VERIFIED
+    assert _actions(store).count(events.SECRET_REFERENCE_REGISTERED) == before + 1
+
+
+def test_suspend_allows_ready_and_decommission_catchup() -> None:
+    # R1-2 / C-2 (AC-2B2A-42): READY can now be suspended (Suspended is Ready's ONLY egress
+    # under the amended IC-002 — suspend-first is executable) and decommission's allowed_from
+    # gained Failed + Quarantined (state catch-up ONLY; nothing is deprovisioned). Ready-direct
+    # decommission stays disallowed. The {REGISTERED, PROVISIONING} suspend wideness is a
+    # documented residual for the post-2b.2 reconcile (not asserted away here).
+    from control_plane.registry import RegistryError
+
+    store = InMemoryControlStore()
+    orch = _orchestrator(store)
+    assert _onboard(orch).result is DistinctnessResult.VERIFIED
+    reg = orch._registry
+    raised = False
+    try:
+        reg.decommission_tenant("t1", actor="ops_ref", correlation_id="c-dec-ready")
+    except RegistryError:
+        raised = True
+    assert raised, "Ready-direct decommission must remain disallowed (suspend-first)"
+    rec = reg.suspend_tenant("t1", actor="ops_ref", correlation_id="c-susp")
+    assert rec.lifecycle_state is TenantLifecycleState.SUSPENDED
+    suspends = [r for r in store.list_audit() if r.action == "SuspendTenant"]
+    assert suspends and suspends[-1].from_state == "Ready" and suspends[-1].to_state == "Suspended"
+    # Failed -> Decommissioned (catch-up)
+    store2 = InMemoryControlStore()
+    orch2 = _orchestrator(store2, probe=InMemoryTenantDatabaseProbe(reachable=False))
+    assert _onboard(orch2).result is not DistinctnessResult.VERIFIED
+    assert _state(store2) is TenantLifecycleState.FAILED
+    rec2 = orch2._registry.decommission_tenant("t1", actor="ops_ref", correlation_id="c-dec-f")
+    assert rec2.lifecycle_state is TenantLifecycleState.DECOMMISSIONED
+    # Quarantined -> Decommissioned (the SOLE Quarantined egress)
+    store3 = InMemoryControlStore()
+    orch3 = _orchestrator(store3, evidence=_AnomalyEvidenceProvider(nonprod_control_db_evidence()))
+    assert _onboard(orch3).result is DistinctnessResult.ISOLATION_ANOMALY
+    rec3 = orch3._registry.decommission_tenant("t1", actor="ops_ref", correlation_id="c-dec-q")
+    assert rec3.lifecycle_state is TenantLifecycleState.DECOMMISSIONED
+
+
+def test_quarantine_tenant_registry_operation() -> None:
+    # IC-002 QuarantineTenant: explicit, audited quarantine from Provisioning and Failed
+    # (audit-first ordering rides the guarded _transition); refused from other states.
+    from control_plane.registry import RegistryError
+
+    store = InMemoryControlStore()
+    orch = _orchestrator(store)
+    reg = orch._registry
+    _register(reg, "t_p")
+    reg.mark_provisioning("t_p", actor="ops_ref", correlation_id="c-qp0")
+    rec = reg.quarantine_tenant("t_p", actor="ops_ref", correlation_id="c-qp")
+    assert rec.lifecycle_state is TenantLifecycleState.QUARANTINED
+    q_recs = [r for r in store.list_audit() if r.action == "QuarantineTenant"]
+    assert q_recs and q_recs[-1].from_state == "Provisioning" and q_recs[-1].to_state == "Quarantined"
+    # from Failed (the recover() re-classification edge)
+    store2 = InMemoryControlStore()
+    orch2 = _orchestrator(store2, probe=InMemoryTenantDatabaseProbe(reachable=False))
+    assert _onboard(orch2).result is not DistinctnessResult.VERIFIED
+    assert orch2._registry.quarantine_tenant("t1", actor="ops_ref", correlation_id="c-qf").lifecycle_state is (
+        TenantLifecycleState.QUARANTINED
+    )
+    # refused from Registered (fail closed)
+    _register(reg, "t_r")
+    raised = False
+    try:
+        reg.quarantine_tenant("t_r", actor="ops_ref", correlation_id="c-qr")
+    except RegistryError:
+        raised = True
+    assert raised, "quarantine_tenant must refuse a Registered tenant"
+
+
 # --- PRD 07D-2b.1: symmetric effective-posture onboard-time guard (AC-4..8) ------------------------
 def _with_selector_env(values: dict):
     """Set/clear the four selector env vars (only the given keys set); return a restore() callable."""
@@ -494,19 +817,22 @@ def _with_selector_env(values: dict):
 
 
 def _assert_onboarding_guarded(cp: "cp_main.ControlPlane") -> None:
-    """Both guarded entry points must raise ProvisioningError pre-effect."""
-    for op in ("onboard", "reassociate"):
+    """All guarded entry points — incl. the PRD 07D-2b.2a recovery entry point — must raise
+    ProvisioningError pre-effect (the facade deny, never an accidental AttributeError)."""
+    for op in ("onboard", "reassociate", "recover"):
         raised = False
         try:
             if op == "onboard":
                 cp.onboarding.onboard("guard_t1", organization_ref=_ORG, federation_config_ref=_FED, actor="ops_ref", correlation_id="c-g1")
-            else:
+            elif op == "reassociate":
                 cp.onboarding.reassociate(
                     "guard_t1",
                     new_association_ref=SecretRef(store_ref=tenant_dsn_ref("guard_t1"), version="1"),
                     actor="ops_ref",
                     correlation_id="c-g2",
                 )
+            else:
+                cp.onboarding.recover("guard_t1", actor="ops_ref", correlation_id="c-g2r")
         except ProvisioningError:
             raised = True
         assert raised, f"{op}() must fail closed (ProvisioningError) under a MIXED effective posture"
@@ -550,6 +876,14 @@ def test_onboard_guard_allows_matched_postures() -> None:
         assert isinstance(cp.onboarding, OnboardingOrchestrator), "matched posture must not be wrapped"
         out = cp.onboarding.onboard("guard_ok", organization_ref=_ORG, federation_config_ref=_FED, actor="ops_ref", correlation_id="c-g3")
         assert out.result is DistinctnessResult.VERIFIED, "all-in-memory onboarding must still reach READY"
+        # PRD 07D-2b.2a: on a MATCHED posture the recovery entry point reaches the ORCHESTRATOR
+        # (its own OnboardingError refusal for an unknown tenant), never the facade deny.
+        recover_reached_orchestrator = False
+        try:
+            cp.onboarding.recover("guard_absent", actor="ops_ref", correlation_id="c-g4")
+        except OnboardingError:
+            recover_reached_orchestrator = True
+        assert recover_reached_orchestrator, "matched posture must expose the real recover()"
     finally:
         restore()
     restore = _with_selector_env({name: "postgres" for name in _ALL_SELECTOR_ENVS})
@@ -650,10 +984,22 @@ _TESTS = [
     test_provision_failure_fails_closed,
     test_unreachable_fails_closed,
     test_schema_mismatch_fails_closed,
-    test_isolation_anomaly_fails_closed,
+    test_isolation_anomaly_quarantines_at_classification_time,
     test_idempotent_onboard_does_not_reverify,
     test_reassociate_reverifies,
     test_disable_routing,
+    test_resume_from_provisioning_reaches_ready,
+    test_resume_failure_keeps_started_terminal_pairing,
+    test_failed_tenant_requires_explicit_recover,
+    test_recover_transient_failed_reaches_ready_only_via_gate,
+    test_recover_refuses_ineligible_states_pre_effect,
+    test_recover_anomaly_history_routes_to_quarantined,
+    test_verify_refuses_quarantined_pre_transition,
+    test_quarantined_tenant_all_entry_points_refuse,
+    test_reassociate_refused_for_decommissioned_pre_effect,
+    test_reassociate_emits_secret_reference_registered,
+    test_suspend_allows_ready_and_decommission_catchup,
+    test_quarantine_tenant_registry_operation,
     test_no_new_lifecycle_states,
     test_no_new_audit_vocabulary,
     test_default_composition_is_in_memory,

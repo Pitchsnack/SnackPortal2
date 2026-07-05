@@ -44,3 +44,20 @@ TENANT_SUSPENDED = "TenantSuspended"
 TENANT_REACTIVATED = "TenantReactivated"
 TENANT_DECOMMISSION_STARTED = "TenantDecommissionStarted"
 TENANT_DECOMMISSION_COMPLETED = "TenantDecommissionCompleted"
+
+# Recovery / quarantine (IC-002 Recovery & Compensation; PRD 07D-2b.2a). The {Started} vs
+# {Requested} asymmetry below is intentional: OnboardingRecovery* wraps BOTH the automatic
+# fence-dispatch resume from Provisioning and the explicit RecoverTenant operation, while
+# TenantDeprovision* marks an explicit request-shaped compensation operation.
+TENANT_QUARANTINED = "TenantQuarantined"
+ONBOARDING_RECOVERY_STARTED = "OnboardingRecoveryStarted"
+ONBOARDING_RECOVERY_COMPLETED = "OnboardingRecoveryCompleted"
+ONBOARDING_RECOVERY_FAILED = "OnboardingRecoveryFailed"
+
+# Compensation vocabulary (PRD 07D-2b.2a adds the NAMES ONLY, keeping the frozen vocabulary in
+# lockstep with the amended IC-002; the governed de-provisioning behavior that emits them lands
+# in PRD 07D-2b.2b — nothing emits TenantDeprovision* in this slice). This family SUPERSEDES the
+# B-6 forward-proposal DatabaseProvisionRollback* naming (docs/runtime/b6_provisioning_audit_events.md).
+TENANT_DEPROVISION_REQUESTED = "TenantDeprovisionRequested"
+TENANT_DEPROVISION_COMPLETED = "TenantDeprovisionCompleted"
+TENANT_DEPROVISION_FAILED = "TenantDeprovisionFailed"

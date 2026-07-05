@@ -25,8 +25,20 @@ distinctness-passed      -> DistinctnessVerificationPassed
 distinctness-failed      -> DistinctnessVerificationFailed
 verification-incomplete  -> VerificationIncomplete
 isolation-anomaly        -> IsolationAnomaly
+quarantined              -> TenantQuarantined
+recovery-started         -> OnboardingRecoveryStarted
+recovery-completed       -> OnboardingRecoveryCompleted
+recovery-failed          -> OnboardingRecoveryFailed
+deprovision-requested    -> TenantDeprovisionRequested
+deprovision-completed    -> TenantDeprovisionCompleted
+deprovision-failed       -> TenantDeprovisionFailed
 <!-- B6-EVENT-MAP:END -->
 ```
+
+*The seven recovery/compensation rows were added by PRD 07D-2b.2a (IC-002 Recovery & Compensation amendment) as a
+governed change to `events.py` **with** the matching `EXPECTED_EVENT_ACTIONS` updates (both frozen-guard copies, in
+lockstep). `TenantDeprovision{Requested,Completed,Failed}` are vocabulary-only until PRD 07D-2b.2b lands the governed
+de-provisioning behavior — nothing emits them yet.*
 
 (Registration, routing-eligibility, and suspension/decommission events — `TenantRegistered`, `RoutingEnabled/Disabled`,
 `RouterCacheInvalidated`, `RegistryMappingChanged`, `TenantSuspended/Reactivated`,
@@ -53,6 +65,12 @@ evidence ref · optional prev-hash / hash (OPTIONAL / forward; NOT IC-004/D-23 l
 A **rollback** event family does **not** exist in `events.py` today. It is a **documented additive-extension proposal
 only**, shipped later as a *separate* governed change to `events.py` **with** a matching `EXPECTED_EVENT_ACTIONS`
 update — **never** in B-6, and never as a parallel dotted scheme. Proposed CamelCase names (not yet live):
+
+> **Supersession note (PRD 07D-2b.2a, 2026-07-06):** the compensation/de-provisioning vocabulary adopted by the
+> amended IC-002 is the `TenantDeprovision{Requested,Completed,Failed}` family (Tenant\*-consistent; now live in the
+> map above). The `DatabaseProvisionRollback*` names below are therefore **SUPERSEDED as the intended adoption** —
+> they remain listed as the historical forward proposal (deliberately absent from the live vocabulary) and are not
+> expected to be adopted.
 
 ```
 <!-- B6-EVENT-FORWARD:START -->

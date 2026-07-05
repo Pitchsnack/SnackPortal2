@@ -84,6 +84,30 @@ def test_audit_record_precedes_put_tenant_in_wired_call_sites() -> None:
     assert total >= 4, f"expected >= 4 guarded audit-before-put_tenant sites; found {total}"
 
 
+def test_quarantine_tenant_routes_through_guarded_transition() -> None:
+    # PRD 07D-2b.2a: the new registry QuarantineTenant operation keeps the B7B-D5 audited-before-
+    # commit ordering by performing its state write ONLY through the `_transition` site asserted
+    # above — never a direct put_tenant of its own. Named non-vacuity: the method must exist and
+    # must delegate, so the ordering guarantee covers it transitively (a refactor to a direct
+    # write would surface here, then be caught positionally by the guard above).
+    tree = ast.parse((_CP / "registry.py").read_text(encoding="utf-8"), filename=str(_CP / "registry.py"))
+    fn = None
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "quarantine_tenant":
+            fn = node
+    assert fn is not None, "registry.quarantine_tenant missing (PRD 07D-2b.2a ordering site)"
+    delegates = any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_transition"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "self"
+        for node in ast.walk(fn)
+    )
+    assert delegates, "quarantine_tenant must delegate its state write to the guarded self._transition"
+    assert not _calls(fn, "_store", "put_tenant"), "quarantine_tenant must not put_tenant directly"
+
+
 def test_lifecycle_service_not_wired_into_composition_root() -> None:
     # lifecycle.py keeps the pre-B-7B put-then-audit order and is excluded from the ordering guard above
     # ONLY because it is not in the create_app() composition root. Lock that invariant.
@@ -102,6 +126,7 @@ if __name__ == "__main__":
     _scan.run(
         [
             test_audit_record_precedes_put_tenant_in_wired_call_sites,
+            test_quarantine_tenant_routes_through_guarded_transition,
             test_lifecycle_service_not_wired_into_composition_root,
         ]
     )

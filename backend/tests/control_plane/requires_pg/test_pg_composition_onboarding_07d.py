@@ -26,36 +26,57 @@ CHECKS (the 07D-1 exec-auth V2 §13 D-set):
   D4  the routing view returns ready=true, the canonical reference, assoc_version and schema_version.
   D5  tenant/Control isolation: tenant operational tables live ONLY in the tenant DBs; the Control DB
       holds registry/lifecycle/audit/ledger metadata only; the durable ledger carries both tenants.
-  D6  LATE FAILURE (current semantics; recovery is the 07D-2 charter, NOT fixed here): an unresolvable
-      tenant ref after CREATE DATABASE leaves the tenant not-Ready, an EMPTY quarantined orphan DB,
-      an honest registry, and a terminal/no-op retry (deprovision is never called).
+  D6  LATE FAILURE (REWRITTEN under PRD 07D-2b.2a — governed recovery supersedes the old
+      terminal-retry characterization): an unresolvable tenant ref after CREATE DATABASE leaves the
+      tenant not-Ready with an EMPTY orphan DB and an honest registry; a retry now AUTO-RESUMES from
+      PROVISIONING (OnboardingRecoveryStarted, provision re-driven existence-checked) and — the
+      cause unfixed — converges to the SAME safe failure (OnboardingRecoveryFailed, still
+      PROVISIONING, orphan still empty, deprovision still never called). Once the secret is fixed,
+      the next retry resumes to READY (07D2B2-1).
   D7  idempotency: registry-exists-but-DB-absent onboards safely; DB-exists-but-registry-absent takes
       the created=False path safely; a Ready tenant's repeat onboard is a no-op (no re-provision).
   D8  secret hygiene: registry + audit rows carry references only — never a DSN/secret value.
   D9  clean-skip: with SNACKPORTAL_TEST_DSN unset (or psycopg absent) this file exits 0 via _pg.run's
       SKIP path without touching any database (proven by a separate unset-DSN invocation).
 
-PRD 07D-2a CHARACTERIZATION (folded in per the 07D-2a exec-auth; prevention + documentation of the
-CURRENT semantics — recovery remains the 07D-2b charter; the D1-D9 set and the terminal-retry
-contract fence above are preserved verbatim):
+PRD 07D-2a CHARACTERIZATION (folded in per the 07D-2a exec-auth; 07D2A-4's retry legs REWRITTEN
+under PRD 07D-2b.2a from terminal-on-retry to the governed recovery semantics — mapping below):
   07D2A-1  tenant-id admission (AT-07D1-11): bad ids ('d07-bad'/'control'/'D07UPPER') rejected with
            RegistryError BEFORE any effect — no durable registry row, no audit record, no DB.
   07D2A-2  selector coherence (AT-07D1-9): a half-live mix (in-memory control store under postgres
            provisioning) fails closed with ValueError at construction; all-four-postgres constructs.
   07D2A-3  sentinel proof (AT-07D1-8): the LIVE control evidence resolved during D2 is proven;
            sentinel_written=False / missing-token variants are rejected by the composition's rule.
-  07D2A-4  failure-injection characterization of the CURRENT landings: provision-fail (unresolvable
-           admin ref) -> PROVISIONING + NO orphan; schema-apply-fail -> D6 (PROVISIONING + EMPTY
-           orphan); gate-fail (expected '2' vs observed '1') -> FAILED + schema'd orphan; every
-           retry is a terminal 'already_onboarded' no-op; deprovision() is NEVER called.
+  07D2A-4  failure-injection landings (first-failure legs UNCHANGED; retry legs rewritten):
+           provision-fail (unresolvable admin ref) -> PROVISIONING + NO orphan; the retry — cause
+           fixed — now RESUMES to READY (was: terminal no-op). Gate-fail (expected '2' vs observed
+           '1') -> FAILED + schema'd orphan; the retry is terminal 'recover_required' (was:
+           'already_onboarded'), no re-provision; deprovision() is NEVER called; explicit recover()
+           re-enters the gate and fails again — a schema-mismatch tenant NEVER reaches Ready.
 
-PRD 07D-2b.1 (folded in per the confirmed V2 exec-auth; D1-D9 and 07D2A-1..4 preserved verbatim):
+PRD 07D-2b.1 (folded in per the confirmed V2 exec-auth; D1-D9 and 07D2A-1..3 preserved verbatim):
   07D2A-1+ a trailing-newline bad id (fullmatch hardening, AT-07D2A2-1) and a per-bad-id
            pg_database ABSENCE assertion (AT-07D2A2-5) strengthen the admission proof.
   07D2B1-1 the symmetric effective-posture onboard-time guard, live: the standalone durable-store
-           posture constructs (B-7B preserved) but onboard() AND reassociate() fail closed with
-           ProvisioningError pre-effect — zero durable registry/audit/DB footprint proven against
-           the real control DB (closes the 07D-2a documented residual: durable fake-READY).
+           posture constructs (B-7B preserved) but onboard(), reassociate() AND (07D-2b.2a) the new
+           recover() entry point fail closed with ProvisioningError pre-effect — zero durable
+           registry/audit/DB footprint proven against the real control DB.
+
+PRD 07D-2b.2a RECOVERY EVIDENCE (folded in per the 07D-2b.2a exec-auth [Claude V1 R1 / GPT V2];
+run set STAYS 13 — no new harness):
+  07D2B2-1 resume from PROVISIONING with an empty/schema-created DB converges to READY through the
+           fence dispatch (folded into the D6 arc: fix the secret -> retry -> READY).
+  07D2B2-2 a gate-failed TRANSIENT tenant (unreachable-then-restored DSN, R1-5) recovers via
+           explicit recover() and reaches READY ONLY through Verifying/the gate; the NEGATIVE:
+           a schema-mismatch FAILED tenant re-enters the gate and fails again — NEVER Ready.
+  07D2B2-3 a live isolation anomaly (association re-pointed at ANOTHER tenant's DB -> misrouted
+           target) lands in QUARANTINED, emits TenantQuarantined + IsolationAnomaly, and
+           onboard / reassociate / recover / direct verify() ALL refuse (R1-1/C-1).
+  07D2B2-4 reassociate on the QUARANTINED tenant is refused PRE-EFFECT — no Verifying overwrite,
+           association reference and record byte-unchanged.
+  07D2B2-5 reverse-mix live proof (AT-07D2B1-4): an explicit in-memory store under the all-postgres
+           env composition denies onboard/reassociate/recover pre-effect — pg_database ABSENCE
+           proves zero physical footprint.
 
 DRIVER CONTAINMENT. No static database-driver import: psycopg is reached only via importlib after the
 DSN check; the postgres adapter CLASSES are imported lazily inside the exercise for isinstance proof
@@ -91,7 +112,7 @@ from control_plane import events  # noqa: E402
 from control_plane import main as cp_main  # noqa: E402
 from control_plane.adapters.providers.env_tenant_dsn_secret_store import EnvTenantDsnSecretStore  # noqa: E402
 from control_plane.distinctness import DistinctnessResult  # noqa: E402
-from control_plane.onboarding import tenant_dsn_ref  # noqa: E402
+from control_plane.onboarding import OnboardingError, tenant_dsn_ref  # noqa: E402
 from control_plane.provisioning import ProvisioningError, tenant_database_name  # noqa: E402
 from control_plane.read_api import ControlPlaneReadService  # noqa: E402
 from control_plane.records import TenantLifecycleState  # noqa: E402
@@ -213,7 +234,8 @@ def test_07d_composition_onboarding(admin_dsn: str) -> None:
     psycopg = _psycopg()
     tid_a, tid_b, tid_fail, tid_reg, tid_db = "d07a", "d07b", "d07fail", "d07reg", "d07db"
     tid_pf, tid_gf = "d07pf", "d07gf"  # PRD 07D-2a characterization tenants (provision-fail / gate-fail)
-    all_tids = (tid_a, tid_b, tid_fail, tid_reg, tid_db, tid_pf, tid_gf)
+    tid_tr, tid_q = "d07tr", "d07q"  # PRD 07D-2b.2a tenants (transient-recover / quarantine)
+    all_tids = (tid_a, tid_b, tid_fail, tid_reg, tid_db, tid_pf, tid_gf, tid_tr, tid_q)
 
     env_keys = [*_SELECTOR_ENV, cp_main.CONTROL_STORE_DSN_REF_ENV, _CTL_SECRET_KEY, _ADMIN_SECRET_KEY]
     env_keys += [_tenant_env_key(t) for t in all_tids]
@@ -233,9 +255,9 @@ def test_07d_composition_onboarding(admin_dsn: str) -> None:
         os.environ.pop(cp_main.CONTROL_STORE_DSN_REF_ENV, None)  # default control-store ref
         os.environ[_CTL_SECRET_KEY] = _pg.swap_db(admin_dsn, _CTL_DB)
         os.environ[_ADMIN_SECRET_KEY] = admin_dsn
-        # tenant A + the idempotency tenants + the 07D-2a characterization tenants resolve via the
-        # ENV form of the shared convention...
-        for tid in (tid_a, tid_reg, tid_db, tid_pf, tid_gf):
+        # tenant A + the idempotency tenants + the 07D-2a characterization tenants + the
+        # 07D-2b.2a recovery tenants resolve via the ENV form of the shared convention...
+        for tid in (tid_a, tid_reg, tid_db, tid_pf, tid_gf, tid_tr, tid_q):
             os.environ[_tenant_env_key(tid)] = _pg.swap_db(admin_dsn, tenant_database_name(tid))
         os.environ.pop(_tenant_env_key(tid_fail), None)  # d07fail: deliberately unresolvable (D6)
         # ...tenant B resolves via the FILE form: $SNACKPORTAL_TENANT_SECRET_DIR/tenant/<id>/dsn@1
@@ -337,7 +359,9 @@ def test_07d_composition_onboarding(admin_dsn: str) -> None:
             tb.close()
         print("PASS: D5 tenant operational tables only in tenant DBs; Control DB holds registry/audit/ledger metadata only")
 
-        # --- D6: late failure — current semantics (recovery deferred to 07D-2, documented) --------
+        # --- D6 (REWRITTEN, PRD 07D-2b.2a) + 07D2B2-1: late failure -> governed resume ------------
+        # First failure UNCHANGED: unresolvable tenant ref -> schema apply fails -> PROVISIONING,
+        # EMPTY orphan, honest registry.
         out_fail = _onboard(cp, tid_fail, "c-07d-f1")
         assert out_fail.result is not DistinctnessResult.VERIFIED
         assert out_fail.reason == "schema_application_failed", out_fail.reason
@@ -345,7 +369,7 @@ def test_07d_composition_onboarding(admin_dsn: str) -> None:
         assert rec_fail is not None and rec_fail.lifecycle_state is TenantLifecycleState.PROVISIONING, (
             "the failed tenant must remain honestly not-Ready in the registry"
         )
-        assert _db_exists(psycopg, admin_dsn, tenant_database_name(tid_fail)), "the orphan DB is quarantined, not deprovisioned"
+        assert _db_exists(psycopg, admin_dsn, tenant_database_name(tid_fail)), "the orphan DB is preserved, not deprovisioned"
         orphan = psycopg.connect(_pg.swap_db(admin_dsn, tenant_database_name(tid_fail)))
         try:
             with orphan.cursor() as cur:
@@ -353,12 +377,45 @@ def test_07d_composition_onboarding(admin_dsn: str) -> None:
                 assert _one(cur, "SELECT to_regclass('agents')") is None
         finally:
             orphan.close()
+        # Retry with the cause UNFIXED (was: terminal no-op) -> governed AUTO-RESUME from
+        # PROVISIONING: provision is re-driven existence-checked (created=False), the apply fails
+        # again, and the run converges to the SAME safe failure wrapped in the recovery pair.
         prov_requests = _actions(cp).count(events.DATABASE_PROVISION_REQUESTED)
         out_retry = _onboard(cp, tid_fail, "c-07d-f2")
-        assert out_retry.result is not DistinctnessResult.VERIFIED and out_retry.reason == "already_onboarded"
-        assert _actions(cp).count(events.DATABASE_PROVISION_REQUESTED) == prov_requests, "retry must be terminal/no-op (no re-provision)"
-        assert _db_exists(psycopg, admin_dsn, tenant_database_name(tid_fail)), "deprovision() must never be called (07D-2 owns recovery)"
-        print("PASS: D6 late failure -> not-Ready + empty quarantined orphan + honest registry + terminal no-op retry (07D-2 charter)")
+        assert out_retry.result is not DistinctnessResult.VERIFIED
+        assert out_retry.reason == "schema_application_failed", out_retry.reason
+        acts_d6 = _actions(cp)
+        assert acts_d6.count(events.DATABASE_PROVISION_REQUESTED) == prov_requests + 1, "the resume re-drives provision"
+        assert events.ONBOARDING_RECOVERY_STARTED in acts_d6, "the resume must be attributable (RecoveryStarted)"
+        assert events.ONBOARDING_RECOVERY_FAILED in acts_d6, "the failed resume must emit its terminal record"
+        rec_fail2 = cp.store.get_tenant(tid_fail)
+        assert rec_fail2 is not None and rec_fail2.lifecycle_state is TenantLifecycleState.PROVISIONING
+        assert _db_exists(psycopg, admin_dsn, tenant_database_name(tid_fail)), "deprovision() must never be called"
+        orphan2 = psycopg.connect(_pg.swap_db(admin_dsn, tenant_database_name(tid_fail)))
+        try:
+            with orphan2.cursor() as cur:
+                assert _one(cur, "SELECT to_regclass('schema_version')") is None, "the orphan must STILL be empty"
+        finally:
+            orphan2.close()
+        # 07D2B2-1: fix the secret -> the next retry resumes from PROVISIONING over the EXISTING
+        # empty DB (idempotent apply) and converges to READY, only through the gate.
+        os.environ[_tenant_env_key(tid_fail)] = _pg.swap_db(admin_dsn, tenant_database_name(tid_fail))
+        out_resume = _onboard(cp, tid_fail, "c-07d-f3")
+        assert out_resume.result is DistinctnessResult.VERIFIED, out_resume.reason
+        rec_fail3 = cp.store.get_tenant(tid_fail)
+        assert rec_fail3 is not None and rec_fail3.lifecycle_state is TenantLifecycleState.READY
+        assert events.ONBOARDING_RECOVERY_COMPLETED in _actions(cp), "the successful resume must emit its terminal record"
+        resumed = psycopg.connect(_pg.swap_db(admin_dsn, tenant_database_name(tid_fail)))
+        try:
+            with resumed.cursor() as cur:
+                assert str(_one(cur, "SELECT version FROM schema_version ORDER BY applied_at DESC LIMIT 1")) == "1"
+                assert _one(cur, "SELECT count(*) FROM agents WHERE agent_kind = 'system_primary'") == 1
+        finally:
+            resumed.close()
+        print(
+            "PASS: D6+07D2B2-1 late failure -> empty orphan + honest registry; unfixed retry auto-resumes to the "
+            "same safe failure (recovery pair, no deprovision); fixed retry resumes PROVISIONING -> READY via the gate"
+        )
 
         # --- D7: idempotency cases -----------------------------------------------------------------
         # (a) registry row exists (Registered) but the DB is absent -> onboard provisions and reaches READY.
@@ -452,8 +509,9 @@ def test_07d_composition_onboarding(admin_dsn: str) -> None:
         assert live_evidence(_dc.replace(proven, sentinel_token=None)) is None, "a missing token must not count"
         print("PASS: 07D2A-3 sentinel proof (unproven control evidence rejected; live proven evidence accepted)")
 
-        # --- 07D2A-4: failure-injection characterization (documents CURRENT semantics; 07D-2b owns recovery)
-        # (a) PROVISION failure: unresolvable admin DSN ref -> provision_failed; NO orphan DB.
+        # --- 07D2A-4 (retry legs REWRITTEN, PRD 07D-2b.2a): failure-injection landings -------------
+        # (a) PROVISION failure: unresolvable admin DSN ref -> provision_failed; NO orphan DB
+        #     (first-failure leg UNCHANGED).
         saved_admin = os.environ.pop(_ADMIN_SECRET_KEY)
         try:
             out_pf = _onboard(cp, tid_pf, "c-07d2a-pf")
@@ -463,12 +521,18 @@ def test_07d_composition_onboarding(admin_dsn: str) -> None:
         rec_pf = cp.store.get_tenant(tid_pf)
         assert rec_pf is not None and rec_pf.lifecycle_state is TenantLifecycleState.PROVISIONING
         assert not _db_exists(psycopg, admin_dsn, tenant_database_name(tid_pf)), "provision failed -> NO orphan DB"
+        # Retry with the admin ref RESTORED (was: terminal no-op) -> auto-resume from PROVISIONING
+        # provisions the missing DB and converges to READY through the gate.
         out_pf_retry = _onboard(cp, tid_pf, "c-07d2a-pf2")
-        assert out_pf_retry.reason == "already_onboarded", "provision-fail retry remains terminal no-op"
-        # (b) SCHEMA-APPLY failure: characterized by D6 above (PROVISIONING + EMPTY orphan +
-        #     terminal no-op retry + deprovision never called).
+        assert out_pf_retry.result is DistinctnessResult.VERIFIED, out_pf_retry.reason
+        rec_pf2 = cp.store.get_tenant(tid_pf)
+        assert rec_pf2 is not None and rec_pf2.lifecycle_state is TenantLifecycleState.READY
+        assert _db_exists(psycopg, admin_dsn, tenant_database_name(tid_pf)), "the resumed run provisions the DB"
+        # (b) SCHEMA-APPLY failure: characterized by the D6 arc above (empty orphan; unfixed retry
+        #     converges to the same safe failure; fixed retry resumes to READY = 07D2B2-1).
         # (c) GATE failure: resolvable ref but expected schema '2' vs observed '1' -> FAILED landing;
-        #     the orphan EXISTS WITH schema (apply succeeded); retry terminal; deprovision uncalled.
+        #     the orphan EXISTS WITH schema (apply succeeded); retry is terminal 'recover_required'
+        #     (FAILED never auto-resumes); deprovision uncalled.
         out_gf = cp.onboarding.onboard(
             tid_gf,
             organization_ref=_ORG,
@@ -480,19 +544,38 @@ def test_07d_composition_onboarding(admin_dsn: str) -> None:
         assert out_gf.result is DistinctnessResult.VERIFICATION_FAILED, out_gf
         rec_gf = cp.store.get_tenant(tid_gf)
         assert rec_gf is not None and rec_gf.lifecycle_state is TenantLifecycleState.FAILED
-        assert _db_exists(psycopg, admin_dsn, tenant_database_name(tid_gf)), "gate-fail orphan DB persists (quarantined)"
+        assert _db_exists(psycopg, admin_dsn, tenant_database_name(tid_gf)), "gate-fail orphan DB persists (preserved)"
         gf_conn = psycopg.connect(_pg.swap_db(admin_dsn, tenant_database_name(tid_gf)))
         try:
             with gf_conn.cursor() as cur:
                 assert _one(cur, "SELECT to_regclass('schema_version')") is not None, "gate-fail orphan HAS schema (apply succeeded)"
         finally:
             gf_conn.close()
+        prov_requests_gf = _actions(cp).count(events.DATABASE_PROVISION_REQUESTED)
         out_gf_retry = _onboard(cp, tid_gf, "c-07d2a-gf2")
-        assert out_gf_retry.result is not DistinctnessResult.VERIFIED and out_gf_retry.reason == "already_onboarded"
+        assert out_gf_retry.result is not DistinctnessResult.VERIFIED and out_gf_retry.reason == "recover_required"
+        assert _actions(cp).count(events.DATABASE_PROVISION_REQUESTED) == prov_requests_gf, "FAILED must not auto-resume"
         assert _db_exists(psycopg, admin_dsn, tenant_database_name(tid_gf)), "deprovision() must never be called"
+        # 07D2B2-2 NEGATIVE (R1-5): explicit recover() on the schema-mismatch tenant re-classifies
+        # (non-anomaly history), re-enters Verifying, and FAILS AGAIN at the gate
+        # (expected_schema_version is immutable on the record; D-17) — it must NEVER reach Ready.
+        out_gf_recover = cp.onboarding.recover(tid_gf, actor="ops_ref", correlation_id="c-07d2a-gf3")
+        assert out_gf_recover.result is DistinctnessResult.VERIFICATION_FAILED, out_gf_recover
+        rec_gf2 = cp.store.get_tenant(tid_gf)
+        assert rec_gf2 is not None and rec_gf2.lifecycle_state is TenantLifecycleState.FAILED, (
+            "a schema-mismatch tenant must land back in FAILED — never Ready"
+        )
+        gf_recovery_terminal = [
+            r.action
+            for r in cp.store.list_audit()
+            if r.tenant_id == tid_gf and r.action in (events.ONBOARDING_RECOVERY_COMPLETED, events.ONBOARDING_RECOVERY_FAILED)
+        ]
+        assert gf_recovery_terminal == [events.ONBOARDING_RECOVERY_FAILED], gf_recovery_terminal
+        assert _db_exists(psycopg, admin_dsn, tenant_database_name(tid_gf)), "recover() never deprovisions"
         print(
-            "PASS: 07D2A-4 failure characterization (provision-fail: no orphan; schema-fail [D6]: empty orphan; "
-            "gate-fail: schema'd orphan; retries terminal; deprovision never called; registry honest)"
+            "PASS: 07D2A-4 failure landings (provision-fail: no orphan, fixed retry resumes to READY; "
+            "schema-fail [D6 arc]; gate-fail: schema'd orphan, retry recover_required, recover() re-gates "
+            "and NEVER reaches Ready; deprovision never called; registry honest)"
         )
 
         # === PRD 07D-2b.1: symmetric effective-posture onboard-time guard — LIVE proof ============
@@ -508,20 +591,22 @@ def test_07d_composition_onboarding(admin_dsn: str) -> None:
         try:
             cp_guard = cp_main.create_app()  # control_store stays 'postgres' -> standalone posture
             open_stores.append(cp_guard.store)
-            for guard_op in ("onboard", "reassociate"):
+            for guard_op in ("onboard", "reassociate", "recover"):
                 guard_raised = False
                 try:
                     if guard_op == "onboard":
                         cp_guard.onboarding.onboard(
                             "d07guard", organization_ref=_ORG, federation_config_ref=_FED, actor="ops_ref", correlation_id="c-07d2b1"
                         )
-                    else:
+                    elif guard_op == "reassociate":
                         cp_guard.onboarding.reassociate(
                             "d07guard",
                             new_association_ref=SecretRef(store_ref=tenant_dsn_ref("d07guard"), version="1"),
                             actor="ops_ref",
                             correlation_id="c-07d2b1r",
                         )
+                    else:  # PRD 07D-2b.2a: the NEW recovery entry point gets the same facade deny
+                        cp_guard.onboarding.recover("d07guard", actor="ops_ref", correlation_id="c-07d2b1rec")
                 except ProvisioningError:
                     guard_raised = True
                 assert guard_raised, f"07D-2b.1 guard: {guard_op}() must fail closed under the standalone posture"
@@ -533,8 +618,131 @@ def test_07d_composition_onboarding(admin_dsn: str) -> None:
         assert all(r.tenant_id != "d07guard" for r in cp.store.list_audit()), "guard must leave NO durable audit record"
         assert not _db_exists(psycopg, admin_dsn, tenant_database_name("d07guard")), "guard must create NO physical DB"
         print(
-            "PASS: 07D2B1-1 onboard-time guard (standalone durable-store posture: onboard+reassociate "
+            "PASS: 07D2B1-1 onboard-time guard (standalone durable-store posture: onboard+reassociate+recover "
             "fail closed pre-effect; zero durable registry/audit/DB footprint)"
+        )
+
+        # === PRD 07D-2b.2a: recovery + quarantine integrity — LIVE evidence =======================
+        # --- 07D2B2-2 (positive; R1-5 fixture): unreachable-then-restored DSN -> explicit recover()
+        out_tr = _onboard(cp, tid_tr, "c-07d2b2-tr0")
+        assert out_tr.result is DistinctnessResult.VERIFIED, out_tr.reason
+        saved_tr_dsn = os.environ.pop(_tenant_env_key(tid_tr))  # break the tenant DSN secret
+        try:
+            out_tr_fail = cp.provisioning.verify(tid_tr, actor="ops_ref", correlation_id="c-07d2b2-tr1")
+        finally:
+            os.environ[_tenant_env_key(tid_tr)] = saved_tr_dsn  # restore the secret
+        assert out_tr_fail.result is DistinctnessResult.VERIFICATION_INCOMPLETE, out_tr_fail
+        rec_tr = cp.store.get_tenant(tid_tr)
+        assert rec_tr is not None and rec_tr.lifecycle_state is TenantLifecycleState.FAILED, (
+            "an unreachable DSN must land the tenant in FAILED (transient, non-anomalous)"
+        )
+        tr_events = [r.action for r in cp.store.list_audit() if r.tenant_id == tid_tr]
+        assert events.VERIFICATION_INCOMPLETE in tr_events and events.ISOLATION_ANOMALY not in tr_events
+        out_tr_retry = _onboard(cp, tid_tr, "c-07d2b2-tr2")
+        assert out_tr_retry.reason == "recover_required", "FAILED is terminal via onboard(); recover() is the exit"
+        rec_tr_pre = cp.store.get_tenant(tid_tr)
+        assert rec_tr_pre is not None and rec_tr_pre.lifecycle_state is TenantLifecycleState.FAILED, "not Ready yet"
+        ready_writes_before = len([r for r in cp.store.list_audit() if r.tenant_id == tid_tr and r.to_state == "Ready"])
+        out_tr_rec = cp.onboarding.recover(tid_tr, actor="ops_ref", correlation_id="c-07d2b2-tr3")
+        assert out_tr_rec.result is DistinctnessResult.VERIFIED, out_tr_rec
+        rec_tr2 = cp.store.get_tenant(tid_tr)
+        assert rec_tr2 is not None and rec_tr2.lifecycle_state is TenantLifecycleState.READY
+        tr_recs = [r for r in cp.store.list_audit() if r.tenant_id == tid_tr]
+        tr_acts = [r.action for r in tr_recs]
+        assert events.ONBOARDING_RECOVERY_STARTED in tr_acts and events.ONBOARDING_RECOVERY_COMPLETED in tr_acts
+        ready_writes_tr = [(r.from_state, r.to_state) for r in tr_recs if r.to_state == "Ready"]
+        assert len(ready_writes_tr) == ready_writes_before + 1, "recovery must add exactly ONE gate-written Ready"
+        assert all(w == ("Verifying", "Ready") for w in ready_writes_tr), (
+            "READY must be reached ONLY through Verifying/the gate (sole-readiness-writer)"
+        )
+        print(
+            "PASS: 07D2B2-2 transient gate-failed tenant (unreachable-then-restored DSN) recovers explicitly "
+            "and reaches READY only through Verifying/the gate; schema-mismatch negative proven in 07D2A-4"
+        )
+
+        # --- 07D2B2-3 + 07D2B2-4: live isolation anomaly -> QUARANTINED; ALL entry points refuse --
+        out_q = _onboard(cp, tid_q, "c-07d2b2-q0")
+        assert out_q.result is DistinctnessResult.VERIFIED, out_q.reason
+        # Re-point the tenant's canonical ref at ANOTHER tenant's physical DB (tid_db): the gate's
+        # evidence observes a misrouted target (current_database() != intended sp2_tenant_d07q) —
+        # an isolation-class anomaly. (The victim gains only a dv_sentinel_* row; dropped in cleanup.)
+        os.environ[_tenant_env_key(tid_q)] = _pg.swap_db(admin_dsn, tenant_database_name(tid_db))
+        out_q_anom = cp.provisioning.verify(tid_q, actor="ops_ref", correlation_id="c-07d2b2-q1")
+        assert out_q_anom.result is DistinctnessResult.ISOLATION_ANOMALY, out_q_anom
+        rec_q = cp.store.get_tenant(tid_q)
+        assert rec_q is not None and rec_q.lifecycle_state is TenantLifecycleState.QUARANTINED, (
+            "an isolation-class anomaly must quarantine automatically at classification time"
+        )
+        q_acts = [r.action for r in cp.store.list_audit() if r.tenant_id == tid_q]
+        assert events.TENANT_QUARANTINED in q_acts, "the hold must be marked TenantQuarantined"
+        assert events.ISOLATION_ANOMALY in q_acts, "the incident event must be preserved"
+        # ALL FOUR entry points refuse (R1-1/C-1 incl. DIRECT verify): zero effects each time.
+        q_audit_before = len(cp.store.list_audit())
+        out_q_onboard = _onboard(cp, tid_q, "c-07d2b2-q2")
+        assert out_q_onboard.result is DistinctnessResult.VERIFICATION_INCOMPLETE and out_q_onboard.reason == "quarantined"
+        for q_op in ("reassociate", "recover", "verify"):
+            q_raised = False
+            try:
+                if q_op == "reassociate":
+                    cp.onboarding.reassociate(
+                        tid_q,
+                        new_association_ref=SecretRef(store_ref=tenant_dsn_ref(tid_q), version="2"),
+                        actor="ops_ref",
+                        correlation_id="c-07d2b2-q3",
+                    )
+                elif q_op == "recover":
+                    cp.onboarding.recover(tid_q, actor="ops_ref", correlation_id="c-07d2b2-q4")
+                else:
+                    cp.provisioning.verify(tid_q, actor="ops_ref", correlation_id="c-07d2b2-q5")
+            except (ProvisioningError, OnboardingError):
+                q_raised = True
+            assert q_raised, f"{q_op}() must refuse the QUARANTINED tenant (fail closed)"
+        assert len(cp.store.list_audit()) == q_audit_before, "every refusal must be pre-effect (zero audit writes)"
+        rec_q2 = cp.store.get_tenant(tid_q)
+        assert rec_q2 == rec_q, (
+            "07D2B2-4: the QUARANTINED record must be byte-unchanged — no Verifying overwrite, "
+            "no association overwrite (reassociate refused PRE-effect)"
+        )
+        assert rec_q2 is not None and rec_q2.lifecycle_state is TenantLifecycleState.QUARANTINED, "no path to READY, ever"
+        os.environ[_tenant_env_key(tid_q)] = _pg.swap_db(admin_dsn, tenant_database_name(tid_q))
+        print(
+            "PASS: 07D2B2-3/-4 live isolation anomaly -> QUARANTINED (TenantQuarantined + IsolationAnomaly); "
+            "onboard/reassociate/recover/direct-verify ALL refuse pre-effect; record byte-unchanged"
+        )
+
+        # --- 07D2B2-5 (AT-07D2B1-4): reverse-mix live proof — explicit in-memory store under the
+        # all-postgres env composition; all three entry points deny pre-effect; pg_database ABSENCE.
+        from control_plane.adapters.providers.in_memory_store import InMemoryControlStore
+
+        mem_store = InMemoryControlStore()
+        cp_mix = cp_main.ControlPlane(store=mem_store)  # env is all-postgres here -> reverse mix
+        for mix_op in ("onboard", "reassociate", "recover"):
+            mix_raised = False
+            try:
+                if mix_op == "onboard":
+                    cp_mix.onboarding.onboard(
+                        "d07mix", organization_ref=_ORG, federation_config_ref=_FED, actor="ops_ref", correlation_id="c-07d2b2-m1"
+                    )
+                elif mix_op == "reassociate":
+                    cp_mix.onboarding.reassociate(
+                        "d07mix",
+                        new_association_ref=SecretRef(store_ref=tenant_dsn_ref("d07mix"), version="1"),
+                        actor="ops_ref",
+                        correlation_id="c-07d2b2-m2",
+                    )
+                else:
+                    cp_mix.onboarding.recover("d07mix", actor="ops_ref", correlation_id="c-07d2b2-m3")
+            except ProvisioningError:
+                mix_raised = True
+            assert mix_raised, f"reverse mix: {mix_op}() must fail closed (ProvisioningError)"
+        assert mem_store.get_tenant("d07mix") is None, "reverse mix: no registry row may be written"
+        assert mem_store.list_audit() == [], "reverse mix: no audit record may be written"
+        assert not _db_exists(psycopg, admin_dsn, tenant_database_name("d07mix")), (
+            "reverse mix: pg_database ABSENCE — no physical DB may be created"
+        )
+        print(
+            "PASS: 07D2B2-5 reverse-mix live proof (explicit in-memory store + all-postgres env: "
+            "onboard/reassociate/recover denied pre-effect; zero physical footprint in pg_database)"
         )
 
         # --- D9: clean-skip contract ---------------------------------------------------------------

@@ -224,10 +224,12 @@ class _MixedPostureOnboardingGuard:
     in-memory fake DB; and (b) the reverse — an explicit in-memory ``store=`` under the
     all-postgres env composition — where they would create REAL physical databases recorded only
     in volatile memory (orphans on restart). Under either mixed posture this facade replaces the
-    orchestrator and fails BOTH entry points closed with ``ProvisioningError`` BEFORE any side
-    effect (no registry read/write, no audit record, no provision(), no schema apply, no evidence
-    gather, no lifecycle transition). ``disable_routing`` delegates unchanged — it drops routing
-    evidence and emits events only (never writes Ready) and remains a safe operational companion.
+    orchestrator and fails the effectful entry points — ``onboard()``, ``reassociate()``, and
+    (PRD 07D-2b.2a) the recovery entry point ``recover()`` — closed with ``ProvisioningError``
+    BEFORE any side effect (no registry read/write, no audit record, no provision(), no schema
+    apply, no evidence gather, no lifecycle transition). ``disable_routing`` delegates unchanged —
+    it drops routing evidence and emits events only (never writes Ready) and remains a safe
+    operational companion.
     Construction of the plane itself is NEVER blocked (the B-7B audit/registry posture stays fully
     usable — PRD 06 B-7B tests construct and audit only)."""
 
@@ -264,6 +266,11 @@ class _MixedPostureOnboardingGuard:
         correlation_id: str,
     ) -> DistinctnessOutcome:
         self._deny("reassociate")
+
+    def recover(self, tenant_id: str, *, actor: str, correlation_id: str) -> DistinctnessOutcome:
+        # PRD 07D-2b.2a: the new recovery entry point gets an EXPLICIT mixed-posture deny — a
+        # mixed-plane recover() would otherwise fail only by accidental AttributeError (unproven).
+        self._deny("recover")
 
     def disable_routing(self, tenant_id: str, *, actor: str, correlation_id: str) -> None:
         self._inner.disable_routing(tenant_id, actor=actor, correlation_id=correlation_id)

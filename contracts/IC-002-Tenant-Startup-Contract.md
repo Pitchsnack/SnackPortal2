@@ -189,7 +189,7 @@ No recovery or compensation operation MAY set `Ready` directly; recovery re-ente
 **Execution-deferred (contracts precede code).** Audit **persistence** (the Control-DB and tenant-DB audit stores), the gateway's audit **sink** wiring (today a no-sink port), and any emission **tests** beyond those already passing are **execution-PRD items** — none authorized here.
 
 ## API Contract
-> Specification of **operations and semantics** only — no transport code. The surface is a **control-plane API** (REST/HTTP-style); concrete method/path bindings are a minor remaining detail. Denial semantics MUST distinguish *forbidden* (authz), *not found* (unknown/decommissioned), *not ready* (provisioning/verifying), *administratively disabled* (suspended), and *unavailable* (failed).
+> Specification of **operations and semantics** only — no transport code. The surface is a **control-plane API** (REST/HTTP-style); concrete method/path bindings are a minor remaining detail. Denial semantics MUST distinguish *forbidden* (authz), *not found* (unknown/decommissioned), *not ready* (provisioning/verifying), *administratively disabled* (suspended), and *unavailable* (failed/quarantined).
 
 | Operation | Purpose | Caller (authz) | Result / state effect | Idempotent |
 |---|---|---|---|---|
@@ -200,7 +200,7 @@ No recovery or compensation operation MAY set `Ready` directly; recovery re-ente
 | **ActivateTenant** | Promote a verified tenant to routable | Control-plane operator | `→ Ready` | Yes |
 | **SuspendTenant** | Administratively disable; preserve data | Control-plane operator | `Ready → Suspended` | Yes |
 | **ReactivateTenant** | Re-verify and restore service | Control-plane operator | `Suspended → Verifying → Ready` | Yes |
-| **DecommissionTenant** | Offboard; remove from routing; retain/archive | Control-plane operator | `→ Decommissioned` | Yes |
+| **DecommissionTenant** | Offboard; remove from routing; retain/archive | Control-plane operator | `Registered \| Provisioning \| Suspended \| Failed \| Quarantined → Decommissioned` (a `Ready` tenant is `Suspended` first — see *Allowed transitions*) | Yes |
 | **ReassociateDatabase** | Point a tenant at a restored/relocated DB | Control-plane operator | `→ Verifying` (then `Ready`); **refused for `Quarantined`/`Decommissioned`** (see *Recovery & Compensation* — Re-association guard) | Yes |
 | **RecoverTenant** | Explicitly recover a `Failed` tenant: re-classify from audit, then re-verify | Control-plane operator | `Failed → Verifying → Ready/Failed`; anomaly-class history → `Quarantined` | Yes |
 | **QuarantineTenant** | Place an unsafe tenant in the evidence-preserving hold | Control-plane operator (also set **automatically** on isolation-class anomaly) | `Provisioning \| Failed → Quarantined` (`Verifying → Quarantined` on the automatic edge) | Yes |
