@@ -126,6 +126,68 @@ def test_reassociate_requires_version_increment_and_reverifies() -> None:
     assert rec2.lifecycle_state is TenantLifecycleState.READY
 
 
+# --- PRD 07D-2b.2b §11 HARDEN (R1-6; MR-12 kill sites) ---------------------------------------
+# This service remains DORMANT (uncomposed — the b7c1 composition-root exclusion pin), but if
+# it were ever wired these tests close its two Quarantined escape hatches.
+def _quarantine(store, reg, tid="t1"):
+    reg.mark_provisioning(tid, actor="op", correlation_id="c-q0")
+    reg.quarantine_tenant(tid, actor="op", correlation_id="c-q1")
+    rec = store.get_tenant(tid)
+    assert rec is not None and rec.lifecycle_state is TenantLifecycleState.QUARANTINED
+    return rec
+
+
+def test_verify_tenant_refuses_quarantined_pre_transition() -> None:
+    # MR-12 kill site (verification leg): verify_tenant must never walk a QUARANTINED tenant
+    # toward Verifying/Ready — refusal is PRE-transition with zero side effects.
+    store, audit, reg, svc = _wire()
+    _register(reg)
+    rec_before = _quarantine(store, reg)
+    audit_before = list(audit.events())
+    try:
+        svc.verify_tenant("t1", actor="op", correlation_id="c-q2")
+        assert False, "verify_tenant must refuse a QUARANTINED tenant"
+    except LifecycleError:
+        pass
+    assert store.get_tenant("t1") == rec_before, "zero state change (no Verifying overwrite)"
+    assert audit.events() == audit_before, "zero audit writes (pre-transition refusal)"
+
+
+def test_reassociate_refuses_quarantined_and_decommissioned_pre_effect() -> None:
+    # MR-12 kill site (re-association leg): the current-state pre-check runs BEFORE any other
+    # check or write — no association overwrite, no Verifying transition, no audit record.
+    store, audit, reg, svc = _wire()
+    _register(reg)
+    rec_q = _quarantine(store, reg)
+    audit_before = list(audit.events())
+    try:
+        svc.reassociate_database("t1", new_association_ref=SecretRef("tenant/t1/db2", "2"), actor="op", correlation_id="c-q3")
+        assert False, "reassociate_database must refuse a QUARANTINED tenant"
+    except LifecycleError:
+        pass
+    assert store.get_tenant("t1") == rec_q, "record byte-unchanged (association + state)"
+    assert audit.events() == audit_before
+    # Decommissioned is terminal for re-association too.
+    _register(reg, tid="t2")
+    reg.decommission_tenant("t2", actor="op", correlation_id="c-d0")
+    rec_d = store.get_tenant("t2")
+    audit_before = list(audit.events())
+    try:
+        svc.reassociate_database("t2", new_association_ref=SecretRef("tenant/t2/db2", "2"), actor="op", correlation_id="c-d1")
+        assert False, "reassociate_database must refuse a DECOMMISSIONED tenant"
+    except LifecycleError:
+        pass
+    assert store.get_tenant("t2") == rec_d
+    assert audit.events() == audit_before
+    # The pre-check runs FIRST: even a same-version (otherwise version-refused) request on a
+    # QUARANTINED tenant reports the state refusal, proving the guard precedes the version check.
+    try:
+        svc.reassociate_database("t1", new_association_ref=SecretRef("tenant/t1/db", "1"), actor="op", correlation_id="c-q4")
+        assert False
+    except LifecycleError as exc:
+        assert "illegal lifecycle transition" in str(exc), "the state guard must run before the version check"
+
+
 if __name__ == "__main__":
     _h.run(
         [
@@ -135,5 +197,7 @@ if __name__ == "__main__":
             test_activate_requires_verifying,
             test_reactivate_suspended_to_ready,
             test_reassociate_requires_version_increment_and_reverifies,
+            test_verify_tenant_refuses_quarantined_pre_transition,
+            test_reassociate_refuses_quarantined_and_decommissioned_pre_effect,
         ]
     )
