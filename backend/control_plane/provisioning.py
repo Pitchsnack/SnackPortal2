@@ -150,7 +150,16 @@ class ProvisioningVerificationService:
         """Run the full D15 verification gate. Returns the verification outcome; only
         VERIFIED reaches Ready. Every other outcome leaves routing disabled (fail-closed)."""
         rec = self._require(tenant_id)
-        if rec.lifecycle_state in (TenantLifecycleState.DECOMMISSIONED, TenantLifecycleState.SUSPENDED):
+        # PRD 07D-2b.2a (R1-1/C-1): QUARANTINED joins the refusal list — the gate is a composed,
+        # publicly reachable entry point (and recover() calls it), so without its own refusal a
+        # direct verify() would walk Quarantined → Verifying → potentially Ready, violating
+        # IC-002's "NO transition from Quarantined toward Verifying or Ready, ever". Fail closed,
+        # PRE-transition, zero side effects.
+        if rec.lifecycle_state in (
+            TenantLifecycleState.DECOMMISSIONED,
+            TenantLifecycleState.SUSPENDED,
+            TenantLifecycleState.QUARANTINED,
+        ):
             raise ProvisioningError("illegal lifecycle transition")
 
         rec = self._transition(rec, TenantLifecycleState.VERIFYING, events.DISTINCTNESS_VERIFICATION_STARTED, actor, correlation_id)
@@ -224,6 +233,13 @@ class ProvisioningVerificationService:
         router cache, and re-run the full verification gate before routing can be restored
         (§11.2, §22; WP-11). Routing is withheld until re-verification passes (fail-closed)."""
         rec = self._require(tenant_id)
+        # PRD 07D-2b.2a (IC-002 Re-association guard / AT-07D1-7): validate the CURRENT lifecycle
+        # state BEFORE any effect. Without this pre-check the association overwrite below would
+        # move the tenant to Verifying before verify()'s own refusal runs — an escape hatch from
+        # Quarantined toward Ready. Refused for Quarantined and Decommissioned, fail closed,
+        # pre-effect (no state overwrite, no audit record, no cache invalidation).
+        if rec.lifecycle_state in (TenantLifecycleState.QUARANTINED, TenantLifecycleState.DECOMMISSIONED):
+            raise ProvisioningError("illegal lifecycle transition")
         updated = replace(
             rec,
             database_association_ref=new_association_ref,
@@ -240,6 +256,9 @@ class ProvisioningVerificationService:
             correlation_id=correlation_id,
         )
         self._store.put_tenant(updated)
+        # PRD 07D-2b.2a (AT-07D1-7): the NEW association reference is registered here — emit the
+        # same reference-only marker onboarding emits for the initial association (IC-002 §69).
+        self._event(tenant_id, events.SECRET_REFERENCE_REGISTERED, actor, correlation_id)
         self._event(tenant_id, events.REGISTRY_MAPPING_CHANGED, actor, correlation_id)
         self._invalidate(tenant_id, actor, correlation_id)
         return self.verify(tenant_id, actor=actor, correlation_id=correlation_id)
@@ -310,8 +329,16 @@ class ProvisioningVerificationService:
         anomaly: bool = False,
     ) -> DistinctnessOutcome:
         self._ledger.remove(rec.tenant_id)
-        self._transition(rec, TenantLifecycleState.FAILED, event_action, actor, correlation_id)
         if anomaly:
-            # Security-relevant operational incident (§23 S7/S8): auditable IsolationAnomaly.
+            # PRD 07D-2b.2a (IC-002 Failure Behavior): isolation-class anomalies MUST quarantine
+            # automatically at classification time (the automatic `Verifying → Quarantined` edge),
+            # so a tenant resting in Failed is by construction non-anomalous. The transition keeps
+            # the verification attempt's terminal action (started/terminal pairing unchanged);
+            # TenantQuarantined marks the hold and IsolationAnomaly the incident (§23 S7/S8) —
+            # evidence-preserving: the record and any physical database are retained unmodified.
+            self._transition(rec, TenantLifecycleState.QUARANTINED, event_action, actor, correlation_id)
+            self._event(rec.tenant_id, events.TENANT_QUARANTINED, actor, correlation_id)
             self._event(rec.tenant_id, events.ISOLATION_ANOMALY, actor, correlation_id)
+        else:
+            self._transition(rec, TenantLifecycleState.FAILED, event_action, actor, correlation_id)
         return DistinctnessOutcome(result, reason)

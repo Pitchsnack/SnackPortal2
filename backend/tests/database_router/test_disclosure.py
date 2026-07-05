@@ -47,6 +47,20 @@ def test_denial_for_state_mapping() -> None:
     assert denial_for_state("Anything-Unknown", True).reason is DenialReason.NOT_FOUND
 
 
+def test_quarantined_interim_denial_is_fail_closed() -> None:
+    # PRD 07D-2b.2a (AT-2B2A-6; test-only — router source unchanged): the interim behavior for
+    # the new IC-002 `Quarantined` state is the fail-closed not_ready catch-all (ready=False),
+    # exactly as IC-002's non-normative router note documents. Tightening Quarantined to the
+    # *unavailable* denial class is a DEFERRED router-side slice; this pin proves the interim
+    # is deny-by-default (never routable, never a leak) until that slice lands.
+    denial = denial_for_state("Quarantined", False)
+    assert denial is not None, "a Quarantined tenant must never route"
+    assert denial.reason is DenialReason.NOT_READY  # interim fail-closed catch-all (documented)
+    assert denial.http_status == 503
+    # defence-in-depth: even a (contract-impossible) ready=True flag must not route Quarantined
+    assert denial_for_state("Quarantined", True) is not None
+
+
 def test_denial_carries_no_sensitive_detail() -> None:
     # Public code is a canonical, non-sensitive token — never a tenant id / dsn / host.
     for d in (not_found(), forbidden(), not_ready(), unavailable(), administratively_disabled()):
@@ -61,6 +75,7 @@ if __name__ == "__main__":
             test_http_status_mapping,
             test_denial_reason_codes,
             test_denial_for_state_mapping,
+            test_quarantined_interim_denial_is_fail_closed,
             test_denial_carries_no_sensitive_detail,
         ]
     )

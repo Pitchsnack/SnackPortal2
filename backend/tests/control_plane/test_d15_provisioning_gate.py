@@ -95,7 +95,9 @@ def test_tenant_collision_fails_closed_and_keeps_first_ready() -> None:
     assert first.result is DistinctnessResult.VERIFIED
     assert second.result is DistinctnessResult.ISOLATION_ANOMALY
     assert store.get_tenant("t1").lifecycle_state is TenantLifecycleState.READY, "first tenant stays Ready"
-    assert store.get_tenant("t2").lifecycle_state is TenantLifecycleState.FAILED, "colliding tenant fails closed"
+    # PRD 07D-2b.2a (Dan-authorized characterization update): isolation-class anomalies now
+    # quarantine automatically at classification time (amended IC-002) — was FAILED.
+    assert store.get_tenant("t2").lifecycle_state is TenantLifecycleState.QUARANTINED, "colliding tenant quarantines"
     assert events.ISOLATION_ANOMALY in _actions(store)
 
 
@@ -109,7 +111,8 @@ def test_secret_reference_control_collision_pre_check() -> None:
     out = svc.verify("t1", actor="ops_ref", correlation_id="c1")
 
     assert out.result is DistinctnessResult.ISOLATION_ANOMALY
-    assert store.get_tenant("t1").lifecycle_state is TenantLifecycleState.FAILED
+    # PRD 07D-2b.2a (Dan-authorized characterization update): anomaly -> QUARANTINED, was FAILED.
+    assert store.get_tenant("t1").lifecycle_state is TenantLifecycleState.QUARANTINED
     assert events.ISOLATION_ANOMALY in _actions(store)
 
 

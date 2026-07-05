@@ -5,6 +5,11 @@ and records Provisioning intent. It MUST NOT set Verifying/Ready/Failed (those r
 tenant-DB connectivity + schema verification — Build Phase 4). **No tenant may become
 Ready during Phase 2.** Verify/Activate/Reactivate/ReassociateDatabase are *defined but
 deferred* to Build Phase 4. Stores references only — never credentials (D-14).
+
+PRD 07D-2b.2a (IC-002 Recovery & Compensation) adds QuarantineTenant — the explicit,
+audited transition into the evidence-preserving isolation hold (`Quarantined` is not a
+verification state, so the Phase-4 fence does not apply) — and catches the SuspendTenant /
+DecommissionTenant allowed-from sets up to the amended IC-002 transition table.
 """
 
 from __future__ import annotations
@@ -118,21 +123,52 @@ class TenantRegistry:
         )
 
     def suspend_tenant(self, tenant_id: str, *, actor: str, correlation_id: str) -> TenantRecord:
+        # PRD 07D-2b.2a (R1-2/C-2): READY joins allowed_from — the amended IC-002 removed the
+        # Ready-direct decommission, making Suspended a Ready tenant's ONLY egress; without this
+        # the contract's suspend-first rule is inexecutable. The pre-existing {REGISTERED,
+        # PROVISIONING} wideness (code-lawful, not contract-listed) is a documented residual for
+        # the post-2b.2 docs/contracts reconcile — deliberately NOT removed in this slice.
         return self._transition(
             tenant_id,
             TenantLifecycleState.SUSPENDED,
-            {TenantLifecycleState.REGISTERED, TenantLifecycleState.PROVISIONING},
+            {TenantLifecycleState.REGISTERED, TenantLifecycleState.PROVISIONING, TenantLifecycleState.READY},
             "SuspendTenant",
             actor,
             correlation_id,
         )
 
     def decommission_tenant(self, tenant_id: str, *, actor: str, correlation_id: str) -> TenantRecord:
+        # PRD 07D-2b.2a: allowed_from caught up to the amended IC-002 transition table —
+        # `Registered | Provisioning | Suspended | Failed | Quarantined → Decommissioned`.
+        # Ready-direct decommission stays disallowed (suspend-first); Decommissioned is
+        # Quarantined's SOLE egress. Lifecycle-state catch-up only: this slice never calls
+        # ProvisioningOperator.deprovision() and drops nothing (compensation is 07D-2b.2b).
         return self._transition(
             tenant_id,
             TenantLifecycleState.DECOMMISSIONED,
-            {TenantLifecycleState.REGISTERED, TenantLifecycleState.PROVISIONING, TenantLifecycleState.SUSPENDED},
+            {
+                TenantLifecycleState.REGISTERED,
+                TenantLifecycleState.PROVISIONING,
+                TenantLifecycleState.SUSPENDED,
+                TenantLifecycleState.FAILED,
+                TenantLifecycleState.QUARANTINED,
+            },
             "DecommissionTenant",
+            actor,
+            correlation_id,
+        )
+
+    def quarantine_tenant(self, tenant_id: str, *, actor: str, correlation_id: str) -> TenantRecord:
+        # PRD 07D-2b.2a (IC-002 QuarantineTenant): the explicit, audited entry into the
+        # evidence-preserving hold — `Provisioning | Failed → Quarantined` (the automatic
+        # isolation-anomaly edge `Verifying → Quarantined` is owned by the verification gate at
+        # classification time). Routes through _transition, so the B7B-D5 audit-before-commit
+        # ordering applies unchanged (AST-guard-enforced).
+        return self._transition(
+            tenant_id,
+            TenantLifecycleState.QUARANTINED,
+            {TenantLifecycleState.PROVISIONING, TenantLifecycleState.FAILED},
+            "QuarantineTenant",
             actor,
             correlation_id,
         )

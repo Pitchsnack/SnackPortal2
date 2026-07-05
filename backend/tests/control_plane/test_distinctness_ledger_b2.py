@@ -43,7 +43,20 @@ _ADAPTER_SRC = _REPO_ROOT / "backend" / "control_plane" / "adapters" / "provider
 
 # Baselines mirrored from the B-1 onboarding orchestration guards — B-2 adds NO lifecycle state
 # and NO audit event. A future legitimate addition updates both guards (defense in depth).
-EXPECTED_STATES = {"Registered", "Provisioning", "Verifying", "Ready", "Suspended", "Failed", "Decommissioned"}
+# PRD 07D-2b.2a (IC-002 recovery-core amendment): + Quarantined; + the 7 recovery/compensation
+# event names (exact spellings frozen — the {Started} vs {Requested} asymmetry is intentional;
+# TenantDeprovision* are vocabulary-only until 07D-2b.2b). Kept in LOCKSTEP with the copies in
+# tests/control_plane/test_onboarding_orchestration.py.
+EXPECTED_STATES = {
+    "Registered",
+    "Provisioning",
+    "Verifying",
+    "Ready",
+    "Suspended",
+    "Failed",
+    "Quarantined",
+    "Decommissioned",
+}
 EXPECTED_EVENT_ACTIONS = {
     "TenantRegistered",
     "DatabaseProvisionRequested",
@@ -67,6 +80,13 @@ EXPECTED_EVENT_ACTIONS = {
     "TenantReactivated",
     "TenantDecommissionStarted",
     "TenantDecommissionCompleted",
+    "TenantQuarantined",
+    "OnboardingRecoveryStarted",
+    "OnboardingRecoveryCompleted",
+    "OnboardingRecoveryFailed",
+    "TenantDeprovisionRequested",
+    "TenantDeprovisionCompleted",
+    "TenantDeprovisionFailed",
 }
 _CONTROL_STORE_METHODS = frozenset(
     {
