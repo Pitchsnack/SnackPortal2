@@ -93,5 +93,9 @@ class PostgresProvisioningOperator(ProvisioningOperator):
 
     @staticmethod
     def _guard(target: str) -> None:
-        if not _SAFE_IDENTIFIER.match(target):
+        # fullmatch, not match (PRD 07D-2b.2b D-5): with `.match` Python's `$` also matches
+        # before ONE trailing newline, so a newline-tailed target would slip past the guard
+        # into the quoted CREATE/DROP DATABASE statements. The guard is SHARED by provision()
+        # AND deprovision() — defence in depth under the first governed DROP DATABASE caller.
+        if not _SAFE_IDENTIFIER.fullmatch(target):
             raise ProvisioningError("unsafe provisioning target identifier")

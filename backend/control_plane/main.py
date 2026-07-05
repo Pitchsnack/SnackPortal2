@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 import uuid
 from dataclasses import replace
-from typing import Callable, Dict, Iterable, List, NoReturn, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, NoReturn, Optional, Set, Tuple
 
 from shared.adapters.providers.env_reference_secret_store import DEFAULT_ALLOWED, EnvReferenceSecretStore
 from shared.secrets import SecretRef
@@ -20,6 +20,7 @@ from shared.secrets import SecretRef
 from .adapters.providers.env_tenant_dsn_secret_store import EnvTenantDsnSecretStore
 from .adapters.providers.in_memory_distinctness import (
     NONPROD_CONTROL_SENTINEL_NAMESPACE,
+    NONPROD_CONTROL_TARGET,
     InMemoryDistinctnessEvidenceProvider,
     nonprod_control_db_evidence,
 )
@@ -49,6 +50,14 @@ from .provisioning import (
     tenant_database_name,
 )
 from .readiness import ReadinessFramework
+from .recovery import (
+    DeprovisionOutcome,
+    InMemoryRecoveryInspection,
+    OrphanScanEntry,
+    OrphanScanService,
+    RecoveryCompensationService,
+    RecoveryInspectionPort,
+)
 from .registry import TenantRegistry
 from .schema_compat import SchemaCompatibilityChecker
 from .verification import TenantDatabaseProbe
@@ -276,6 +285,36 @@ class _MixedPostureOnboardingGuard:
         self._inner.disable_routing(tenant_id, actor=actor, correlation_id=correlation_id)
 
 
+class _MixedPostureRecoveryGuard:
+    """PRD 07D-2b.2b (R1-2): fail-closed recovery facade for MIXED effective compositions.
+
+    Denies BOTH new recovery entry points — the ``DeprovisionTenantDatabase`` compensation
+    operation AND the read-only ``ScanForOrphans`` — PRE-EFFECT (zero audit events, zero
+    reads-with-side-effects), under BOTH mix directions (durable-store standalone AND the
+    reverse explicit-store bypass), mirroring the 07D-2b.1 onboarding guard. A mixed plane
+    must never reach the first governed ``DROP DATABASE`` caller: the durable-standalone
+    posture would proof-check FAKE in-memory content against REAL durable registry rows,
+    and the reverse mix would drop REAL physical databases against a volatile registry.
+    Matched postures expose the real services un-wrapped."""
+
+    def __init__(self, posture: str) -> None:
+        self._posture = posture
+
+    def _deny(self, operation: str) -> NoReturn:
+        raise ProvisioningError(
+            f"{operation}() is disabled under a MIXED effective composition (PRD 07D-2b.2b): "
+            f"{self._posture}. The durable-store standalone posture is audit/registry-only "
+            "(PRD 06 B-7B); recovery compensation and the orphan scan require the matched "
+            "all-postgres composition (PRD 07D-1) — fail closed, no side effects were performed."
+        )
+
+    def deprovision_tenant_database(self, tenant_id: str, *, actor: str, correlation_id: str) -> DeprovisionOutcome:
+        self._deny("deprovision_tenant_database")
+
+    def scan_for_orphans(self) -> List[OrphanScanEntry]:
+        self._deny("scan_for_orphans")
+
+
 class ControlPlane:
     """Assembled control plane. Construction performs no I/O and no bootstrap."""
 
@@ -296,6 +335,10 @@ class ControlPlane:
         self.bootstrap = BootstrapController(self.secret_store)
         # D-15 orchestration wiring (B-1 default; PRD 07D-1 postgres path). Adapters selected by
         # env (OB-1); default is in-memory. Construction performs no I/O (lazy-connect).
+        # PRD 07D-2b.2b: the ledger is built ONCE and shared by the verification gate and the
+        # recovery services — two in-memory instances would give compensation a blind (empty)
+        # collision inventory (element 5 of the ownership proof would be vacuous).
+        self._ledger: DistinctnessLedger = self._build_ledger()
         self.operator, self.provisioning = self._build_provisioning()
         self.schema_applicator = self._build_schema_applicator()
         # PRD 07D-2b.1: the symmetric effective-posture onboard-time guard wraps the orchestrator
@@ -303,18 +346,37 @@ class ControlPlane:
         self.onboarding = self._guarded_onboarding(
             OnboardingOrchestrator(self.registry, self.operator, self.provisioning, self.audit, self.schema_applicator)
         )
+        # PRD 07D-2b.2b (R1-2): recovery compensation + orphan scan — INTERNAL-only composition
+        # (no new env selector, no new constructor parameter). The inspection posture derives
+        # from the EXISTING provisioning selector; the same effective-object guard rule that
+        # protects onboarding denies BOTH new entry points under a mixed plane.
+        supported_versions = [str(v) for v in range(SUPPORTED_SCHEMA_MIN, SUPPORTED_SCHEMA_MAX + 1)]
+        inspection = self._build_recovery_inspection()
+        self.recovery: "RecoveryCompensationService | _MixedPostureRecoveryGuard"
+        self.orphan_scan: "OrphanScanService | _MixedPostureRecoveryGuard"
+        self.recovery, self.orphan_scan = self._guarded_recovery(
+            RecoveryCompensationService(
+                self.registry,
+                self.operator,
+                self.audit,
+                inspection,
+                self._ledger,
+                supported_schema_versions=supported_versions,
+            ),
+            OrphanScanService(self.store, inspection, self._ledger, supported_schema_versions=supported_versions),
+        )
 
-    def _guarded_onboarding(self, inner: OnboardingOrchestrator) -> "OnboardingOrchestrator | _MixedPostureOnboardingGuard":
-        """PRD 07D-2b.1 (AC-4..8): symmetric effective-object onboard-time guard.
+    def _mixed_effective_posture(self) -> Optional[str]:
+        """The symmetric effective-object posture (PRD 07D-2b.1; reused by 07D-2b.2b).
 
-        Posture is computed from the COMPOSED objects, never env values, so both explicit
-        ``store=`` constructor bypass directions are covered (the 07D-2a matrix reads env only):
+        Computed from the COMPOSED objects, never env values, so both explicit ``store=``
+        constructor bypass directions are covered (the 07D-2a matrix reads env only):
         ``store_kind = durable`` iff the effective store is the Postgres ControlStore;
-        ``live_kind = postgres`` iff the effective operator is the Postgres provisioning operator
-        (``store=`` is this constructor's ONLY explicit parameter, so the live side is always
-        env-composed and matrix-coherent — the operator stands for the whole live trio).
-        MATCHED postures (both in-memory / both postgres) return the orchestrator unchanged;
-        MIXED postures get the fail-closed facade. Performs no I/O (isinstance only)."""
+        ``live_kind = postgres`` iff the effective operator is the Postgres provisioning
+        operator (``store=`` is this constructor's ONLY explicit parameter, so the live side
+        is always env-composed and matrix-coherent — the operator stands for the whole live
+        trio). Returns None for MATCHED postures (both in-memory / both postgres) and the
+        non-sensitive posture description for MIXED ones. Performs no I/O (isinstance only)."""
         # Function-local imports mirror the builders' driver-containment pattern.
         from .adapters.providers.postgres_provisioning_operator import PostgresProvisioningOperator
         from .adapters.providers.postgres_store import PostgresControlStore
@@ -322,12 +384,71 @@ class ControlPlane:
         store_durable = isinstance(self.store, PostgresControlStore)
         live_postgres = isinstance(self.operator, PostgresProvisioningOperator)
         if store_durable == live_postgres:
-            return inner
-        posture = (
+            return None
+        return (
             f"control store={'postgres' if store_durable else 'in_memory'}, "
             f"provisioning operator={'postgres' if live_postgres else 'in_memory'}"
         )
+
+    def _guarded_onboarding(self, inner: OnboardingOrchestrator) -> "OnboardingOrchestrator | _MixedPostureOnboardingGuard":
+        """PRD 07D-2b.1 (AC-4..8): symmetric effective-object onboard-time guard.
+
+        MATCHED postures return the orchestrator unchanged; MIXED postures get the
+        fail-closed facade (see ``_mixed_effective_posture`` for the posture rule)."""
+        posture = self._mixed_effective_posture()
+        if posture is None:
+            return inner
         return _MixedPostureOnboardingGuard(inner, posture)
+
+    def _guarded_recovery(
+        self,
+        compensation: RecoveryCompensationService,
+        scan: OrphanScanService,
+    ) -> Tuple[
+        "RecoveryCompensationService | _MixedPostureRecoveryGuard",
+        "OrphanScanService | _MixedPostureRecoveryGuard",
+    ]:
+        """PRD 07D-2b.2b (R1-2): the same effective-object rule guards the recovery surface.
+
+        MATCHED postures expose the real compensation + scan services un-wrapped; MIXED
+        postures replace BOTH with the pre-effect deny facade (zero events, both mix
+        directions — the first governed DROP DATABASE caller never composes half-live)."""
+        posture = self._mixed_effective_posture()
+        if posture is None:
+            return compensation, scan
+        guard = _MixedPostureRecoveryGuard(posture)
+        return guard, guard
+
+    def _build_recovery_inspection(self) -> RecoveryInspectionPort:
+        """Select the recovery-inspection adapter (PRD 07D-2b.2b R1-1/R1-2).
+
+        NO new env selector: the posture derives from the EXISTING provisioning selector
+        (normalized byte-equal to the builders). The postgres path composes the live
+        inspection adapter over the EXISTING admin + control-store secret bindings (lazy,
+        references only); the default path is the pure-stdlib double bound to the in-memory
+        operator's provisioned view and the nonprod Control-DB identity. Unknown selector
+        values already failed closed in ``_build_provisioning`` (which runs first)."""
+        if self._selector_value(PROVISIONING_ADAPTER_ENV) == "postgres":
+            from .adapters.providers.postgres_recovery_inspection import (  # function-local (driver containment)
+                PostgresRecoveryInspection,
+            )
+
+            admin_secrets = EnvReferenceSecretStore(allowed=frozenset({*DEFAULT_ALLOWED, PROVISIONING_ADMIN_DSN_REF}))
+            control_secrets, control_ref = self._control_store_secret_binding()
+            return PostgresRecoveryInspection(
+                admin_secrets=admin_secrets,
+                admin_ref=SecretRef(store_ref=PROVISIONING_ADMIN_DSN_REF, version="1"),
+                control_secrets=control_secrets,
+                control_ref=control_ref,
+            )
+        operator = self.operator
+
+        def provisioned_view() -> Set[str]:
+            # A LIVE view of the in-memory operator's provisioned targets: each is an EMPTY
+            # database in the default plane (the operator records intent; creates nothing).
+            return set(operator.provisioned) if isinstance(operator, InMemoryProvisioningOperator) else set()
+
+        return InMemoryRecoveryInspection(control_database_name=NONPROD_CONTROL_TARGET, provisioned_view=provisioned_view)
 
     @staticmethod
     def _selector_value(env_name: str) -> str:
@@ -423,7 +544,7 @@ class ControlPlane:
                 InMemoryTenantDatabaseProbe(schema_version=str(SUPPORTED_SCHEMA_MAX)),
                 CanonicalTenantRefInMemoryEvidence(),
                 nonprod_control_db_evidence(),
-                ledger=self._build_ledger(),
+                ledger=self._ledger,
                 supported_schema_versions=supported,
             )
             return operator, provisioning
@@ -483,7 +604,7 @@ class ControlPlane:
             # evidence is live I/O): replaced by the REAL Control-DB evidence before ANY
             # verification proceeds (_LazyControlEvidenceGate.verify, fail-closed).
             nonprod_control_db_evidence(),
-            ledger=self._build_ledger(),
+            ledger=self._ledger,
             supported_schema_versions=supported,
             control_evidence_factory=_control_evidence,
         )

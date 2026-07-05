@@ -55,9 +55,15 @@ class TenantLifecycleService:
     # -- operations ------------------------------------------------------------
     def verify_tenant(self, tenant_id: str, *, actor: str, correlation_id: str) -> TenantRecord:
         rec = self._require(tenant_id)
+        # PRD 07D-2b.2b (§11 HARDEN, R1-6): QUARANTINED joins the refusal tuple. This service
+        # stays dormant/uncomposed, but if it were ever wired, verify_tenant would otherwise
+        # walk Quarantined -> Verifying -> potentially Ready — the exact escape hatch IC-002's
+        # "NO transition from Quarantined toward Verifying or Ready, ever" forbids. Fail
+        # closed, PRE-transition.
         if rec.lifecycle_state in (
             TenantLifecycleState.DECOMMISSIONED,
             TenantLifecycleState.SUSPENDED,
+            TenantLifecycleState.QUARANTINED,
         ):
             raise LifecycleError("illegal lifecycle transition")
         self._set(rec, TenantLifecycleState.VERIFYING, actor, correlation_id, "VerifyTenant")
@@ -95,6 +101,15 @@ class TenantLifecycleService:
         correlation_id: str,
     ) -> TenantRecord:
         rec = self._require(tenant_id)
+        # PRD 07D-2b.2b (§11 HARDEN, R1-6): current-state pre-check BEFORE any other check or
+        # write. Re-association moves the record toward Verifying; from QUARANTINED that is
+        # the IC-002 Re-association-guard escape hatch, and DECOMMISSIONED is terminal. Fail
+        # closed, pre-effect (no association overwrite, no state change, no audit record).
+        if rec.lifecycle_state in (
+            TenantLifecycleState.QUARANTINED,
+            TenantLifecycleState.DECOMMISSIONED,
+        ):
+            raise LifecycleError("illegal lifecycle transition")
         if not _version_gt(new_association_ref.version, rec.database_association_ref.version):
             raise LifecycleError("ReassociateDatabase requires an incremented association version")
         # Point at the restored/relocated DB and re-enter Verifying (re-verify before Ready).

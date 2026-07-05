@@ -894,6 +894,87 @@ def test_onboard_guard_allows_matched_postures() -> None:
         restore()
 
 
+# --- PRD 07D-2b.2b carried riders: AT-PMV45-1 gate-RAISE pairing + AT-PMV45-4 reason pins ----------
+class _RaisingGate:
+    """A gate double whose verify() RAISES (not a failed outcome — an exception): the
+    IC-002 start/terminal pairing must hold even then (the except/re-emit wrappers at
+    onboarding.py recover()/_resume()). Tests-only — the wrappers already exist (AT-PMV45-1)."""
+
+    def verify(self, tenant_id: str, *, actor: str, correlation_id: str) -> DistinctnessOutcome:
+        raise RuntimeError("gate raised")
+
+
+def _recovery_pairing(store: InMemoryControlStore) -> tuple:
+    acts = _actions(store)
+    started = acts.count(events.ONBOARDING_RECOVERY_STARTED)
+    terminal = acts.count(events.ONBOARDING_RECOVERY_COMPLETED) + acts.count(events.ONBOARDING_RECOVERY_FAILED)
+    return started, terminal
+
+
+def test_recover_gate_raise_keeps_started_terminal_pairing() -> None:
+    # MR-11 kill site (recover() leg): the gate RAISES mid-recovery -> the exception
+    # propagates AND exactly one OnboardingRecoveryFailed pairs the OnboardingRecoveryStarted.
+    store = InMemoryControlStore()
+    orch_broken = _orchestrator(store, probe=InMemoryTenantDatabaseProbe(reachable=False))
+    assert _onboard(orch_broken).result is not DistinctnessResult.VERIFIED
+    assert _state(store) is TenantLifecycleState.FAILED
+    orch = _orchestrator(store)
+    orch._provisioning = _RaisingGate()  # type: ignore[assignment]
+    raised = False
+    try:
+        orch.recover("t1", actor="ops_ref", correlation_id="c-gr1")
+    except RuntimeError:
+        raised = True
+    assert raised, "the gate exception must propagate (fail closed, never swallowed)"
+    started, terminal = _recovery_pairing(store)
+    assert started == terminal == 1, f"start/terminal must pair exactly (got {started}/{terminal})"
+    acts = _actions(store)
+    assert events.ONBOARDING_RECOVERY_FAILED in acts
+    assert acts.index(events.ONBOARDING_RECOVERY_FAILED) > acts.index(events.ONBOARDING_RECOVERY_STARTED)
+
+
+def test_resume_gate_raise_keeps_started_terminal_pairing() -> None:
+    # MR-11 kill site (_resume leg): a PROVISIONING tenant auto-resumes, the gate raises ->
+    # exception propagates; exactly one OnboardingRecoveryFailed after OnboardingRecoveryStarted.
+    store = InMemoryControlStore()
+    assert _onboard(_orchestrator(store, operator=_FailingOperator())).reason == "provision_failed"
+    assert _state(store) is TenantLifecycleState.PROVISIONING
+    orch = _orchestrator(store)  # healthy operator/applicator; the GATE raises
+    orch._provisioning = _RaisingGate()  # type: ignore[assignment]
+    raised = False
+    try:
+        _onboard(orch, correlation_id="c-gr2")  # dispatches into _resume
+    except RuntimeError:
+        raised = True
+    assert raised, "the gate exception must propagate from the resumed run"
+    started, terminal = _recovery_pairing(store)
+    assert started == terminal == 1, f"start/terminal must pair exactly (got {started}/{terminal})"
+    acts = _actions(store)
+    assert events.ONBOARDING_RECOVERY_FAILED in acts
+    assert acts.index(events.ONBOARDING_RECOVERY_FAILED) > acts.index(events.ONBOARDING_RECOVERY_STARTED)
+
+
+def test_suspended_and_decommissioned_terminal_reason_pins() -> None:
+    # AT-PMV45-4: the EXACT terminal reason strings for the suspended / decommissioned
+    # onboarding refusals are load-bearing dispatch outcomes — pinned verbatim.
+    store = InMemoryControlStore()
+    orch = _orchestrator(store)
+    _register(orch._registry, "t_susp")
+    orch._registry.suspend_tenant("t_susp", actor="ops_ref", correlation_id="c-rp-s")
+    _register(orch._registry, "t_dec")
+    orch._registry.decommission_tenant("t_dec", actor="ops_ref", correlation_id="c-rp-d")
+    audit_before = store.list_audit()
+    out_susp = orch.onboard("t_susp", organization_ref=_ORG, federation_config_ref=_FED, actor="ops_ref", correlation_id="c-rp-s2")
+    assert out_susp.result is DistinctnessResult.VERIFICATION_INCOMPLETE
+    assert out_susp.reason == "suspended", out_susp.reason
+    out_dec = orch.onboard("t_dec", organization_ref=_ORG, federation_config_ref=_FED, actor="ops_ref", correlation_id="c-rp-d2")
+    assert out_dec.result is DistinctnessResult.VERIFICATION_INCOMPLETE
+    assert out_dec.reason == "decommissioned", out_dec.reason
+    assert store.list_audit() == audit_before, "terminal fence outcomes must have zero side effects"
+    assert _state(store, "t_susp") is TenantLifecycleState.SUSPENDED
+    assert _state(store, "t_dec") is TenantLifecycleState.DECOMMISSIONED
+
+
 # --- PRD 07D-2a: secret precedence / version pins (AT-07D1-10; Q4 = pin current behavior) ----------
 def test_tenant_dsn_provider_env_wins_over_file_when_both_set() -> None:
     # BOTH forms set -> the ENV value is returned and the file is silently ignored (the current
@@ -1016,6 +1097,9 @@ _TESTS = [
     test_onboard_guard_blocks_durable_store_with_in_memory_live,
     test_onboard_guard_blocks_reverse_mix_explicit_store_bypass,
     test_onboard_guard_allows_matched_postures,
+    test_recover_gate_raise_keeps_started_terminal_pairing,
+    test_resume_gate_raise_keeps_started_terminal_pairing,
+    test_suspended_and_decommissioned_terminal_reason_pins,
     test_tenant_dsn_provider_env_wins_over_file_when_both_set,
     test_tenant_dsn_provider_version_2_via_both_forms,
     test_tenant_dsn_provider_current_version_token_pinned,

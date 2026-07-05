@@ -62,6 +62,38 @@ PRD 07D-2b.1 (folded in per the confirmed V2 exec-auth; D1-D9 and 07D2A-1..3 pre
            recover() entry point fail closed with ProvisioningError pre-effect — zero durable
            registry/audit/DB footprint proven against the real control DB.
 
+PRD 07D-2b.2b COMPENSATION + ORPHAN EVIDENCE (folded in per the 07D-2b.2b exec-auth
+[GPT V2, byte-adopting the Claude V1 R1]; run set STAYS 13 — no new harness). Declared
+characterization SCOPING (R1-8, not a weakening): the existing "deprovision() must never be
+called" pins remain scoped to the PREVENTION/FAILURE-PATH tenants (d07fail, d07gf — asserted
+via pg_database presence after retries/recover); the POSITIVE deprovision cases below use NEW
+disposable tenants (d07de, d07bs, d07x) plus the never-registered d07orph and the dedicated
+control-clone composition (ctlx):
+  07D2B2B-1 D-5 fullmatch negative, live: newline/suffix-injected targets are rejected by the
+            REAL operator's shared guard on the DROP path; no database is dropped.
+  07D2B2B-2 empty tenant DB eligible: explicit deprovision passes the ownership-proof
+            quintuple, calls the operator, drops the DB, leaves the Requested->Completed
+            trail, and RETAINS the registry record (no state change).
+  07D2B2B-3 bootstrap-only tenant DB eligible: schema + System-Primary seed + platform
+            schema_version rows classify bootstrap-only (R1-3 census) and deprovision.
+  07D2B2B-4 non-empty tenant DB preserved: content beyond bootstrap refuses (no DROP),
+            emits TenantDeprovisionFailed, and quarantines the eligible FAILED tenant.
+  07D2B2B-5 Control DB non-droppable: a dedicated composition whose Control DB sits INSIDE
+            the tenant namespace refuses compensation BEFORE any operator call — the
+            Control DB survives; the primary Control DB also survives the whole run.
+  07D2B2B-6 ledger collision: another tenant's durable distinctness evidence naming the
+            target refuses (fail closed) and quarantines; no DROP.
+  07D2B2B-7 physical DB with no registry record: the READ-ONLY scan reports it (zero audit
+            events, no state change, no DROP); explicit deprovision of the unknown id
+            refuses; the DB survives.
+  07D2B2B-8 cross-process durable re-classification (R1-7 recipe): instance A leaves a
+            FAILED tenant with ONE durable IsolationAnomaly row (public audit API);
+            instance B (fresh create_app) recover() re-classifies to QUARANTINED without
+            re-entering Verifying and never Ready; the sentinel-BEARING bootstrap-only DB
+            then deprovisions from Quarantined (verification artifacts bootstrap-compatible).
+  07D2B1-1+ the standalone durable-store posture ALSO denies the two NEW recovery entry
+            points (deprovision_tenant_database + scan_for_orphans) pre-effect (R1-2).
+
 PRD 07D-2b.2a RECOVERY EVIDENCE (folded in per the 07D-2b.2a exec-auth [Claude V1 R1 / GPT V2];
 run set STAYS 13 — no new harness):
   07D2B2-1 resume from PROVISIONING with an empty/schema-created DB converges to READY through the
@@ -111,11 +143,21 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))  # backend 
 from control_plane import events  # noqa: E402
 from control_plane import main as cp_main  # noqa: E402
 from control_plane.adapters.providers.env_tenant_dsn_secret_store import EnvTenantDsnSecretStore  # noqa: E402
-from control_plane.distinctness import DistinctnessResult  # noqa: E402
+from control_plane.distinctness import DistinctnessEvidence, DistinctnessResult  # noqa: E402
 from control_plane.onboarding import OnboardingError, tenant_dsn_ref  # noqa: E402
 from control_plane.provisioning import ProvisioningError, tenant_database_name  # noqa: E402
 from control_plane.read_api import ControlPlaneReadService  # noqa: E402
 from control_plane.records import TenantLifecycleState  # noqa: E402
+from control_plane.recovery import (  # noqa: E402
+    CLASS_NO_REGISTRY_RECORD,
+    REASON_ABSENT_NOOP,
+    REASON_CONTENT_NOT_EMPTY,
+    REASON_CONTROL_TARGET,
+    REASON_DEPROVISIONED,
+    REASON_LEDGER_COLLISION,
+    REASON_UNKNOWN_TENANT,
+    RecoveryCompensationService,
+)
 from control_plane.registry import RegistryError  # noqa: E402
 from shared.adapters.providers.env_reference_secret_store import EnvReferenceSecretStore  # noqa: E402
 from shared.secrets import SecretRef  # noqa: E402
@@ -235,7 +277,28 @@ def test_07d_composition_onboarding(admin_dsn: str) -> None:
     tid_a, tid_b, tid_fail, tid_reg, tid_db = "d07a", "d07b", "d07fail", "d07reg", "d07db"
     tid_pf, tid_gf = "d07pf", "d07gf"  # PRD 07D-2a characterization tenants (provision-fail / gate-fail)
     tid_tr, tid_q = "d07tr", "d07q"  # PRD 07D-2b.2a tenants (transient-recover / quarantine)
-    all_tids = (tid_a, tid_b, tid_fail, tid_reg, tid_db, tid_pf, tid_gf, tid_tr, tid_q)
+    # PRD 07D-2b.2b disposable tenants: empty-deprovision / bootstrap-deprovision / non-empty-
+    # preserved / ledger-collision / cross-process-requarantine; plus the never-registered
+    # physical orphan (d07orph) and the control-clone tenant id (ctlx -> sp2_tenant_ctlx).
+    tid_de, tid_bs, tid_ne, tid_lc, tid_x = "d07de", "d07bs", "d07ne", "d07lc", "d07x"
+    all_tids = (
+        tid_a,
+        tid_b,
+        tid_fail,
+        tid_reg,
+        tid_db,
+        tid_pf,
+        tid_gf,
+        tid_tr,
+        tid_q,
+        tid_de,
+        tid_bs,
+        tid_ne,
+        tid_lc,
+        tid_x,
+        "d07orph",
+        "ctlx",
+    )
 
     env_keys = [*_SELECTOR_ENV, cp_main.CONTROL_STORE_DSN_REF_ENV, _CTL_SECRET_KEY, _ADMIN_SECRET_KEY]
     env_keys += [_tenant_env_key(t) for t in all_tids]
@@ -256,10 +319,12 @@ def test_07d_composition_onboarding(admin_dsn: str) -> None:
         os.environ[_CTL_SECRET_KEY] = _pg.swap_db(admin_dsn, _CTL_DB)
         os.environ[_ADMIN_SECRET_KEY] = admin_dsn
         # tenant A + the idempotency tenants + the 07D-2a characterization tenants + the
-        # 07D-2b.2a recovery tenants resolve via the ENV form of the shared convention...
-        for tid in (tid_a, tid_reg, tid_db, tid_pf, tid_gf, tid_tr, tid_q):
+        # 07D-2b.2a recovery tenants + the 07D-2b.2b onboarding-based fixtures resolve via
+        # the ENV form of the shared convention...
+        for tid in (tid_a, tid_reg, tid_db, tid_pf, tid_gf, tid_tr, tid_q, tid_bs, tid_ne, tid_lc, tid_x):
             os.environ[_tenant_env_key(tid)] = _pg.swap_db(admin_dsn, tenant_database_name(tid))
         os.environ.pop(_tenant_env_key(tid_fail), None)  # d07fail: deliberately unresolvable (D6)
+        os.environ.pop(_tenant_env_key(tid_de), None)  # d07de: unresolvable -> PROVISIONING + EMPTY DB (2b.2b)
         # ...tenant B resolves via the FILE form: $SNACKPORTAL_TENANT_SECRET_DIR/tenant/<id>/dsn@1
         os.environ["SNACKPORTAL_TENANT_SECRET_DIR"] = secret_dir
         os.environ.pop(_tenant_env_key(tid_b), None)
@@ -591,7 +656,7 @@ def test_07d_composition_onboarding(admin_dsn: str) -> None:
         try:
             cp_guard = cp_main.create_app()  # control_store stays 'postgres' -> standalone posture
             open_stores.append(cp_guard.store)
-            for guard_op in ("onboard", "reassociate", "recover"):
+            for guard_op in ("onboard", "reassociate", "recover", "deprovision_tenant_database", "scan_for_orphans"):
                 guard_raised = False
                 try:
                     if guard_op == "onboard":
@@ -605,11 +670,16 @@ def test_07d_composition_onboarding(admin_dsn: str) -> None:
                             actor="ops_ref",
                             correlation_id="c-07d2b1r",
                         )
-                    else:  # PRD 07D-2b.2a: the NEW recovery entry point gets the same facade deny
+                    elif guard_op == "recover":  # PRD 07D-2b.2a: the recovery entry point's facade deny
                         cp_guard.onboarding.recover("d07guard", actor="ops_ref", correlation_id="c-07d2b1rec")
+                    elif guard_op == "deprovision_tenant_database":
+                        # PRD 07D-2b.2b (R1-2): the compensation entry point denies pre-effect too.
+                        cp_guard.recovery.deprovision_tenant_database("d07guard", actor="ops_ref", correlation_id="c-07d2b2b-g1")
+                    else:  # PRD 07D-2b.2b (R1-2): even the READ-ONLY scan denies under a mixed plane.
+                        cp_guard.orphan_scan.scan_for_orphans()
                 except ProvisioningError:
                     guard_raised = True
-                assert guard_raised, f"07D-2b.1 guard: {guard_op}() must fail closed under the standalone posture"
+                assert guard_raised, f"07D-2b.1/2b.2b guard: {guard_op}() must fail closed under the standalone posture"
         finally:
             for key, value in saved_live_selectors.items():
                 if value is not None:
@@ -618,8 +688,8 @@ def test_07d_composition_onboarding(admin_dsn: str) -> None:
         assert all(r.tenant_id != "d07guard" for r in cp.store.list_audit()), "guard must leave NO durable audit record"
         assert not _db_exists(psycopg, admin_dsn, tenant_database_name("d07guard")), "guard must create NO physical DB"
         print(
-            "PASS: 07D2B1-1 onboard-time guard (standalone durable-store posture: onboard+reassociate+recover "
-            "fail closed pre-effect; zero durable registry/audit/DB footprint)"
+            "PASS: 07D2B1-1 onboard-time guard (standalone durable-store posture: onboard+reassociate+recover"
+            "+deprovision_tenant_database+scan_for_orphans fail closed pre-effect; zero durable registry/audit/DB footprint)"
         )
 
         # === PRD 07D-2b.2a: recovery + quarantine integrity — LIVE evidence =======================
@@ -744,6 +814,277 @@ def test_07d_composition_onboarding(admin_dsn: str) -> None:
             "PASS: 07D2B2-5 reverse-mix live proof (explicit in-memory store + all-postgres env: "
             "onboard/reassociate/recover denied pre-effect; zero physical footprint in pg_database)"
         )
+
+        # === PRD 07D-2b.2b: compensation, orphan scan, governed deprovision — LIVE evidence =======
+        assert isinstance(cp.recovery, RecoveryCompensationService), "matched all-postgres posture must expose the real service"
+
+        def _deprovision(plane, tid: str, correlation_id: str):
+            return plane.recovery.deprovision_tenant_database(tid, actor="ops_ref", correlation_id=correlation_id)
+
+        def _dep_pairing(plane, tid: str) -> tuple:
+            acts_t = [r.action for r in plane.store.list_audit() if r.tenant_id == tid]
+            return (
+                acts_t.count(events.TENANT_DEPROVISION_REQUESTED),
+                acts_t.count(events.TENANT_DEPROVISION_COMPLETED),
+                acts_t.count(events.TENANT_DEPROVISION_FAILED),
+            )
+
+        # --- 07D2B2B-1: D-5 fullmatch negative on the REAL operator's DROP path -------------------
+        for bad_target in (
+            tenant_database_name(tid_a) + "\n",  # the `.match` + `$` trailing-newline hazard
+            tenant_database_name(tid_a) + '"; DROP DATABASE "' + _CTL_DB,  # quoted-injection shape
+        ):
+            d5_raised = False
+            try:
+                cp.operator.deprovision(target=bad_target)
+            except ProvisioningError:
+                d5_raised = True
+            assert d5_raised, f"the shared guard must reject {bad_target!r} on the DROP path (fail closed)"
+        assert _db_exists(psycopg, admin_dsn, tenant_database_name(tid_a)), "no DROP may have happened"
+        assert _db_exists(psycopg, admin_dsn, _CTL_DB), "the Control DB must be untouched"
+        print("PASS: 07D2B2B-1 D-5 fullmatch negative (newline/suffix-injected DROP targets rejected; nothing dropped)")
+
+        # --- 07D2B2B-2: EMPTY tenant DB eligible -> explicit deprovision drops it ------------------
+        # Fixture: unresolvable tenant ref -> provision succeeds, apply fails -> PROVISIONING + EMPTY DB.
+        out_de = _onboard(cp, tid_de, "c-2b2b-de0")
+        assert out_de.reason == "schema_application_failed", out_de.reason
+        rec_de = cp.store.get_tenant(tid_de)
+        assert rec_de is not None and rec_de.lifecycle_state is TenantLifecycleState.PROVISIONING
+        assert _db_exists(psycopg, admin_dsn, tenant_database_name(tid_de)), "the empty orphan DB exists"
+        out_de_dep = _deprovision(cp, tid_de, "c-2b2b-de1")
+        assert out_de_dep.dropped and out_de_dep.completed and out_de_dep.reason == REASON_DEPROVISIONED, out_de_dep
+        assert not _db_exists(psycopg, admin_dsn, tenant_database_name(tid_de)), "the empty DB must be DROPPED"
+        assert _dep_pairing(cp, tid_de) == (1, 1, 0), "Requested -> Completed exactly once each"
+        rec_de2 = cp.store.get_tenant(tid_de)
+        assert rec_de2 is not None, "the registry record is RETAINED (never deleted)"
+        assert rec_de2.lifecycle_state is TenantLifecycleState.PROVISIONING, "deprovision changes no lifecycle state"
+        # Idempotency by outcome (§8.3): repeating the explicit request is a safe no-op Completed.
+        out_de_rep = _deprovision(cp, tid_de, "c-2b2b-de2")
+        assert not out_de_rep.dropped and out_de_rep.completed and out_de_rep.reason == REASON_ABSENT_NOOP
+        assert _dep_pairing(cp, tid_de) == (2, 2, 0)
+        print(
+            "PASS: 07D2B2B-2 empty tenant DB deprovisioned "
+            "(proof passed; Requested->Completed; registry retained; absent repeat = safe no-op)"
+        )
+
+        # --- 07D2B2B-3: BOOTSTRAP-ONLY tenant DB eligible (R1-3 census) ---------------------------
+        # Fixture: gate-fail (expected '2' vs observed '1') -> FAILED with a fully applied schema
+        # (all applicator tables + the System Primary seed + the platform schema_version row).
+        out_bs = cp.onboarding.onboard(
+            tid_bs,
+            organization_ref=_ORG,
+            federation_config_ref=_FED,
+            actor="ops_ref",
+            correlation_id="c-2b2b-bs0",
+            expected_schema_version="2",
+        )
+        assert out_bs.result is DistinctnessResult.VERIFICATION_FAILED, out_bs
+        rec_bs = cp.store.get_tenant(tid_bs)
+        assert rec_bs is not None and rec_bs.lifecycle_state is TenantLifecycleState.FAILED
+        assert _db_exists(psycopg, admin_dsn, tenant_database_name(tid_bs)), "the schema'd DB exists"
+        out_bs_dep = _deprovision(cp, tid_bs, "c-2b2b-bs1")
+        assert out_bs_dep.dropped and out_bs_dep.reason == REASON_DEPROVISIONED, out_bs_dep
+        assert not _db_exists(psycopg, admin_dsn, tenant_database_name(tid_bs)), "the bootstrap-only DB must be DROPPED"
+        rec_bs2 = cp.store.get_tenant(tid_bs)
+        assert rec_bs2 is not None and rec_bs2.lifecycle_state is TenantLifecycleState.FAILED, "record retained; state unchanged"
+        print("PASS: 07D2B2B-3 bootstrap-only tenant DB deprovisioned (schema + seed + schema_version accepted by the R1-3 census)")
+
+        # --- 07D2B2B-4: NON-EMPTY tenant DB preserved + quarantined --------------------------------
+        out_ne = cp.onboarding.onboard(
+            tid_ne,
+            organization_ref=_ORG,
+            federation_config_ref=_FED,
+            actor="ops_ref",
+            correlation_id="c-2b2b-ne0",
+            expected_schema_version="2",
+        )
+        assert out_ne.result is DistinctnessResult.VERIFICATION_FAILED
+        ne_conn = psycopg.connect(_pg.swap_db(admin_dsn, tenant_database_name(tid_ne)))
+        try:
+            with ne_conn.cursor() as cur:
+                cur.execute("CREATE TABLE evidence_extra (x int)")  # beyond-bootstrap content
+                cur.execute("INSERT INTO evidence_extra (x) VALUES (1)")
+            ne_conn.commit()
+        finally:
+            ne_conn.close()
+        out_ne_dep = _deprovision(cp, tid_ne, "c-2b2b-ne1")
+        assert not out_ne_dep.completed and out_ne_dep.reason == REASON_CONTENT_NOT_EMPTY, out_ne_dep
+        assert _db_exists(psycopg, admin_dsn, tenant_database_name(tid_ne)), "the non-empty DB is PRESERVED (never dropped)"
+        rec_ne = cp.store.get_tenant(tid_ne)
+        assert rec_ne is not None and rec_ne.lifecycle_state is TenantLifecycleState.QUARANTINED, (
+            "an eligible (Failed) tenant with evidence content quarantines (R1-5)"
+        )
+        ne_acts = [r.action for r in cp.store.list_audit() if r.tenant_id == tid_ne]
+        assert events.TENANT_DEPROVISION_FAILED in ne_acts and events.TENANT_QUARANTINED in ne_acts
+        assert "QuarantineTenant" in ne_acts
+        ne_check = psycopg.connect(_pg.swap_db(admin_dsn, tenant_database_name(tid_ne)))
+        try:
+            with ne_check.cursor() as cur:
+                assert _one(cur, "SELECT count(*) FROM evidence_extra") == 1, "the evidence rows survive unmodified"
+        finally:
+            ne_check.close()
+        print("PASS: 07D2B2B-4 non-empty tenant DB preserved (no DROP; TenantDeprovisionFailed; FAILED -> QUARANTINED)")
+
+        # --- 07D2B2B-5: Control DB non-droppable (fails BEFORE the operator; Control DB survives) --
+        # A dedicated composition whose CONTROL database sits INSIDE the tenant namespace
+        # (sp2_tenant_ctlx == tenant_database_name('ctlx')): the recomputed target of tenant
+        # 'ctlx' IS that composition's Control DB, so the never-droppable guard must fire.
+        ctl_clone = tenant_database_name("ctlx")
+        boot_ctl = psycopg.connect(admin_dsn, autocommit=True)
+        try:
+            boot_ctl.execute(f'CREATE DATABASE "{ctl_clone}"')
+        finally:
+            boot_ctl.close()
+        cc = psycopg.connect(_pg.swap_db(admin_dsn, ctl_clone))
+        try:
+            with cc.cursor() as cur:
+                for name in _CONTROL_DDL_ORDER:
+                    cur.execute((_CONTROL_DDL_DIR / name).read_text(encoding="utf-8"))
+            cc.commit()
+        finally:
+            cc.close()
+        saved_ctl_dsn = os.environ[_CTL_SECRET_KEY]
+        os.environ[_CTL_SECRET_KEY] = _pg.swap_db(admin_dsn, ctl_clone)
+        try:
+            cp_ctl = cp_main.create_app()
+            open_stores.append(cp_ctl.store)
+            cp_ctl.registry.register_tenant(
+                tenant_id="ctlx",
+                organization_ref=_ORG,
+                expected_schema_version="1",
+                database_association_ref=SecretRef(store_ref=tenant_dsn_ref("ctlx"), version="1"),
+                federation_config_ref=_FED,
+                actor="ops_ref",
+                correlation_id="c-2b2b-ctl0",
+            )
+            cp_ctl.registry.mark_provisioning("ctlx", actor="ops_ref", correlation_id="c-2b2b-ctl1")
+            out_ctl = _deprovision(cp_ctl, "ctlx", "c-2b2b-ctl2")
+            assert not out_ctl.completed and out_ctl.reason == REASON_CONTROL_TARGET, out_ctl
+            assert _db_exists(psycopg, admin_dsn, ctl_clone), "the Control DB must SURVIVE (guard fires pre-operator)"
+            rec_ctlx = cp_ctl.store.get_tenant("ctlx")
+            assert rec_ctlx is not None and rec_ctlx.lifecycle_state is TenantLifecycleState.QUARANTINED, (
+                "the Control-target anomaly quarantines the eligible (Provisioning) tenant"
+            )
+            assert _dep_pairing(cp_ctl, "ctlx") == (1, 0, 1), "Requested -> Failed trail, durably recorded"
+        finally:
+            os.environ[_CTL_SECRET_KEY] = saved_ctl_dsn
+        print("PASS: 07D2B2B-5 Control DB non-droppable (refusal BEFORE operator; Control DB survives; Requested->Failed durable)")
+
+        # --- 07D2B2B-6: ledger/fingerprint collision -> NO DROP, fail closed, quarantine -----------
+        out_lc = cp.onboarding.onboard(
+            tid_lc,
+            organization_ref=_ORG,
+            federation_config_ref=_FED,
+            actor="ops_ref",
+            correlation_id="c-2b2b-lc0",
+            expected_schema_version="2",
+        )
+        assert out_lc.result is DistinctnessResult.VERIFICATION_FAILED
+        # Manufacture ANOTHER tenant's durable distinctness evidence naming d07lc's database
+        # (the existing public ledger write API; the collision row is removed again below).
+        cp.provisioning._ledger.record_evidence(
+            "d07other",
+            DistinctnessEvidence(
+                system_identifier="",
+                database_identity="collision:evidence",
+                observed_target=tenant_database_name(tid_lc),
+                secret_ref_key="tenant/d07other/dsn",
+                sentinel_namespace="dv_sentinel_d07other",
+                sentinel_token="tok",
+                sentinel_written=True,
+            ),
+        )
+        try:
+            out_lc_dep = _deprovision(cp, tid_lc, "c-2b2b-lc1")
+            assert not out_lc_dep.completed and out_lc_dep.reason == REASON_LEDGER_COLLISION, out_lc_dep
+            assert _db_exists(psycopg, admin_dsn, tenant_database_name(tid_lc)), "NO DROP on a ledger collision"
+            rec_lc = cp.store.get_tenant(tid_lc)
+            assert rec_lc is not None and rec_lc.lifecycle_state is TenantLifecycleState.QUARANTINED
+        finally:
+            cp.provisioning._ledger.remove("d07other")
+        print("PASS: 07D2B2B-6 ledger collision (another tenant's durable evidence names the target: no DROP; quarantined)")
+
+        # --- 07D2B2B-7: physical DB with NO registry record -> scan reports only; nothing touched --
+        orph_db = tenant_database_name("d07orph")
+        boot_orph = psycopg.connect(admin_dsn, autocommit=True)
+        try:
+            boot_orph.execute(f'CREATE DATABASE "{orph_db}"')
+        finally:
+            boot_orph.close()
+        audit_count_before = len(cp.store.list_audit())
+        scan_entries = cp.orphan_scan.scan_for_orphans()
+        orph_entry = next(e for e in scan_entries if e.database_name == orph_db)
+        assert orph_entry.classification == CLASS_NO_REGISTRY_RECORD and orph_entry.tenant_id is None
+        assert not orph_entry.safe_to_deprovision
+        assert len(cp.store.list_audit()) == audit_count_before, "the scan emits ZERO audit events (read-only)"
+        assert _db_exists(psycopg, admin_dsn, orph_db), "the scan drops nothing (report-only)"
+        # The registry-side sweep also reports d07de (record retained, DB dropped in 07D2B2B-2).
+        de_entry = next(e for e in scan_entries if e.database_name == tenant_database_name(tid_de))
+        assert de_entry.classification == "registry_record_database_absent" and de_entry.tenant_id == tid_de
+        # Secret hygiene: the report carries no DSN/secret material (D-14).
+        for entry in scan_entries:
+            for secret in (admin_dsn, os.environ[_CTL_SECRET_KEY]):
+                assert secret not in repr(entry), "no secret material may appear in the scan report"
+        # Explicit deprovision of the unknown id refuses (Requested->Failed) and touches nothing.
+        out_orph = _deprovision(cp, "d07orph", "c-2b2b-or1")
+        assert not out_orph.completed and out_orph.reason == REASON_UNKNOWN_TENANT
+        assert _db_exists(psycopg, admin_dsn, orph_db), "a no-registry-record DB is NEVER touched"
+        print("PASS: 07D2B2B-7 no-registry-record DB (scan reports read-only, zero events; explicit deprovision refuses; DB survives)")
+
+        # --- 07D2B2B-8: cross-process durable anomaly-history re-classification (R1-7 recipe) ------
+        out_x = _onboard(cp, tid_x, "c-2b2b-x0")
+        assert out_x.result is DistinctnessResult.VERIFIED, out_x.reason
+        saved_x_dsn = os.environ.pop(_tenant_env_key(tid_x))  # break the DSN secret
+        try:
+            out_x_fail = cp.provisioning.verify(tid_x, actor="ops_ref", correlation_id="c-2b2b-x1")
+        finally:
+            os.environ[_tenant_env_key(tid_x)] = saved_x_dsn
+        assert out_x_fail.result is DistinctnessResult.VERIFICATION_INCOMPLETE, out_x_fail
+        rec_x = cp.store.get_tenant(tid_x)
+        assert rec_x is not None and rec_x.lifecycle_state is TenantLifecycleState.FAILED, "non-anomalous FAILED landing"
+        # Instance A writes ONE IsolationAnomaly row via the PUBLIC audit API (durable store).
+        cp.audit.record(
+            actor="ops_ref",
+            tenant_id=tid_x,
+            action=events.ISOLATION_ANOMALY,
+            from_state=None,
+            to_state=None,
+            correlation_id="c-2b2b-x2",
+        )
+        # Instance B: a FRESH composition (same env) re-classifies from the DURABLE trail.
+        cp_b2 = cp_main.create_app()
+        open_stores.append(cp_b2.store)
+        x_verifies_before = len(
+            [r for r in cp_b2.store.list_audit() if r.tenant_id == tid_x and r.action == events.DISTINCTNESS_VERIFICATION_STARTED]
+        )
+        out_x_rec = cp_b2.onboarding.recover(tid_x, actor="ops_ref", correlation_id="c-2b2b-x3")
+        assert out_x_rec.result is DistinctnessResult.ISOLATION_ANOMALY and out_x_rec.reason == "anomaly_history", out_x_rec
+        rec_x2 = cp_b2.store.get_tenant(tid_x)
+        assert rec_x2 is not None and rec_x2.lifecycle_state is TenantLifecycleState.QUARANTINED, (
+            "fresh-process recover() must re-classify to QUARANTINED from the durable trail"
+        )
+        x_verifies_after = len(
+            [r for r in cp_b2.store.list_audit() if r.tenant_id == tid_x and r.action == events.DISTINCTNESS_VERIFICATION_STARTED]
+        )
+        assert x_verifies_after == x_verifies_before, "must NEVER re-enter Verifying (no new DistinctnessVerificationStarted)"
+        # The sentinel-BEARING bootstrap-only DB (dv_sentinel rows from the READY run) then
+        # deprovisions from QUARANTINED — verification artifacts are bootstrap-compatible (R1-3).
+        x_conn = psycopg.connect(_pg.swap_db(admin_dsn, tenant_database_name(tid_x)))
+        try:
+            with x_conn.cursor() as cur:
+                assert _one(cur, "SELECT count(*) FROM dv_sentinel.marker") > 0, "sentinel artifacts present"
+        finally:
+            x_conn.close()
+        out_x_dep = _deprovision(cp_b2, tid_x, "c-2b2b-x4")
+        assert out_x_dep.dropped and out_x_dep.reason == REASON_DEPROVISIONED, out_x_dep
+        assert not _db_exists(psycopg, admin_dsn, tenant_database_name(tid_x))
+        rec_x3 = cp_b2.store.get_tenant(tid_x)
+        assert rec_x3 is not None and rec_x3.lifecycle_state is TenantLifecycleState.QUARANTINED, "record retained; state unchanged"
+        print(
+            "PASS: 07D2B2B-8 cross-process durable re-classification (fresh recover() -> QUARANTINED, never re-enters "
+            "Verifying, never Ready; sentinel-bearing bootstrap-only DB deprovisions from Quarantined)"
+        )
+        assert _db_exists(psycopg, admin_dsn, _CTL_DB), "the primary Control DB survives the whole compensation arc"
 
         # --- D9: clean-skip contract ---------------------------------------------------------------
         # The SKIP path itself is exercised by a separate unset-DSN invocation of this file (exit 0,
