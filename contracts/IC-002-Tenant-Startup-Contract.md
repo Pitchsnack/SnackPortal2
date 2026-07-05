@@ -4,6 +4,7 @@
 **Decision basis:** Incorporates approved decisions **D-01–D-05** and the tenant-infrastructure decisions **D-07, D-13–D-17** ([Architecture-Decision-Register.md](../docs/Architecture-Decision-Register.md)).
 **Status note:** All tenant-startup architecture decisions are resolved and incorporated; the previously-pending cross-contract items — the secret-store abstraction (D-14) and tenant-identifier carriage (D-06, owned by IC-005) — are now resolved. **Final** for MVP architecture; residual items are implementation/operational and do not reopen the architecture.
 **Amendment (2026-06-12, PRD-CAP-01A):** implementing **D-33** as corrected by **D-33-E1** — the *Tenant Workspace* terminology alias (vocabulary only; the Core Invariants are untouched verbatim), the **MembershipsForPrincipal** operation added to the API Contract (D-33-E1 Item 2; implementation deferred to the API Gateway / frontend-integration execution PRD), and the D-33 audit events named under *Audit Requirements*.
+**Amendment (2026-07-06, PRD 07D-2b.2-A):** adding the **recovery-core lifecycle vocabulary** — the `Quarantined` lifecycle state (isolation-class safety hold; evidence-preserving; non-routable → *unavailable*; sole egress `Decommissioned`); the `Verifying|Provisioning|Failed → Quarantined` transitions and the removal of the `Ready → Decommissioned` direct transition (a `Ready` tenant is `Suspended` first); a new *Recovery & Compensation* section (retry-resume eligibility, ownership-proof-gated de-provisioning with no silent DROP and Control-DB-non-droppable rules, read-only orphan scan, and the `ReassociateDatabase` current-state guard); the four operations `RecoverTenant` / `QuarantineTenant` / `DeprovisionTenantDatabase` / `ScanForOrphans` in the API Contract and the IC-005 authentication enumeration; and recovery-class *Audit Requirements*. **Additive; the four Core Invariants are untouched verbatim.** This amendment intentionally PRECEDES implementation (contracts precede code): the `Quarantined` code path, the recovery operations, the reassociate guard, and the registry decommission catch-up (`allowed_from += Failed, Quarantined`) land in PRDs **07D-2b.2a / 07D-2b.2b**; until then the as-built control plane implements the prior subset. No DDL, DTO field, or durable quarantine-reason column is introduced (the quarantine reason lives in the audit/event trail).
 Requirement keywords **MUST / MUST NOT / SHOULD / MAY** are used in the RFC-2119 sense.
 
 ## Purpose
@@ -45,21 +46,28 @@ The Control DB holds the authoritative lifecycle state for each tenant. States:
 | **Ready** | All checks passed; eligible for routing and serving. | **Yes** |
 | **Suspended** | Administratively disabled; data preserved; tenant-scoped requests denied. | No (explicit deny) |
 | **Failed** | Verification failed — database unreachable or schema-incompatible; awaiting remediation. | No (explicit deny) |
+| **Quarantined** | Isolation-class safety hold: verification detected an isolation anomaly, recovery/compensation classified the tenant's database as unsafe (non-empty orphan, fingerprint mismatch), or compensation failed. The tenant and any associated physical database are **preserved as evidence**; tenant-scoped requests denied. **No automatic path back to service.** | No (explicit deny) |
 | **Decommissioned** | Offboarded; removed from active routing; data retained/archived per policy. | No |
 
 **Allowed transitions:**
 - `Registered → Provisioning → Verifying → Ready`
 - `Verifying → Failed` (unreachable or schema-incompatible)
+- `Verifying → Quarantined` (isolation-class anomaly detected during verification — automatic, control-plane-classified)
 - `Failed → Verifying` (retry after remediation)
+- `Provisioning → Quarantined` and `Failed → Quarantined` (audited control-plane quarantine: unsafe-content classification during recovery/scan, or failed compensation)
 - `Ready → Suspended` and `Suspended → Verifying → Ready` (reactivation re-verifies)
-- `Ready | Suspended | Failed → Decommissioned`
+- `Registered | Provisioning | Suspended | Failed | Quarantined → Decommissioned`
+- **`Quarantined` has exactly one egress: `Quarantined → Decommissioned`. There is NO transition from `Quarantined` toward `Verifying` or `Ready`, ever.** The prior `Ready → Decommissioned` direct transition is **REMOVED** — a `Ready` tenant MUST be `Suspended` before decommissioning.
+
+Re-driven onboarding of a tenant still in `Provisioning` is a resumption **within** the first transition chain, not a new transition. Automatic resumption is permitted ONLY from `Provisioning` (see *Recovery & Compensation*); `Failed` requires an explicit, audited recovery operation; `Quarantined` MUST NOT resume.
 
 Every transition MUST be control-plane-authorized and audited (see *Audit Requirements*). Transitions MUST be idempotent where re-issued with the same target state.
 
 ## Tenant Readiness States
 - **Readiness is a derived signal:** a tenant is **ready** only in the `Ready` state; all other states are **not-ready**.
 - IC-005 routing MUST treat the readiness signal as authoritative and MUST route only to `Ready` tenants.
-- Not-ready states MUST be distinguishable to callers with defined semantics: `Provisioning`/`Verifying` → *retry later*; `Suspended` → *administratively disabled*; `Failed` → *unavailable*; `Decommissioned`/unknown → *not found*. These MUST NOT leak another tenant's existence or internal detail beyond what the caller is authorized to know.
+- Not-ready states MUST be distinguishable to callers with defined semantics: `Provisioning`/`Verifying` → *retry later*; `Suspended` → *administratively disabled*; `Failed` | `Quarantined` → *unavailable*; `Decommissioned`/unknown → *not found*. These MUST NOT leak another tenant's existence or internal detail beyond what the caller is authorized to know. `Quarantined` deliberately reuses the `Failed` *unavailable* class; no internal quarantine or isolation-incident detail is disclosed to callers (no new denial class is introduced).
+- *Non-normative (implementation status): the as-built Database Router today maps any unrecognized lifecycle state to the fail-closed retry-later denial; tightening `Quarantined` to the *unavailable* denial above is a deferred router-side slice. This contract defines the target semantic now — the interim fail-closed behavior is not a contract deviation.*
 - Readiness MUST be re-evaluated on (re)verification and MAY be re-checked on a defined health cadence. Partial-fleet behavior follows **D-16**: each tenant's readiness is **independent** (see *Failure Behavior*).
 
 ## Tenant Registration
@@ -96,6 +104,28 @@ Per **D-13**:
 - **Suspended tenant:** all tenant-scoped requests MUST be denied with the *administratively disabled* semantic, distinct from *not found* and *unavailable*. Data MUST be preserved.
 - **Phase 0 (D-01):** no tenant can be resolved at all; any attempt to route to a tenant before Phase 1 MUST be denied.
 - **Partial fleet availability (D-16):** each tenant's readiness is evaluated **independently** — the platform stays globally available while individual tenants are not-ready. A derived **`degraded` signal is observability/alerting only and MUST NOT deny healthy tenants.** Global not-ready is reserved for shared-dependency (Control DB / Phase-0) failure (D-10).
+- **Quarantined tenant:** a tenant enters `Quarantined` when (a) verification classifies an isolation-class anomaly, (b) recovery or orphan classification finds the associated database unsafe to touch (content beyond the bootstrap schema, or identity/fingerprint conflict), or (c) a compensation (de-provisioning) attempt fails. **Isolation-class anomalies MUST quarantine automatically at classification time**, so that a tenant resting in `Failed` is by construction non-anomalous; a recovery operation MUST nonetheless re-classify from the audit trail before resuming (defence in depth for records predating this rule). Quarantine is **evidence-preserving**: the registry record and the physical database (if any) MUST be retained unmodified for investigation. All tenant-scoped requests MUST be denied with the *unavailable* semantic. Exiting quarantine is a manual, audited decommissioning decision — **never** an automatic retry, re-verification, or compensation.
+
+## Recovery & Compensation
+*Added 2026-07-06 under PRD 07D-2b.2-A. Additive: the Core Invariants and all prior sections are unchanged. Defines the contract semantics for resuming interrupted onboarding, recovering failed tenants, quarantining unsafe tenants, and reclaiming orphaned tenant databases. Implementation lands in PRDs 07D-2b.2a / 07D-2b.2b (contracts precede code — see the header Amendment note).*
+
+**Retry-resume eligibility.**
+- `Provisioning` (interrupted before verification): automatic resumption by re-driving the onboarding sequence is permitted — provisioning MUST be existence-checked and schema application MUST be idempotent and atomic, so a resumed run converges without duplicating effects.
+- `Failed`: resumption ONLY via an explicit, audited **RecoverTenant** operation, which MUST re-classify the failure from the audit trail before re-entering `Verifying`. Isolation-class history MUST route to `Quarantined` instead — never resume.
+- `Ready`: re-onboarding is a no-op (idempotency; no state change, no re-provision).
+- `Quarantined` / `Suspended` / `Decommissioned`: onboarding and recovery MUST be refused (fail closed). `Suspended` reactivation remains the existing `ReactivateTenant` path.
+
+No recovery or compensation operation MAY set `Ready` directly; recovery re-enters `Verifying` and readiness is decided **solely by the verification gate** (preserving the sole-readiness-writer rule).
+
+**Compensation (tenant-database de-provisioning).** De-provisioning a tenant database is an explicit, audited control-plane operation. It MUST NEVER run implicitly (**no silent DROP** on any failure path). Before any destructive action the control plane MUST establish an **ownership proof** comprising at least: (1) the authoritative registry record exists and its lifecycle state is one of `Provisioning | Failed | Quarantined`; (2) the target database name is **recomputed** from the tenant identifier by the registry-authoritative rule (D-07; never caller-supplied), lies inside the tenant-database namespace, and is distinct from the Control database; (3) the recorded database-association reference has the canonical tenant shape; (4) the database content is verified **empty or bootstrap-only**; (5) no other tenant's recorded distinctness evidence identifies the same physical database. Failure of ANY element fails closed: no DROP, a failure audit record, and quarantine of the tenant where applicable, with manual/operator follow-up. A database with content beyond bootstrap MUST NOT be dropped — it is preserved as evidence and the tenant quarantined. **The Control database MUST never be a de-provisioning target** (element 2). Compensation is never automatic.
+
+*"Bootstrap-only"* means the database contains only platform-applied bootstrap schema, seed, and verification artifacts — nothing else.
+
+**Orphan detection.** Detecting candidate orphans (physical databases without a `Ready` owner, registry records without databases, association/identity mismatches) MUST be a **read-only** scan that produces a report; the scan itself changes no state and drops nothing. Acting on a finding is always a separate, explicit, audited operation under the rules above. A database with **no registry record** MUST never be touched (it may be foreign).
+
+**Registry state vs physical existence.** The lifecycle state is the Control-DB registry's authoritative view (D-07); physical-database existence is *evidence*, observed by verification and the scan. Divergence between the two is classified under this section — it never silently mutates lifecycle state, and compensation never deletes the registry record (`Decommissioned` retains it per the existing retention rule).
+
+**Re-association guard.** `ReassociateDatabase` MUST validate the tenant's **current** lifecycle state BEFORE entering `Verifying`; it MUST be refused for `Quarantined` and `Decommissioned` tenants (fail closed). Re-association MUST NOT be an escape hatch from `Quarantined` toward `Ready`.
 
 ## Multi-Database Isolation Guarantees
 - One physically separate PostgreSQL database per tenant; never shared (Invariant 4).
@@ -107,7 +137,7 @@ Per **D-13**:
 
 ## Authentication Dependencies on IC-005
 - IC-002 **consumes**, and does not define, authentication. Per IC-005:
-  - **Tenant lifecycle/management operations** (register, verify, activate, suspend, reactivate, decommission, re-associate) are **control-plane operations** authenticated via **internal platform identities** (D-03) under the runtime model (OIDC + stateless JWT, D-05). They are control-plane-authorized, not tenant-federated.
+  - **Tenant lifecycle/management operations** (register, verify, activate, suspend, reactivate, decommission, re-associate, recover, quarantine, de-provision, orphan-scan) are **control-plane operations** authenticated via **internal platform identities** (D-03) under the runtime model (OIDC + stateless JWT, D-05). They are control-plane-authorized, not tenant-federated.
   - **Runtime tenant-scoped requests** are authenticated by IC-005 using **OIDC with stateless JWT validation** (D-05); the **single active tenant context** is established by IC-005 from a signed claim and re-validated at routing time (no server-side session store; no Control-DB session dependency — preserving the D-01 separation).
 - The **per-tenant OIDC federation configuration** stored by this contract (see *Tenant-to-Organization Mapping*) is the data IC-005 uses to authenticate external-org principals.
 - The Phase-0 bootstrap system identity MUST NEVER be accepted for tenant-scoped requests.
@@ -123,6 +153,7 @@ Per **D-13**:
 - **All tenant provisioning events must be audit logged.** Per **D-15** this includes provisioning/de-provisioning of a tenant database, credential creation/rotation (recorded as references, never values), and the resulting registration — each with actor, tenant id, action, timestamp, and correlation id.
 - Audit records MUST be **append-only** and attributable; they MUST NOT be silently mutable.
 - `Suspend`, `Decommission`, and `Re-associate` are sensitive and MUST always be audited; failed/denied lifecycle attempts SHOULD also be recorded.
+- **Recovery-class operations** — `QuarantineTenant`, `RecoverTenant`, and `DeprovisionTenantDatabase` — MUST be audited under the rules above (actor, tenant id, action, from-state → to-state where applicable, timestamp, correlation id; references only; append-only). Operations with duration MUST emit a **start** record and **exactly one terminal** (completed/failed) record per attempt. De-provisioning audit fulfils the existing D-15 provisioning/de-provisioning obligation above. *(Non-normative: the operational event vocabulary — `TenantQuarantined`; `OnboardingRecovery{Started,Completed,Failed}`; `TenantDeprovision{Requested,Completed,Failed}` — is governed by its own frozen-vocabulary guards and the D-15/B-6 audit event catalogue, not by this contract.)*
 - Tenant-lifecycle audit is **operational/control-plane audit**, distinct from data-provenance lineage ([IC-004](IC-004-Lineage-Contract.md)); it is control-plane-scoped and MUST NOT be written into tenant databases.
 - Audit storage MUST remain standard-PostgreSQL/portable; its exact location is a control-plane detail (related to D-14 for any referenced secrets).
 - **D-33 workspace-related audit events** *(added 2026-06-12, PRD-CAP-01A)* — the following control-plane audit obligations, aligned with the **Control-DB operational-audit model approved by D-34** and bound by its **Global Audit Representation Rule** (references only — never names, emails, PII, or payloads):
@@ -170,9 +201,14 @@ Per **D-13**:
 | **SuspendTenant** | Administratively disable; preserve data | Control-plane operator | `Ready → Suspended` | Yes |
 | **ReactivateTenant** | Re-verify and restore service | Control-plane operator | `Suspended → Verifying → Ready` | Yes |
 | **DecommissionTenant** | Offboard; remove from routing; retain/archive | Control-plane operator | `→ Decommissioned` | Yes |
-| **ReassociateDatabase** | Point a tenant at a restored/relocated DB | Control-plane operator | `→ Verifying` (then `Ready`) | Yes |
+| **ReassociateDatabase** | Point a tenant at a restored/relocated DB | Control-plane operator | `→ Verifying` (then `Ready`); **refused for `Quarantined`/`Decommissioned`** (see *Recovery & Compensation* — Re-association guard) | Yes |
+| **RecoverTenant** | Explicitly recover a `Failed` tenant: re-classify from audit, then re-verify | Control-plane operator | `Failed → Verifying → Ready/Failed`; anomaly-class history → `Quarantined` | Yes |
+| **QuarantineTenant** | Place an unsafe tenant in the evidence-preserving hold | Control-plane operator (also set **automatically** on isolation-class anomaly) | `Provisioning \| Failed → Quarantined` (`Verifying → Quarantined` on the automatic edge) | Yes |
+| **DeprovisionTenantDatabase** | Ownership-proof-gated compensation (drop an empty/bootstrap-only tenant DB) | Control-plane operator | no lifecycle transition on the success path; failure → `Quarantined`. MUST satisfy the *Recovery & Compensation* ownership-proof preconditions | Yes (absent target → no-op) |
+| **ScanForOrphans** | Read-only orphan/divergence report | Control-plane operator | none (report only) | Yes |
 
 *`MembershipsForPrincipal` (added 2026-06-12 per D-33-E1 Item 2) is **contract-owned here**; its implementation is deferred to the API Gateway / frontend-integration execution PRD — contracts precede code.*
+*`RecoverTenant` / `QuarantineTenant` / `DeprovisionTenantDatabase` / `ScanForOrphans` (added 2026-07-06 per PRD 07D-2b.2-A) are **contract-owned here**; their implementation is deferred to PRDs 07D-2b.2a / 07D-2b.2b — contracts precede code.*
 
 ## DTO Contract
 > Data **shapes** described as fields only — no code, **no secrets in any payload**. Database credentials are never present; only references to secret-store entries are.
