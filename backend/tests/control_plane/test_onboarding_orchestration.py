@@ -61,8 +61,8 @@ from shared.secrets import SecretRef  # noqa: E402
 # baseline guards (no-new-state / no-new-vocab) compare against these exact sets.
 # PRD 07D-2b.2a (IC-002 recovery-core amendment): + Quarantined; + the 7 recovery/compensation
 # event names (exact spellings frozen — the {Started} vs {Requested} asymmetry is intentional;
-# TenantDeprovision* are vocabulary-only until 07D-2b.2b). Kept in LOCKSTEP with the copies in
-# tests/control_plane/test_distinctness_ledger_b2.py.
+# TenantDeprovision* became emitting in 07D-2b.2b via RecoveryCompensationService). Kept in
+# LOCKSTEP with the copies in tests/control_plane/test_distinctness_ledger_b2.py.
 EXPECTED_STATES = {
     "Registered",
     "Provisioning",

@@ -37,8 +37,10 @@ deprovision-failed       -> TenantDeprovisionFailed
 
 *The seven recovery/compensation rows were added by PRD 07D-2b.2a (IC-002 Recovery & Compensation amendment) as a
 governed change to `events.py` **with** the matching `EXPECTED_EVENT_ACTIONS` updates (both frozen-guard copies, in
-lockstep). `TenantDeprovision{Requested,Completed,Failed}` are vocabulary-only until PRD 07D-2b.2b lands the governed
-de-provisioning behavior — nothing emits them yet.*
+lockstep). `TenantDeprovision{Requested,Completed,Failed}` were vocabulary-only in 07D-2b.2a; PRD 07D-2b.2b (merged,
+PR #46, `main` `39ee332`) landed the governed de-provisioning behavior — `RecoveryCompensationService.deprovision_tenant_database`
+(`backend/control_plane/recovery.py`) now emits `TenantDeprovisionRequested` on entry plus exactly one terminal
+`TenantDeprovisionCompleted` or `TenantDeprovisionFailed`.*
 
 (Registration, routing-eligibility, and suspension/decommission events — `TenantRegistered`, `RoutingEnabled/Disabled`,
 `RouterCacheInvalidated`, `RegistryMappingChanged`, `TenantSuspended/Reactivated`,

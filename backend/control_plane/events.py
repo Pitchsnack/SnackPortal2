@@ -54,10 +54,11 @@ ONBOARDING_RECOVERY_STARTED = "OnboardingRecoveryStarted"
 ONBOARDING_RECOVERY_COMPLETED = "OnboardingRecoveryCompleted"
 ONBOARDING_RECOVERY_FAILED = "OnboardingRecoveryFailed"
 
-# Compensation vocabulary (PRD 07D-2b.2a adds the NAMES ONLY, keeping the frozen vocabulary in
-# lockstep with the amended IC-002; the governed de-provisioning behavior that emits them lands
-# in PRD 07D-2b.2b — nothing emits TenantDeprovision* in this slice). This family SUPERSEDES the
-# B-6 forward-proposal DatabaseProvisionRollback* naming (docs/runtime/b6_provisioning_audit_events.md).
+# Compensation vocabulary (PRD 07D-2b.2a added the NAMES ONLY, keeping the frozen vocabulary in
+# lockstep with the amended IC-002; the governed de-provisioning behavior that emits them landed
+# in PRD 07D-2b.2b — RecoveryCompensationService.deprovision_tenant_database in recovery.py now
+# emits them). This family SUPERSEDES the B-6 forward-proposal DatabaseProvisionRollback* naming
+# (docs/runtime/b6_provisioning_audit_events.md).
 TENANT_DEPROVISION_REQUESTED = "TenantDeprovisionRequested"
 TENANT_DEPROVISION_COMPLETED = "TenantDeprovisionCompleted"
 TENANT_DEPROVISION_FAILED = "TenantDeprovisionFailed"
