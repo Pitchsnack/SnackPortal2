@@ -641,7 +641,8 @@ def test_recover_refuses_ineligible_states_pre_effect() -> None:
     _register(reg, "t_reg")
     _register(reg, "t_prov")
     reg.mark_provisioning("t_prov", actor="ops_ref", correlation_id="c-2b2a-p")
-    _register(reg, "t_susp")
+    # PRD 07D-2d (B2): suspend requires READY — onboard t_susp to READY first, then suspend.
+    assert _onboard(orch, "t_susp", "c-2b2a-s0").result is DistinctnessResult.VERIFIED
     reg.suspend_tenant("t_susp", actor="ops_ref", correlation_id="c-2b2a-s")
     _register(reg, "t_dec")
     reg.decommission_tenant("t_dec", actor="ops_ref", correlation_id="c-2b2a-d")
@@ -780,11 +781,12 @@ def test_reassociate_emits_secret_reference_registered() -> None:
 
 
 def test_suspend_allows_ready_and_decommission_catchup() -> None:
-    # R1-2 / C-2 (AC-2B2A-42): READY can now be suspended (Suspended is Ready's ONLY egress
-    # under the amended IC-002 — suspend-first is executable) and decommission's allowed_from
-    # gained Failed + Quarantined (state catch-up ONLY; nothing is deprovisioned). Ready-direct
-    # decommission stays disallowed. The {REGISTERED, PROVISIONING} suspend wideness is a
-    # documented residual for the post-2b.2 reconcile (not asserted away here).
+    # R1-2 / C-2 (AC-2B2A-42): READY can be suspended (Suspended is Ready's ONLY egress under
+    # the amended IC-002 — suspend-first is executable) and decommission's allowed_from gained
+    # Failed + Quarantined (state catch-up ONLY; nothing is deprovisioned). Ready-direct
+    # decommission stays disallowed. PRD 07D-2d (DD-2c-2 = B2) since REMOVED the former
+    # {REGISTERED, PROVISIONING} suspend wideness — suspend is READY-only (see the direct
+    # registry tests in test_registry.py).
     from control_plane.registry import RegistryError
 
     store = InMemoryControlStore()
@@ -814,6 +816,24 @@ def test_suspend_allows_ready_and_decommission_catchup() -> None:
     assert _onboard(orch3).result is DistinctnessResult.ISOLATION_ANOMALY
     rec3 = orch3._registry.decommission_tenant("t1", actor="ops_ref", correlation_id="c-dec-q")
     assert rec3.lifecycle_state is TenantLifecycleState.DECOMMISSIONED
+
+
+def test_2d_resuspend_suspended_tenant_noops_under_narrowed_set() -> None:
+    # PRD 07D-2d §6.3 (A1+B2 composition at the orchestration level; MD-2 kill site): a tenant
+    # already SUSPENDED under the narrowed {READY} suspend set re-suspends as a non-mutating
+    # no-op via the same-target check (which precedes allowed_from) — no raise, no duplicate
+    # SuspendTenant record, no new event vocabulary.
+    store = InMemoryControlStore()
+    orch = _orchestrator(store)
+    assert _onboard(orch).result is DistinctnessResult.VERIFIED
+    reg = orch._registry
+    first = reg.suspend_tenant("t1", actor="ops_ref", correlation_id="c-2d-s1")
+    assert first.lifecycle_state is TenantLifecycleState.SUSPENDED
+    audit_before = store.list_audit()
+    again = reg.suspend_tenant("t1", actor="ops_ref", correlation_id="c-2d-s2")
+    assert again == first, "re-suspend must return the existing SUSPENDED record without raising"
+    assert store.list_audit() == audit_before, "no duplicate transition/audit record on the no-op"
+    assert _state(store) is TenantLifecycleState.SUSPENDED
 
 
 def test_quarantine_tenant_registry_operation() -> None:
@@ -1010,7 +1030,8 @@ def test_suspended_and_decommissioned_terminal_reason_pins() -> None:
     # onboarding refusals are load-bearing dispatch outcomes — pinned verbatim.
     store = InMemoryControlStore()
     orch = _orchestrator(store)
-    _register(orch._registry, "t_susp")
+    # PRD 07D-2d (B2): suspend requires READY — onboard t_susp to READY first, then suspend.
+    assert _onboard(orch, "t_susp", "c-rp-s0").result is DistinctnessResult.VERIFIED
     orch._registry.suspend_tenant("t_susp", actor="ops_ref", correlation_id="c-rp-s")
     _register(orch._registry, "t_dec")
     orch._registry.decommission_tenant("t_dec", actor="ops_ref", correlation_id="c-rp-d")
@@ -1132,6 +1153,7 @@ _TESTS = [
     test_reassociate_refused_for_decommissioned_pre_effect,
     test_reassociate_emits_secret_reference_registered,
     test_suspend_allows_ready_and_decommission_catchup,
+    test_2d_resuspend_suspended_tenant_noops_under_narrowed_set,
     test_quarantine_tenant_registry_operation,
     test_no_new_lifecycle_states,
     test_no_new_audit_vocabulary,

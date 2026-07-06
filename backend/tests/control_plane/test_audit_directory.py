@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pathlib
 import sys
+from dataclasses import replace
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import _h  # noqa: E402
@@ -11,7 +12,7 @@ import _h  # noqa: E402
 from control_plane.adapters.providers.in_memory_store import InMemoryControlStore  # noqa: E402
 from control_plane.audit import ControlPlaneAudit  # noqa: E402
 from control_plane.directory import GlobalDirectory  # noqa: E402
-from control_plane.records import DirectoryKind  # noqa: E402
+from control_plane.records import DirectoryKind, TenantLifecycleState  # noqa: E402
 from control_plane.registry import TenantRegistry  # noqa: E402
 from shared.secrets import SecretRef  # noqa: E402
 
@@ -29,6 +30,10 @@ def test_lifecycle_events_are_audited_with_required_fields() -> None:
         actor="op",
         correlation_id="c1",
     )
+    # PRD 07D-2d (B2): suspend requires READY — seed the READY state directly in the store
+    # (the Phase-4 fence guards registry transitions, not the test fixture) so the audited
+    # SuspendTenant lifecycle event under test is emitted from a legal source state.
+    store.put_tenant(replace(store.get_tenant("t1"), lifecycle_state=TenantLifecycleState.READY))
     reg.suspend_tenant("t1", actor="op", correlation_id="c2")
     actions = [e.action for e in audit.events()]
     assert "RegisterTenant" in actions and "SuspendTenant" in actions
