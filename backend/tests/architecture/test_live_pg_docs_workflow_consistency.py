@@ -35,14 +35,28 @@ Trap avoidance (the AT-5 design pins):
   historical wording (e.g. ATR-4's "8 → 9" transition) is not false-flagged.
 * Workflow parsing is structural (reuses the proven ``for h in … ; do`` loop regex), never line-number based.
 
-Scope: AT-5 consistency visibility only. Does NOT prove tenant physical multi-DB routing, does NOT change the
-live-PG workflow, and does NOT close B5-BLK-4. Pure stdlib; standalone-runnable:
+PRD 07E-1A (AT-07E1-2) additions — pin the 07E-1 read-edge live-PG proof against silent vacuity:
+
+* **T6** — ``test_07e1_read_edge_uow_live`` remains REGISTERED in the runtime-wiring harness's
+  ``_pg.run([...])`` list (AST-parsed: registration in the run-set, NOT mere textual presence), so the
+  read-edge per-request-UoW/RELEASE proof cannot be silently dropped from the harness.
+* **T7** — that harness (``test_pg_control_store_runtime_wiring.py``) remains a workflow run-loop entry, so
+  the proof actually runs in the advisory live-PG workflow.
+
+Each carries its own synthetic non-vacuity companion (``RED-AT07E1A-1..3``). These additions do NOT re-assert
+the loop count (owned by T1/``EXPECTED_HARNESS_COUNT``) and READ the harness file, never modify it. This is a
+DEFAULT-suite ENROLLMENT pin only — the underlying live per-request-UoW/RELEASE *behaviour* proof remains in
+the ADVISORY, non-required live-PG workflow (not merge-gated on this repo; DRIFT-08).
+
+Scope: AT-5 consistency + AT-07E1-2 enrollment visibility only. Does NOT prove tenant physical multi-DB
+routing, does NOT change the live-PG workflow run-set, and does NOT close B5-BLK-4. Pure stdlib; standalone-runnable:
 
     python tests/architecture/test_live_pg_docs_workflow_consistency.py
 """
 
 from __future__ import annotations
 
+import ast
 import pathlib
 import re
 import sys
@@ -72,6 +86,13 @@ _RUNSET_RE = re.compile(r"Run set\s*\(\s*(\d+)\s*harnesses\s*\)")
 _STALE_B7C2_NOT_SECTION = ("ATR-1 remains OPEN", "applied by no harness")
 _STALE_ATR4_FRAMING = "still says the run set is 8 harnesses"
 _ATR4_RECONCILED_MARKER = "reconciled by AT-5"
+
+# PRD 07E-1A (AT-07E1-2): the 07E-1 read-edge live-PG proof and the harness that registers it. The harness
+# file is READ (never modified); the guard proves the proof stays enrolled in its `_pg.run([...])` run-set
+# and that the harness stays a workflow loop entry. The relpath matches the workflow loop token idiom.
+_RUNTIME_WIRING_HARNESS_RELPATH = "tests/control_plane/requires_pg/test_pg_control_store_runtime_wiring.py"
+_RUNTIME_WIRING_HARNESS = _scan.REPO_ROOT / "backend" / _RUNTIME_WIRING_HARNESS_RELPATH
+_READ_EDGE_UOW_TEST = "test_07e1_read_edge_uow_live"
 
 
 # --- pure helpers (no I/O; exercised by the non-vacuity tests) ------------------------------------
@@ -105,6 +126,26 @@ def _section(text: str, header: str) -> str:
 def _norm(s: str) -> str:
     """Collapse whitespace and strip markdown bold so wrapped/emphasized prose matches plain phrases."""
     return re.sub(r"\s+", " ", s.replace("**", ""))
+
+
+def _pg_run_registered_names(source_text: str) -> list[str]:
+    """Function names registered in a ``_pg.run([...])`` call — AST; names INSIDE the list only.
+
+    Gates REGISTRATION in the run-set, not textual presence: a name appearing only in a comment or a ``def``
+    (but NOT inside the ``_pg.run([...])`` list) is not returned — proven by ``RED-AT07E1A-3``."""
+    names: list[str] = []
+    for node in ast.walk(ast.parse(source_text)):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "run"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "_pg"
+            and node.args
+            and isinstance(node.args[0], ast.List)
+        ):
+            names.extend(elt.id for elt in node.args[0].elts if isinstance(elt, ast.Name))
+    return names
 
 
 # --- T1: workflow loop is structurally 9, provisioning in, b3a out --------------------------------
@@ -165,6 +206,26 @@ def test_t5_atr4_f1_note_reconciled() -> None:
     assert _ATR4_RECONCILED_MARKER in atr4, f"atr4 F-1 note lacks a '{_ATR4_RECONCILED_MARKER}' marker after reconciliation"
 
 
+# --- T6/T7 (PRD 07E-1A, AT-07E1-2): the read-edge live-PG proof stays enrolled --------------------
+def test_t6_read_edge_uow_test_registered_in_harness_pg_run() -> None:
+    assert _RUNTIME_WIRING_HARNESS.is_file(), f"runtime-wiring harness missing: {_RUNTIME_WIRING_HARNESS}"
+    names = _pg_run_registered_names(_RUNTIME_WIRING_HARNESS.read_text(encoding="utf-8"))
+    assert _READ_EDGE_UOW_TEST in names, (
+        f"the 07E-1 read-edge live-PG proof '{_READ_EDGE_UOW_TEST}' is not registered in the harness "
+        f"_pg.run([...]) run-set {names} — it could be silently dropped and run vacuously (AT-07E1-2)"
+    )
+
+
+def test_t7_runtime_wiring_harness_is_a_workflow_loop_entry() -> None:
+    loop = _loop_text(_WORKFLOW.read_text(encoding="utf-8"))
+    assert loop is not None, "could not locate the `for h in … ; do` run loop in the workflow"
+    entries = _entries(loop)
+    assert _RUNTIME_WIRING_HARNESS_RELPATH in entries, (
+        f"runtime-wiring harness '{_RUNTIME_WIRING_HARNESS_RELPATH}' is not a live-PG workflow loop entry — "
+        f"the read-edge live-PG proof would not run in the advisory workflow (AT-07E1-2): {entries}"
+    )
+
+
 # --- non-vacuity (synthetic strings ONLY; never mutate a tracked file) ----------------------------
 def test_nv_count_detects_eight_entry_loop() -> None:  # RED-AT5-1
     eight = "for h in \\\n  " + " \\\n  ".join(f"a{i}.py" for i in range(8)) + " ; do\n done"
@@ -205,6 +266,27 @@ def test_nv_historical_wording_not_flagged() -> None:  # RED-AT5-6
     assert _STALE_ATR4_FRAMING not in historical
 
 
+# --- non-vacuity for the AT-07E1-2 enrollment parser (synthetic strings ONLY) ---------------------
+def test_nv_pg_run_parser_detects_registered_name() -> None:  # RED-AT07E1A-1
+    src = "import _pg\n\nif __name__ == '__main__':\n    _pg.run([test_alpha, test_07e1_read_edge_uow_live])\n"
+    assert _READ_EDGE_UOW_TEST in _pg_run_registered_names(src)  # a registered name IS detected
+
+
+def test_nv_pg_run_parser_detects_removed_name() -> None:  # RED-AT07E1A-2
+    src = "import _pg\n\nif __name__ == '__main__':\n    _pg.run([test_alpha, test_beta])\n"
+    assert _READ_EDGE_UOW_TEST not in _pg_run_registered_names(src)  # a dropped name is caught (the guard fires)
+
+
+def test_nv_pg_run_parser_ignores_comment_or_def_only() -> None:  # RED-AT07E1A-3
+    # Present as a def AND in a comment, but NOT inside the _pg.run([...]) list -> NOT registered.
+    src = (
+        "import _pg\n\n"
+        "def test_07e1_read_edge_uow_live():  # test_07e1_read_edge_uow_live lives here\n    pass\n\n"
+        "if __name__ == '__main__':\n    _pg.run([test_alpha])\n"
+    )
+    assert _READ_EDGE_UOW_TEST not in _pg_run_registered_names(src)  # textual presence alone is not enrollment
+
+
 if __name__ == "__main__":
     _scan.run(
         [
@@ -213,11 +295,16 @@ if __name__ == "__main__":
             test_t3_b7c2_runs_section_lists_provisioning,
             test_t4_b7c2_not_section_has_no_stale_current_claims,
             test_t5_atr4_f1_note_reconciled,
+            test_t6_read_edge_uow_test_registered_in_harness_pg_run,
+            test_t7_runtime_wiring_harness_is_a_workflow_loop_entry,
             test_nv_count_detects_eight_entry_loop,
             test_nv_detects_missing_provisioning,
             test_nv_detects_injected_b3a,
             test_nv_runset_mismatch_detected,
             test_nv_atr1_stale_claim_detected,
             test_nv_historical_wording_not_flagged,
+            test_nv_pg_run_parser_detects_registered_name,
+            test_nv_pg_run_parser_detects_removed_name,
+            test_nv_pg_run_parser_ignores_comment_or_def_only,
         ]
     )
