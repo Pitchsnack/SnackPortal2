@@ -25,12 +25,13 @@ never retained on the adapter.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, List, Optional, Tuple
 
 import psycopg  # type: ignore  # noqa: F401  (driver import confined to this zone)
 
-from control_plane.ports import ControlStore
+from control_plane.ports import ControlStore, ControlStoreConcurrencyError
 from control_plane.records import (
     ControlAuditRecord,
     DirectoryKind,
@@ -125,8 +126,8 @@ class PostgresControlStore(ControlStore):
                 """
                 INSERT INTO control_tenants (
                     tenant_id, organization_ref, lifecycle_state, expected_schema_version,
-                    assoc_store_ref, assoc_version, federation_config_ref, created_at, updated_at
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    assoc_store_ref, assoc_version, federation_config_ref, created_at, updated_at, version
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (tenant_id) DO UPDATE SET
                     organization_ref = EXCLUDED.organization_ref,
                     lifecycle_state = EXCLUDED.lifecycle_state,
@@ -134,7 +135,8 @@ class PostgresControlStore(ControlStore):
                     assoc_store_ref = EXCLUDED.assoc_store_ref,
                     assoc_version = EXCLUDED.assoc_version,
                     federation_config_ref = EXCLUDED.federation_config_ref,
-                    updated_at = EXCLUDED.updated_at
+                    updated_at = EXCLUDED.updated_at,
+                    version = EXCLUDED.version
                 """,
                 (
                     record.tenant_id,
@@ -146,15 +148,56 @@ class PostgresControlStore(ControlStore):
                     record.federation_config_ref,
                     record.created_at,
                     record.updated_at,
+                    record.version,
                 ),
             )
         self._conn.commit()
+
+    def compare_and_swap_tenant(self, updated: TenantRecord, *, expected_version: int) -> TenantRecord:
+        # PRD 07D-2e (D-2e-1/D-2e-4): version-predicated lifecycle write. The UPDATE matches a
+        # row ONLY at the caller's expected version (explicit version column; never xmin) and
+        # increments it in place. It deliberately does NOT commit: the transition's subsequent
+        # append_audit commits the audit row and this write in ONE Control-DB transaction, so
+        # a conflict rolls back with no orphan audit and a failed audit write rolls back the
+        # state change (see the port docstring). A conflict (0 rows) rolls back and raises the
+        # typed error — a newer concurrent lifecycle write is never silently overwritten.
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE control_tenants SET
+                    organization_ref = %s,
+                    lifecycle_state = %s,
+                    expected_schema_version = %s,
+                    assoc_store_ref = %s,
+                    assoc_version = %s,
+                    federation_config_ref = %s,
+                    updated_at = %s,
+                    version = version + 1
+                WHERE tenant_id = %s AND version = %s
+                """,
+                (
+                    updated.organization_ref,
+                    updated.lifecycle_state.value,
+                    updated.expected_schema_version,
+                    updated.database_association_ref.store_ref,
+                    updated.database_association_ref.version,
+                    updated.federation_config_ref,
+                    updated.updated_at,
+                    updated.tenant_id,
+                    expected_version,
+                ),
+            )
+            matched = cur.rowcount
+        if matched != 1:
+            self._conn.rollback()  # discard any uncommitted composite work (no orphan audit)
+            raise ControlStoreConcurrencyError("stale tenant version (concurrent lifecycle write)")
+        return replace(updated, version=expected_version + 1)
 
     def get_tenant(self, tenant_id: str) -> Optional[TenantRecord]:
         with self._conn.cursor() as cur:
             cur.execute(
                 """SELECT tenant_id, organization_ref, lifecycle_state, expected_schema_version,
-                          assoc_store_ref, assoc_version, federation_config_ref, created_at, updated_at
+                          assoc_store_ref, assoc_version, federation_config_ref, created_at, updated_at, version
                    FROM control_tenants WHERE tenant_id = %s""",
                 (tenant_id,),
             )
@@ -261,22 +304,35 @@ class PostgresControlStore(ControlStore):
 
     # -- operational audit (append-only) --------------------------------------
     def append_audit(self, record: ControlAuditRecord) -> None:
-        with self._conn.cursor() as cur:
-            cur.execute(
-                """INSERT INTO control_audit
-                       (actor, tenant_id, action, from_state, to_state, ts, correlation_id)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s)""",
-                (
-                    record.actor,
-                    record.tenant_id,
-                    record.action,
-                    record.from_state,
-                    record.to_state,
-                    record.timestamp,
-                    record.correlation_id,
-                ),
-            )
-        self._conn.commit()
+        # PRD 07D-2e (D-2e-4): the commit here finalizes the connection's open transaction —
+        # for a lifecycle transition that includes the preceding compare_and_swap_tenant
+        # UPDATE, making audit + state change atomic. On ANY failure the transaction is
+        # rolled back explicitly (a failed required audit write must reject the transition
+        # with NO committed partial state — B7B-D5, now transactional) and the error
+        # propagates unchanged (fail closed).
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO control_audit
+                           (actor, tenant_id, action, from_state, to_state, ts, correlation_id)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+                    (
+                        record.actor,
+                        record.tenant_id,
+                        record.action,
+                        record.from_state,
+                        record.to_state,
+                        record.timestamp,
+                        record.correlation_id,
+                    ),
+                )
+            self._conn.commit()
+        except Exception:
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass  # connection-level failure: the original error below is the signal
+            raise
 
     def list_audit(self) -> List[ControlAuditRecord]:
         with self._conn.cursor() as cur:
@@ -309,4 +365,5 @@ class PostgresControlStore(ControlStore):
             federation_config_ref=row[6],
             created_at=row[7],
             updated_at=row[8],
+            version=int(row[9]),
         )

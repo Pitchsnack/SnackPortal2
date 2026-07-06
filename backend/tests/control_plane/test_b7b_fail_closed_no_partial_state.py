@@ -1,11 +1,16 @@
 """PRD 06 B-7B — fail-closed required audit write + NO partial state (B7B-D5) + ref fail-closed.
 
 A failed REQUIRED durable audit write must reject the lifecycle transition with NO committed
-partial state. B-7B implements this via call-site ordering (audit-before-irreversible-commit)
-in ``registry.py`` and ``provisioning.py``: the required audit write precedes ``put_tenant``,
-so if the audit write fails the state change is never committed. These tests are mutation-form
-— under the pre-B-7B ordering (put_tenant then audit) the state WOULD be committed before the
-failure and every "state unchanged" assertion would fail.
+partial state. PRD 07D-2e (D-2e-4) moved the ENFORCEMENT of that guarantee for lifecycle
+transitions from call-site ordering (audit-before-``put_tenant``) into the DURABLE store's
+single Control-DB transaction: ``compare_and_swap_tenant`` executes uncommitted and the
+required audit append commits BOTH — so a failed audit write rolls the state change back (see
+the fake-connection transactional tests in ``test_lifecycle_cas_2e.py`` and the live-PG proof).
+The create path (``register_tenant``) keeps ``put_tenant`` and the positional
+audit-before-commit ordering, asserted below. At the service layer a failed required audit
+write still REJECTS every transition to the caller (raises); the in-memory double applies CAS
+immediately by contract (§6.5 — its writes never fail in production compositions), so the
+in-memory legs assert the rejection, not state bytes.
 
 Also covers durable-store reference fail-closed: ``PermissionError`` (ref not allow-listed) and
 ``LookupError`` (unresolved ref) both propagate on first use, with secret-free messages.
@@ -78,6 +83,11 @@ def test_register_fails_closed_with_no_partial_tenant() -> None:
 
 
 def test_registry_transition_fails_closed_state_unchanged() -> None:
+    # PRD 07D-2e (D-2e-4): the no-partial-state guarantee is now the DURABLE store's single
+    # transaction (audit-commit failure rolls the uncommitted CAS back — proven against a fake
+    # connection in test_lifecycle_cas_2e.py and live in the requires_pg harness). This
+    # in-memory leg asserts the surviving service contract: a failed required audit write
+    # still REJECTS the transition (raises to the caller) and writes no audit record.
     store = _AuditFailingStore(fail_on_action="MarkProvisioning")
     reg = TenantRegistry(store, ControlPlaneAudit(store))
     _register(reg)  # RegisterTenant is not the failing action -> committed Registered
@@ -87,12 +97,13 @@ def test_registry_transition_fails_closed_state_unchanged() -> None:
         reg.mark_provisioning("t1", actor="op", correlation_id="corr-mp")
     except RuntimeError:
         raised = True
-    assert raised
-    # state unchanged: the VERIFYING-equivalent commit never happened (audit failed first)
-    assert store.get_tenant("t1").lifecycle_state is TenantLifecycleState.REGISTERED
+    assert raised, "a failed required audit write must reject the transition (raise to caller)"
+    assert all(r.action != "MarkProvisioning" for r in store.list_audit()), "the failed audit record must not persist"
 
 
 def test_provisioning_gate_transition_fails_closed_state_unchanged() -> None:
+    # PRD 07D-2e (D-2e-4): as above — the durable no-partial-state proof is transactional;
+    # this in-memory leg asserts the gate still rejects verify() on a failed required audit.
     store = _AuditFailingStore(fail_on_action=events.DISTINCTNESS_VERIFICATION_STARTED)
     _d15_doubles.register_tenant(store, "t1", store_ref="tenant/t1/db")  # committed PROVISIONING (direct put)
     svc = _d15_doubles.build_service(store, _d15_doubles.FakeEvidenceProvider({}))
@@ -102,8 +113,7 @@ def test_provisioning_gate_transition_fails_closed_state_unchanged() -> None:
     except RuntimeError:
         raised = True
     assert raised, "the gate's first transition audit failing must reject verify()"
-    # state unchanged: still PROVISIONING (VERIFYING commit gated on its audit)
-    assert store.get_tenant("t1").lifecycle_state is TenantLifecycleState.PROVISIONING
+    assert all(r.action != events.DISTINCTNESS_VERIFICATION_STARTED for r in store.list_audit()), "the failed audit record must not persist"
 
 
 def test_durable_store_permission_error_fails_closed_secret_free() -> None:

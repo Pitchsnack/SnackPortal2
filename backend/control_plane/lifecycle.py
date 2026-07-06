@@ -21,7 +21,7 @@ from shared.secrets import SecretRef
 
 from ._util import now_iso
 from .audit import ControlPlaneAudit
-from .ports import ControlStore
+from .ports import ControlStore, ControlStoreConcurrencyError
 from .records import TenantLifecycleState, TenantRecord
 from .verification import TenantDatabaseProbe
 
@@ -119,7 +119,13 @@ class TenantLifecycleService:
             lifecycle_state=TenantLifecycleState.VERIFYING,
             updated_at=now_iso(),
         )
-        self._store.put_tenant(updated)
+        # PRD 07D-2e (D-2e-4): CAS-then-audit — one Control-DB transaction in the durable
+        # store; a lost race fails closed with the service error (no lost write). The
+        # association-version guard above concerns SecretRef.version, NOT TenantRecord.version.
+        try:
+            persisted = self._store.compare_and_swap_tenant(updated, expected_version=rec.version)
+        except ControlStoreConcurrencyError as exc:
+            raise LifecycleError("concurrent lifecycle transition") from exc
         self._audit.record(
             actor=actor,
             tenant_id=tenant_id,
@@ -128,7 +134,7 @@ class TenantLifecycleService:
             to_state=TenantLifecycleState.VERIFYING.value,
             correlation_id=correlation_id,
         )
-        return updated
+        return persisted
 
     # -- internals -------------------------------------------------------------
     def _require(self, tenant_id: str) -> TenantRecord:
@@ -146,7 +152,12 @@ class TenantLifecycleService:
         action: str,
     ) -> TenantRecord:
         updated = replace(rec, lifecycle_state=to_state, updated_at=now_iso())
-        self._store.put_tenant(updated)
+        # PRD 07D-2e (D-2e-4): CAS-then-audit — the durable store commits both atomically; a
+        # lost race fails closed with the service error type (never a silent overwrite).
+        try:
+            persisted = self._store.compare_and_swap_tenant(updated, expected_version=rec.version)
+        except ControlStoreConcurrencyError as exc:
+            raise LifecycleError("concurrent lifecycle transition") from exc
         self._audit.record(
             actor=actor,
             tenant_id=rec.tenant_id,
@@ -155,4 +166,4 @@ class TenantLifecycleService:
             to_state=to_state.value,
             correlation_id=correlation_id,
         )
-        return updated
+        return persisted

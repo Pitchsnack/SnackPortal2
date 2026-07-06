@@ -216,7 +216,13 @@ class TenantRegistry:
         if record.lifecycle_state not in allowed_from:
             raise RegistryError("illegal lifecycle transition")
         updated = replace(record, lifecycle_state=to_state, updated_at=now_iso())
-        # Fail-closed ordering (B7B-D5): required audit write precedes the irreversible put_tenant.
+        # PRD 07D-2e (D-2e-4): the version-predicated CAS write runs FIRST (uncommitted in the
+        # durable store) and the required audit append commits BOTH in one Control-DB
+        # transaction — a lost race raises ControlStoreConcurrencyError with NO audit written
+        # (no orphan), and a failed required audit write rolls the state change back (the
+        # B7B-D5 fail-closed guarantee, now transactional instead of positional). A conflict
+        # propagates the typed store error unchanged (never silently overwrite a newer write).
+        persisted = self._store.compare_and_swap_tenant(updated, expected_version=record.version)
         self._audit.record(
             actor=actor,
             tenant_id=tenant_id,
@@ -225,5 +231,4 @@ class TenantRegistry:
             to_state=to_state.value,
             correlation_id=correlation_id,
         )
-        self._store.put_tenant(updated)
-        return updated
+        return persisted

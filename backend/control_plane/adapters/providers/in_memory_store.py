@@ -7,9 +7,10 @@ models + the ControlStore port. No tenant-DB access; control-plane data only.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Dict, List, Optional, Tuple
 
-from control_plane.ports import ControlStore
+from control_plane.ports import ControlStore, ControlStoreConcurrencyError
 from control_plane.records import (
     ControlAuditRecord,
     DirectoryKind,
@@ -40,6 +41,16 @@ class InMemoryControlStore(ControlStore):
     # tenants
     def put_tenant(self, record: TenantRecord) -> None:
         self._tenants[record.tenant_id] = record
+
+    def compare_and_swap_tenant(self, updated: TenantRecord, *, expected_version: int) -> TenantRecord:
+        # PRD 07D-2e: in-memory CAS parity — the same predicate and the same typed refusal as
+        # the durable adapter. Applies immediately (in-memory writes never fail; deterministic).
+        current = self._tenants.get(updated.tenant_id)
+        if current is None or current.version != expected_version:
+            raise ControlStoreConcurrencyError("stale tenant version (concurrent lifecycle write)")
+        persisted = replace(updated, version=expected_version + 1)
+        self._tenants[persisted.tenant_id] = persisted
+        return persisted
 
     def get_tenant(self, tenant_id: str) -> Optional[TenantRecord]:
         return self._tenants.get(tenant_id)

@@ -94,6 +94,9 @@ _CONTROL_STORE_METHODS = frozenset(
         "is_reachable",
         "schema_version",
         "put_tenant",
+        # PRD 07D-2e (D-2e-2): the dedicated optimistic-concurrency lifecycle write — the ONLY
+        # port addition of the CAS slice, moved in lockstep with the ControlStore ABC.
+        "compare_and_swap_tenant",
         "get_tenant",
         "list_tenant_ids",
         "put_membership",

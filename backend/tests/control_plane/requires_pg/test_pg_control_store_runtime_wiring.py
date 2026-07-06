@@ -39,6 +39,9 @@ import hashlib
 import os
 import pathlib
 import sys
+import threading
+import time
+from dataclasses import replace
 from datetime import datetime
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
@@ -47,13 +50,24 @@ import _pg  # noqa: E402  (standalone live-PG runner: SNACKPORTAL_TEST_DSN, avai
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))  # backend on path
 
+from control_plane import events  # noqa: E402
+from control_plane._util import now_iso  # noqa: E402
+from control_plane.adapters.providers.in_memory_distinctness import nonprod_control_db_evidence  # noqa: E402
+from control_plane.adapters.providers.in_memory_probe import InMemoryTenantDatabaseProbe  # noqa: E402
 from control_plane.adapters.providers.postgres_store import PostgresControlStore  # noqa: E402
+from control_plane.audit import ControlPlaneAudit  # noqa: E402
+from control_plane.distinctness import DistinctnessResult  # noqa: E402
 from control_plane.main import (  # noqa: E402
     CONTROL_STORE_DSN_REF_ENV,
     CONTROL_STORE_ENV,
     DEFAULT_CONTROL_STORE_DSN_REF,
+    CanonicalTenantRefInMemoryEvidence,
     create_app,
 )
+from control_plane.ports import ControlStoreConcurrencyError  # noqa: E402
+from control_plane.provisioning import REASON_CONCURRENT_LIFECYCLE_WINNER, ProvisioningVerificationService  # noqa: E402
+from control_plane.records import ControlAuditRecord, TenantLifecycleState, TenantRecord  # noqa: E402
+from control_plane.registry import RegistryError, TenantRegistry  # noqa: E402
 from shared.adapters.providers.env_reference_secret_store import EnvReferenceSecretStore  # noqa: E402
 from shared.secrets import SecretRef  # noqa: E402
 
@@ -289,5 +303,298 @@ def test_b7b_live_pg_runtime_wiring(admin_dsn: str) -> None:
                 os.environ[k] = v
 
 
+# --- PRD 07D-2e — lifecycle CAS live proofs (R-2c-LWW closure) ------------------------------------
+# Folded into this ALREADY-ENROLLED harness (D-2e-6: no workflow edit, no new requires_pg file).
+# The 009 DDL blob is byte-pinned in test_pg_control_schema_mcc.py + the default-suite blob guard
+# (single source of truth); this function applies the repo bytes into its own scratch schema —
+# the same unpinned-apply precedent as the composition harness.
+_CAS_SCHEMA = "sp2_2e_cas_scratch"
+_DDL_004 = _CONTROL / "004_control_tenants.sql"
+_DDL_009 = _CONTROL / "009_control_tenants_cas_version.sql"
+
+
+def _cas_store(admin_dsn: str, *, autocommit: bool = False) -> PostgresControlStore:
+    """A store whose session search_path is the 2e CAS scratch schema ONLY."""
+    s = PostgresControlStore(admin_dsn)
+    if autocommit:
+        s._conn.autocommit = True
+    with s._conn.cursor() as cur:
+        cur.execute(f"SET search_path TO {_CAS_SCHEMA}")
+    if not autocommit:
+        s._conn.commit()
+    return s
+
+
+def _cas_tenant(tid: str, state: TenantLifecycleState) -> TenantRecord:
+    return TenantRecord(
+        tenant_id=tid,
+        organization_ref="org-2e",
+        lifecycle_state=state,
+        expected_schema_version="1",
+        database_association_ref=SecretRef(f"tenant/{tid}/dsn", "1"),
+        federation_config_ref="fed-2e",
+        created_at=now_iso(),
+        updated_at=now_iso(),
+    )
+
+
+def test_2e_cas_lifecycle_live(admin_dsn: str) -> None:
+    boot = _cas_store(admin_dsn, autocommit=True)
+    conn = boot._conn
+    with conn.cursor() as cur:
+        cur.execute(f"DROP SCHEMA IF EXISTS {_CAS_SCHEMA} CASCADE")
+        cur.execute(f"CREATE SCHEMA {_CAS_SCHEMA}")
+        cur.execute(f"SET search_path TO {_CAS_SCHEMA}")
+    opened: list = []
+    try:
+        # apply 002+003 (control_audit + append-only), 004 (control_tenants), 009 (CAS version)
+        for ddl in (_DDL_002, _DDL_003, _DDL_004, _DDL_009):
+            with conn.cursor() as cur:
+                cur.execute(ddl.read_text(encoding="utf-8"))
+
+        # 2E-1 — 009 applied: version bigint NOT NULL DEFAULT 0 (idempotent re-apply clean)
+        row = conn.execute(
+            "SELECT data_type, is_nullable, column_default FROM information_schema.columns "
+            "WHERE table_schema=%s AND table_name='control_tenants' AND column_name='version'",
+            (_CAS_SCHEMA,),
+        ).fetchone()
+        assert row is not None, "control_tenants.version must exist after 009"
+        assert row[0] == "bigint" and row[1] == "NO" and "0" in (row[2] or ""), f"version shape wrong: {row}"
+        with conn.cursor() as cur:
+            cur.execute(_DDL_009.read_text(encoding="utf-8"))  # idempotent re-apply — must not error
+        print("PASS: 2E-1 009 applied (version bigint NOT NULL DEFAULT 0; re-apply idempotent)")
+
+        # 2E-2 — CAS success increments version; durable exactly with its committing audit append
+        store = _cas_store(admin_dsn)
+        opened.append(store)
+        store.put_tenant(_cas_tenant("t_cas", TenantLifecycleState.REGISTERED))  # create/seed path, version 0
+        out = store.compare_and_swap_tenant(
+            replace(store.get_tenant("t_cas"), lifecycle_state=TenantLifecycleState.PROVISIONING, updated_at=now_iso()),
+            expected_version=0,
+        )
+        assert out.version == 1
+        uncommitted = conn.execute("SELECT lifecycle_state, version FROM control_tenants WHERE tenant_id='t_cas'").fetchone()
+        assert uncommitted == ("Registered", 0), f"the CAS write must be INVISIBLE before its audit commits: {uncommitted}"
+        store.append_audit(
+            ControlAuditRecord(
+                actor="op-2e",
+                tenant_id="t_cas",
+                action="MarkProvisioning",
+                from_state="Registered",
+                to_state="Provisioning",
+                timestamp=now_iso(),
+                correlation_id="c-2e-cas1",
+            )
+        )
+        committed = conn.execute("SELECT lifecycle_state, version FROM control_tenants WHERE tenant_id='t_cas'").fetchone()
+        assert committed == ("Provisioning", 1), f"audit commit must make the CAS durable: {committed}"
+        print("PASS: 2E-2 CAS success increments version; durable in ONE transaction with its audit append")
+
+        # 2E-3 — stale expected_version raises the typed error and leaves the row unchanged
+        raised = False
+        try:
+            store.compare_and_swap_tenant(
+                replace(store.get_tenant("t_cas"), lifecycle_state=TenantLifecycleState.SUSPENDED), expected_version=0
+            )
+        except ControlStoreConcurrencyError:
+            raised = True
+        assert raised, "a stale expected_version must raise ControlStoreConcurrencyError"
+        unchanged = conn.execute("SELECT lifecycle_state, version FROM control_tenants WHERE tenant_id='t_cas'").fetchone()
+        assert unchanged == ("Provisioning", 1), f"a refused CAS must leave the row unchanged: {unchanged}"
+        print("PASS: 2E-3 stale CAS refused (typed error; row byte-unchanged)")
+
+        # 2E-4 — transactional audit+CAS rollback: a failed audit append discards the CAS work
+        audits_before = conn.execute("SELECT count(*) FROM control_audit").fetchone()[0]
+        store4 = _cas_store(admin_dsn)
+        opened.append(store4)
+        store4.compare_and_swap_tenant(
+            replace(store4.get_tenant("t_cas"), lifecycle_state=TenantLifecycleState.SUSPENDED, updated_at=now_iso()),
+            expected_version=1,
+        )
+        bad_audit_raised = False
+        try:  # ts is timestamptz: an unparseable timestamp fails server-side inside the SAME txn
+            store4.append_audit(
+                ControlAuditRecord(
+                    actor="op-2e",
+                    tenant_id="t_cas",
+                    action="SuspendTenant",
+                    from_state="Provisioning",
+                    to_state="Suspended",
+                    timestamp="not-a-timestamp",
+                    correlation_id="c-2e-rb",
+                )
+            )
+        except Exception:
+            bad_audit_raised = True
+        assert bad_audit_raised, "the failed audit append must propagate (fail closed)"
+        after_rb = conn.execute("SELECT lifecycle_state, version FROM control_tenants WHERE tenant_id='t_cas'").fetchone()
+        assert after_rb == ("Provisioning", 1), f"the failed audit must roll the CAS back (no partial state): {after_rb}"
+        assert conn.execute("SELECT count(*) FROM control_audit").fetchone()[0] == audits_before, "no orphan audit row"
+        print("PASS: 2E-4 transactional rollback (failed audit append discards the CAS; no orphan audit)")
+
+        # 2E-5 — R-2c-LWW TWO-WRITER PROOF: a suspend committing inside verify()'s window WINS
+        store.put_tenant(_cas_tenant("t_lww", TenantLifecycleState.READY))  # seed READY, version 0
+        store_a = _cas_store(admin_dsn)
+        opened.append(store_a)
+        svc = ProvisioningVerificationService(
+            store_a,
+            ControlPlaneAudit(store_a),
+            InMemoryTenantDatabaseProbe(schema_version="1"),
+            CanonicalTenantRefInMemoryEvidence(),
+            nonprod_control_db_evidence(),
+            supported_schema_versions=["1"],
+        )
+        store_b = _cas_store(admin_dsn)
+        opened.append(store_b)
+        rec_b = store_b.get_tenant("t_lww")
+        assert rec_b is not None and rec_b.version == 0
+        # Writer B: the suspend CAS, executed and held UNCOMMITTED (row lock held; the window open)
+        store_b.compare_and_swap_tenant(
+            replace(rec_b, lifecycle_state=TenantLifecycleState.SUSPENDED, updated_at=now_iso()), expected_version=0
+        )
+        outcome: dict = {}
+
+        def _verifier() -> None:
+            try:
+                outcome["result"] = svc.verify("t_lww", actor="op-2e", correlation_id="c-2e-lww")
+            except Exception as exc:  # a raw escape = FAIL (asserted below)
+                outcome["error"] = type(exc).__name__
+
+        verifier_thread = threading.Thread(target=_verifier)
+        verifier_thread.start()
+        # Deterministic overlap: A's VERIFYING CAS blocks on B's row lock (observed), then B commits.
+        deadline = time.time() + 30
+        blocked = False
+        while time.time() < deadline:
+            n = conn.execute(
+                "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'"
+            ).fetchone()[0]
+            if n and n >= 1:
+                blocked = True
+                break
+            time.sleep(0.05)
+        assert blocked, "the verifier never LOCK-blocked on the uncommitted suspend — overlap not established"
+        print("PASS: 2E-5a overlap established (verifier LOCK-blocked while the suspend is uncommitted)")
+        store_b.append_audit(  # B commits: suspend + its audit become durable in one transaction
+            ControlAuditRecord(
+                actor="op-2e",
+                tenant_id="t_lww",
+                action="SuspendTenant",
+                from_state="Ready",
+                to_state="Suspended",
+                timestamp=now_iso(),
+                correlation_id="c-2e-lww-b",
+            )
+        )
+        verifier_thread.join(timeout=30)
+        assert not verifier_thread.is_alive(), "verifier thread must finish after the winner commits"
+        assert "error" not in outcome, f"verify() must YIELD, not raise: {outcome.get('error')}"
+        result = outcome["result"]
+        assert result.result is DistinctnessResult.VERIFICATION_INCOMPLETE, f"must yield non-routable: {result}"
+        assert result.reason == REASON_CONCURRENT_LIFECYCLE_WINNER, result.reason
+        final = conn.execute("SELECT lifecycle_state, version FROM control_tenants WHERE tenant_id='t_lww'").fetchone()
+        assert final == ("Suspended", 1), f"the legitimate winner must be preserved: {final}"
+        lww_acts = [r[0] for r in conn.execute("SELECT action FROM control_audit WHERE tenant_id='t_lww'").fetchall()]
+        assert events.ROUTING_ENABLED not in lww_acts, "routing must NEVER be enabled over a concurrent suspend"
+        assert events.DISTINCTNESS_VERIFICATION_STARTED not in lww_acts, "the loser's started event rolled back with its CAS"
+        assert events.TENANT_QUARANTINED not in lww_acts, "the legitimate winner must not be auto-quarantined"
+        print("PASS: 2E-5 R-2c-LWW two-writer proof (suspend wins; verify yields VERIFICATION_INCOMPLETE; no routing)")
+
+        # 2E-6 — parallel same-target transitions converge safely
+        store.put_tenant(_cas_tenant("t_conv", TenantLifecycleState.READY))
+        store_a2 = _cas_store(admin_dsn)
+        opened.append(store_a2)
+        reg_a = TenantRegistry(store_a2, ControlPlaneAudit(store_a2))
+        store_b2 = _cas_store(admin_dsn)
+        opened.append(store_b2)
+        rec_conv = store_b2.get_tenant("t_conv")
+        store_b2.compare_and_swap_tenant(
+            replace(rec_conv, lifecycle_state=TenantLifecycleState.SUSPENDED, updated_at=now_iso()), expected_version=0
+        )
+        conv: dict = {}
+
+        def _suspender() -> None:
+            try:
+                conv["result"] = reg_a.suspend_tenant("t_conv", actor="op-2e", correlation_id="c-2e-conv-a")
+            except ControlStoreConcurrencyError:
+                conv["result"] = "typed-conflict"
+            except Exception as exc:
+                conv["result"] = f"raw:{type(exc).__name__}"
+
+        s_thread = threading.Thread(target=_suspender)
+        s_thread.start()
+        deadline = time.time() + 30
+        blocked = False
+        while time.time() < deadline:
+            n = conn.execute(
+                "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'"
+            ).fetchone()[0]
+            if n and n >= 1:
+                blocked = True
+                break
+            time.sleep(0.05)
+        assert blocked, "the racing suspend never LOCK-blocked — overlap not established"
+        store_b2.append_audit(
+            ControlAuditRecord(
+                actor="op-2e",
+                tenant_id="t_conv",
+                action="SuspendTenant",
+                from_state="Ready",
+                to_state="Suspended",
+                timestamp=now_iso(),
+                correlation_id="c-2e-conv-b",
+            )
+        )
+        s_thread.join(timeout=30)
+        assert not s_thread.is_alive()
+        assert conv.get("result") == "typed-conflict", f"the losing same-target writer must surface the typed error: {conv}"
+        noop = reg_a.suspend_tenant("t_conv", actor="op-2e", correlation_id="c-2e-conv-a2")  # re-read -> A1 no-op
+        assert noop.lifecycle_state is TenantLifecycleState.SUSPENDED and noop.version == 1
+        conv_row = conn.execute("SELECT lifecycle_state, version FROM control_tenants WHERE tenant_id='t_conv'").fetchone()
+        assert conv_row == ("Suspended", 1), f"parallel same-target transitions must converge: {conv_row}"
+        n_susp = conn.execute("SELECT count(*) FROM control_audit WHERE tenant_id='t_conv' AND action='SuspendTenant'").fetchone()[0]
+        assert n_susp == 1, f"exactly ONE SuspendTenant audit row after convergence: {n_susp}"
+        print("PASS: 2E-6 parallel same-target transitions converge (one winner, typed loser, A1 re-issue no-op)")
+
+        # 2E-7 — A1 no-op durable proof: no update, version/updated_at unchanged, no audit row
+        before = conn.execute("SELECT lifecycle_state, version, updated_at FROM control_tenants WHERE tenant_id='t_conv'").fetchone()
+        audits_before = conn.execute("SELECT count(*) FROM control_audit WHERE tenant_id='t_conv'").fetchone()[0]
+        again = reg_a.suspend_tenant("t_conv", actor="op-2e", correlation_id="c-2e-noop")
+        assert again.version == 1
+        after = conn.execute("SELECT lifecycle_state, version, updated_at FROM control_tenants WHERE tenant_id='t_conv'").fetchone()
+        assert after == before, f"the A1 no-op must leave the durable row byte-unchanged: {after} != {before}"
+        assert conn.execute("SELECT count(*) FROM control_audit WHERE tenant_id='t_conv'").fetchone()[0] == audits_before, (
+            "the A1 no-op must write no durable audit row"
+        )
+        print("PASS: 2E-7 A1 same-target no-op durable proof (row + version + updated_at + audit all unchanged)")
+
+        # 2E-8 — B2 READY-only durable proof: non-READY suspends refuse and change nothing
+        store.put_tenant(_cas_tenant("t_reg", TenantLifecycleState.REGISTERED))
+        store.put_tenant(_cas_tenant("t_prov", TenantLifecycleState.PROVISIONING))
+        for tid in ("t_reg", "t_prov"):
+            row_before = conn.execute("SELECT lifecycle_state, version FROM control_tenants WHERE tenant_id=%s", (tid,)).fetchone()
+            refused = False
+            try:
+                reg_a.suspend_tenant(tid, actor="op-2e", correlation_id=f"c-2e-b2-{tid}")
+            except RegistryError:
+                refused = True
+            assert refused, f"{tid}: non-READY suspend must refuse (B2)"
+            row_after = conn.execute("SELECT lifecycle_state, version FROM control_tenants WHERE tenant_id=%s", (tid,)).fetchone()
+            assert row_after == row_before, f"{tid}: a refused suspend must change nothing: {row_after}"
+        print("PASS: 2E-8 B2 READY-only durable proof (READY->SUSPENDED proven in 2E-6; non-READY refused, rows unchanged)")
+
+        print("ALL 2E CAS LIFECYCLE CHECKS PASSED")
+    finally:
+        for s in opened:
+            try:
+                if s._conn_cache is not None:
+                    s._conn_cache.close()
+            except Exception:
+                pass
+        with conn.cursor() as cur:
+            cur.execute(f"DROP SCHEMA IF EXISTS {_CAS_SCHEMA} CASCADE")
+        conn.close()
+
+
 if __name__ == "__main__":
-    _pg.run([test_b7b_live_pg_runtime_wiring])
+    _pg.run([test_b7b_live_pg_runtime_wiring, test_2e_cas_lifecycle_live])

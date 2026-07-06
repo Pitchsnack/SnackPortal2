@@ -182,6 +182,7 @@ _CONTROL_DDL_ORDER = (
     "005_control_memberships.sql",
     "006_control_federation.sql",
     "007_control_directory.sql",
+    "009_control_tenants_cas_version.sql",  # PRD 07D-2e: the adapter reads/writes control_tenants.version
 )
 
 # Selector + secret env names (values are set in-process only and NEVER printed).
