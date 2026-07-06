@@ -99,7 +99,7 @@ Also binding (architecture-wide): **no shared tenant databases**; **secrets neve
 
 ## Import Readiness Requirements
 > Consumes IC-002 readiness; honors D-16 and D-17.
-- Import MUST require the target tenant to be **`Ready`** (IC-002). Imports to `Provisioning`/`Verifying`/`Suspended`/`Failed`/`Decommissioned`/unknown tenants MUST be denied with IC-002's defined semantics (*retry later* / *administratively disabled* / *unavailable* / *not found*).
+- Import MUST require the target tenant to be **`Ready`** (IC-002). Imports to `Provisioning`/`Verifying`/`Suspended`/`Failed`/`Quarantined`/`Decommissioned`/unknown tenants MUST be denied with IC-002's defined semantics (*retry later* / *administratively disabled* / *unavailable* / *not found*).
 - **Schema-version gating (D-17):** import MUST target a tenant whose schema version is within the supported range; a tenant out of range is not-ready → import is deferred/denied until migrated. Imported data MUST be compatible with the tenant's schema version.
 - **Per-tenant independence (D-16):** one tenant's import failure or backlog MUST NOT affect any other tenant; readiness and capacity are evaluated per tenant.
 - Import is a **Phase-1, tenant-scoped activity** (D-01); no import is possible during Phase 0.
