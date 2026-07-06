@@ -27,6 +27,10 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))  # backend 
 
 from control_plane import events  # noqa: E402
 from control_plane import main as cp_main  # noqa: E402
+from control_plane.adapters.providers.control_store_factory import (  # noqa: E402
+    PostgresControlStoreFactory,
+    SharedControlStoreFactory,
+)
 from control_plane.adapters.providers.in_memory_distinctness import nonprod_control_db_evidence  # noqa: E402
 from control_plane.adapters.providers.in_memory_probe import InMemoryTenantDatabaseProbe  # noqa: E402
 from control_plane.adapters.providers.in_memory_store import InMemoryControlStore  # noqa: E402
@@ -40,7 +44,16 @@ from control_plane.provisioning import (  # noqa: E402
     ProvisioningError,
     ProvisioningVerificationService,
 )
-from control_plane.records import ControlAuditRecord, TenantLifecycleState, TenantRecord  # noqa: E402
+from control_plane.records import (  # noqa: E402
+    ControlAuditRecord,
+    DirectoryKind,
+    DirectoryRecord,
+    FederationConfig,
+    MembershipRecord,
+    Role,
+    TenantLifecycleState,
+    TenantRecord,
+)
 from control_plane.recovery import RecoveryError  # noqa: E402
 from control_plane.registry import RegistryError, TenantRegistry  # noqa: E402
 from control_plane.verification import ProbeResult, TenantDatabaseProbe  # noqa: E402
@@ -350,16 +363,23 @@ class _FakeConn2e:
         self.committed = 0
         self.rolled_back = 0
         self.fail_on: Optional[str] = None
+        self.fail_on_commit = False  # PRD 07D-3b: commit-path fault injection (AT-07D3A-3)
         self.cas_matches_zero = False
+        self.closed = False  # PRD 07D-3b: release() teardown observability
 
     def cursor(self) -> _FakeCursor2e:
         return _FakeCursor2e(self)
 
     def commit(self) -> None:
+        if self.fail_on_commit:
+            raise RuntimeError("simulated commit failure")
         self.committed += 1
 
     def rollback(self) -> None:
         self.rolled_back += 1
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def _fake_durable() -> "tuple[PostgresControlStore, _FakeConn2e]":
@@ -429,6 +449,166 @@ def test_durable_audit_failure_rolls_back_uncommitted_cas() -> None:
     assert conn.committed == 0, "no partial state may commit"
 
 
+# --- PRD 07D-3b — Tier-2 per-unit-of-work boundary (negative + positive unit proofs) -------------
+def test_3b_negative_shared_connection_cross_commit_and_rollback() -> None:
+    # THE NEGATIVE PROOF (AT-07D3A-1 / AT-PMV46-4): the pre-07D-3b hazard is REAL. Two logical
+    # requests SHARING one store/connection cross-commit and cross-rollback: request B's audit
+    # commit finalizes request A's uncommitted CAS, and a failing request discards a sibling's
+    # pending work. This is exactly what the per-UoW factory (next tests) eliminates.
+    store, conn = _fake_durable()
+    store.compare_and_swap_tenant(_record(), expected_version=0)  # request A: CAS, uncommitted
+    assert conn.committed == 0, "A's CAS must still be pending"
+    store.append_audit(  # request B on the SAME shared store: an unrelated audit append
+        ControlAuditRecord(
+            actor="request-b",
+            tenant_id=None,
+            action="t2.unrelated",
+            from_state=None,
+            to_state=None,
+            timestamp="t1",
+            correlation_id="c-b",
+        )
+    )
+    assert conn.committed == 1, (
+        "HAZARD DEMONSTRATED: request B's commit finalized request A's uncommitted CAS "
+        "(cross-request commit leakage on a shared connection)"
+    )
+    # Symmetric direction: a failing sibling rolls back A's pending work.
+    store2, conn2 = _fake_durable()
+    store2.compare_and_swap_tenant(_record(), expected_version=0)  # request A: pending CAS
+    conn2.fail_on = "INSERT INTO control_audit"
+    raised = False
+    try:
+        store2.append_audit(_audit_record())  # request B fails -> rollback on the SHARED conn
+    except RuntimeError:
+        raised = True
+    assert raised
+    assert conn2.rolled_back == 1 and conn2.committed == 0, "HAZARD DEMONSTRATED: request B's rollback discarded request A's pending CAS"
+
+
+def test_3b_factory_per_uow_isolates_concurrent_requests() -> None:
+    # THE POSITIVE UNIT PROOF: the same interleave through the 07D-3b factory (two units of
+    # work = two stores = two connections) shows NO cross-effect — B's commit cannot finalize
+    # A's pending CAS; and release() tears each UoW down (rollback + close).
+    fac = PostgresControlStoreFactory("postgresql://fake/fake")
+    with fac.acquire() as uow_a, fac.acquire() as uow_b:
+        assert uow_a is not uow_b, "each unit of work must get its OWN store"
+        conn_a, conn_b = _FakeConn2e(), _FakeConn2e()
+        uow_a._conn_cache = conn_a  # inject fakes: no psycopg.connect is ever reached
+        uow_b._conn_cache = conn_b
+        uow_a.compare_and_swap_tenant(_record(), expected_version=0)  # request A: pending CAS
+        uow_b.append_audit(_audit_record())  # request B commits ITS OWN connection
+        assert conn_a.committed == 0, "B's commit must NOT finalize A's pending CAS (isolation)"
+        assert conn_b.committed == 1
+    assert conn_a.rolled_back == 1 and conn_a.closed, "A's pending work rolled back + closed at UoW end"
+    assert conn_b.closed and uow_a._conn_cache is None and uow_b._conn_cache is None, "release() must tear down"
+
+
+def test_3b_single_uow_cas_and_audit_share_one_connection() -> None:
+    # Per-transition atomicity through the factory (D-2e-4 preserved): within ONE unit of
+    # work the CAS and its committing audit run on the SAME connection.
+    fac = PostgresControlStoreFactory("postgresql://fake/fake")
+    with fac.acquire() as uow:
+        conn = _FakeConn2e()
+        uow._conn_cache = conn
+        uow.compare_and_swap_tenant(_record(), expected_version=0)
+        assert uow._conn is conn, "the UoW connection must be stable across the transition"
+        uow.append_audit(_audit_record())
+        assert uow._conn is conn, "the audit append must use the SAME connection as the CAS"
+        assert conn.committed == 1, "the audit append commits the composite exactly once"
+        sqls = [s for s, _ in conn.executed]
+        assert any("UPDATE control_tenants" in s for s in sqls) and any("INSERT INTO control_audit" in s for s in sqls), (
+            "both the CAS and the audit must have executed on this one connection"
+        )
+
+
+def test_3b_release_discards_uncommitted_work_and_survives_exceptions() -> None:
+    # A UoW that ends WITHOUT committing (no audit append) is discarded fail-closed; an
+    # exception inside the UoW still releases (rollback + close) and propagates.
+    fac = PostgresControlStoreFactory("postgresql://fake/fake")
+    with fac.acquire() as uow:
+        conn = _FakeConn2e()
+        uow._conn_cache = conn
+        uow.compare_and_swap_tenant(_record(), expected_version=0)
+    assert conn.rolled_back == 1 and conn.committed == 0 and conn.closed, (
+        "an uncommitted unit of work must be rolled back and its connection closed"
+    )
+    raised = False
+    try:
+        with fac.acquire() as uow2:
+            conn2 = _FakeConn2e()
+            uow2._conn_cache = conn2
+            raise RuntimeError("request blew up")
+    except RuntimeError:
+        raised = True
+    assert raised and conn2.rolled_back == 1 and conn2.closed, "release() must run on the exception path too"
+
+
+def test_3b_exception_rollback_on_previously_bare_commit_sites() -> None:
+    # AT-07D3A-3 fault injection: each previously-bare commit site (put_tenant,
+    # put_membership, put_federation, put_directory_record) must roll back on an execute
+    # failure — no dangling open transaction, no partial write, error propagates.
+    cases = [
+        ("INSERT INTO control_tenants", lambda s: s.put_tenant(_record())),
+        (
+            "INSERT INTO control_memberships",
+            lambda s: s.put_membership(MembershipRecord(principal_ref="p", tenant_id="t1", role=Role.CONTROL)),
+        ),
+        (
+            "INSERT INTO control_federation",
+            lambda s: s.put_federation(
+                FederationConfig(tenant_id="t1", oidc_issuer="i", oidc_audience="a", jwks_ref="j", claim_to_tenant_rule="r")
+            ),
+        ),
+        (
+            "INSERT INTO control_directory",
+            lambda s: s.put_directory_record(
+                DirectoryRecord(directory=DirectoryKind.STARTUP, record_id="r1", display_name="d", attributes={})
+            ),
+        ),
+    ]
+    for fail_marker, op in cases:
+        store, conn = _fake_durable()
+        conn.fail_on = fail_marker
+        raised = False
+        try:
+            op(store)
+        except RuntimeError:
+            raised = True
+        assert raised, f"{fail_marker}: the execute failure must propagate (fail closed)"
+        assert conn.rolled_back == 1, f"{fail_marker}: the failure must roll back (no dangling transaction)"
+        assert conn.committed == 0, f"{fail_marker}: no partial write may commit"
+    # Commit-path direction (a failure IN commit itself must also roll back).
+    store, conn = _fake_durable()
+    conn.fail_on_commit = True
+    raised = False
+    try:
+        store.put_tenant(_record())
+    except RuntimeError:
+        raised = True
+    assert raised and conn.rolled_back == 1, "a commit-path failure must roll back (no dangling transaction)"
+
+
+def test_3b_shared_factory_and_composition_expose_uow_boundary() -> None:
+    # The single-process shape: the in-memory/explicit-store composition yields THE composed
+    # store for every unit of work (state is the instance), and the composition root exposes
+    # the per-UoW acquisition surface without wiring any transport.
+    base = InMemoryControlStore()
+    shared = SharedControlStoreFactory(base)
+    with shared.acquire() as s1:
+        _seed(s1, "t-uow", state=TenantLifecycleState.REGISTERED)
+    with shared.acquire() as s2:
+        assert s2 is base and s2.get_tenant("t-uow") is not None, "UoWs must share the process-local store state"
+    cp = cp_main.create_app()
+    assert hasattr(cp, "store_factory"), "the composition must build the per-UoW factory once"
+    with cp.control_store_unit_of_work() as uow_store:
+        assert uow_store is cp.store, "in-memory composition: the UoW store is the composed store"
+    injected = InMemoryControlStore()
+    cp2 = cp_main.ControlPlane(store=injected)
+    with cp2.control_store_unit_of_work() as uow2:
+        assert uow2 is injected, "explicit store= injection: the UoW store is the injected store"
+
+
 _TESTS = [
     test_tenant_record_version_defaults_to_zero,
     test_concurrency_error_is_a_distinct_typed_error,
@@ -447,6 +627,12 @@ _TESTS = [
     test_durable_cas_predicates_on_version_and_defers_commit,
     test_durable_cas_conflict_rolls_back_and_raises,
     test_durable_audit_failure_rolls_back_uncommitted_cas,
+    test_3b_negative_shared_connection_cross_commit_and_rollback,
+    test_3b_factory_per_uow_isolates_concurrent_requests,
+    test_3b_single_uow_cas_and_audit_share_one_connection,
+    test_3b_release_discards_uncommitted_work_and_survives_exceptions,
+    test_3b_exception_rollback_on_previously_bare_commit_sites,
+    test_3b_shared_factory_and_composition_expose_uow_boundary,
 ]
 
 if __name__ == "__main__":

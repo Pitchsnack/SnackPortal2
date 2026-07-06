@@ -79,17 +79,19 @@ class PostgresControlStore(ControlStore):
         self._secrets = secrets
         self._ref = ref
         self._schema_version = schema_version
-        # 07D-3A-TIER2-CONSTRAINT: NOT safe to share one store instance across concurrent
-        # requests/threads. This adapter holds ONE lazily-cached connection per store instance
-        # (no pool, no lock, no per-request scoping), and lifecycle CAS writes stay UNCOMMITTED
-        # until the transition's audit append commits both — so a second logical writer on the
-        # same instance would share this connection's open transaction (cross-request
-        # commit/rollback leakage). Separate instances (one store + connection each) are safe:
-        # cross-writer races are closed by the version-predicated CAS (PRD 07D-2e).
-        # Per-unit-of-work connection/transaction scoping (PRD 07D-3b, AT-PMV46-4) is REQUIRED
-        # before any concurrent-request transport is wired over a shared instance; the static
-        # guard test_07d3_multiinstance_readiness_static.py pins this marker and fails if it is
-        # removed without the 07D-3b rework.
+        # 07D-3B-TIER2-RESOLVED (AT-PMV46-4): per-unit-of-work scoping. One store instance ==
+        # one lazily-cached connection == ONE unit of work; per-request instances are issued by
+        # control_store_factory.PostgresControlStoreFactory.acquire(), which release()s this
+        # connection (rollback + close) at unit-of-work end, so no open transaction ever leaks
+        # between units of work. A transition's CAS stays UNCOMMITTED until its audit append
+        # commits both ON THIS SAME CONNECTION (PRD 07D-2e) — which is exactly why one
+        # store/connection must NEVER be shared across concurrent logical requests: a sibling's
+        # commit/rollback would finalize/discard this unit of work's pending state (the proven
+        # pre-07D-3b hazard). 07E contract: every request transport
+        # MUST acquire a fresh unit of work per request via the factory and
+        # MUST NOT share it across concurrent requests.
+        # The static guard test_07d3_multiinstance_readiness_static.py pins this marker, the
+        # factory shape, and the autocommit pin in lockstep.
         self._conn_cache: Any = None
 
     @property
@@ -113,9 +115,37 @@ class PostgresControlStore(ControlStore):
             else:
                 assert self._dsn is not None  # guaranteed by __init__ (exactly one source)
                 descriptor = self._dsn
-            return psycopg.connect(descriptor)
+            conn = psycopg.connect(descriptor)
+            # PRD 07D-3b (AT-07D3A-5) pin: the 07D-2e transactional contract (uncommitted CAS +
+            # audit append commits both) REQUIRES autocommit=False — psycopg's default, pinned
+            # explicitly so a driver/config change cannot silently break atomicity. The isolation
+            # level is deliberately NOT overridden: the PostgreSQL default (READ COMMITTED) is
+            # the model the version-predicated CAS is proven under (row locks + per-statement
+            # snapshots; 07D-2e/07D-3a/07D-3b live proofs). Standard PostgreSQL only.
+            conn.autocommit = False
+            return conn
         finally:
             descriptor = None  # never retained on the adapter
+
+    def release(self) -> None:
+        """End this store's unit of work: roll back any open transaction and close (idempotent).
+
+        PRD 07D-3b: a unit of work's durable effects are ONLY what its audit append committed;
+        anything still uncommitted at release is discarded (fail closed), and the closed
+        connection can never leak an open transaction into a later unit of work. Cleanup is
+        best-effort on an already-broken connection (its server session dies with it)."""
+        conn = self._conn_cache
+        if conn is None:
+            return
+        self._conn_cache = None
+        try:
+            conn.rollback()
+        except Exception:
+            pass  # broken connection: no transaction survives it
+        try:
+            conn.close()
+        except Exception:
+            pass
 
     # -- control metadata -----------------------------------------------------
     def is_reachable(self) -> bool:
@@ -132,9 +162,14 @@ class PostgresControlStore(ControlStore):
 
     # -- tenant registry ------------------------------------------------------
     def put_tenant(self, record: TenantRecord) -> None:
-        with self._conn.cursor() as cur:
-            cur.execute(
-                """
+        # PRD 07D-3b (AT-07D3A-3): a failure between execute and commit must roll back —
+        # a dangling open transaction on a connection reused/released after this call would
+        # leak into the next operation (fail closed, no partial write). Same pattern on the
+        # other three single-commit sites and append_audit.
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    """
                 INSERT INTO control_tenants (
                     tenant_id, organization_ref, lifecycle_state, expected_schema_version,
                     assoc_store_ref, assoc_version, federation_config_ref, created_at, updated_at, version
@@ -149,20 +184,26 @@ class PostgresControlStore(ControlStore):
                     updated_at = EXCLUDED.updated_at,
                     version = EXCLUDED.version
                 """,
-                (
-                    record.tenant_id,
-                    record.organization_ref,
-                    record.lifecycle_state.value,
-                    record.expected_schema_version,
-                    record.database_association_ref.store_ref,
-                    record.database_association_ref.version,
-                    record.federation_config_ref,
-                    record.created_at,
-                    record.updated_at,
-                    record.version,
-                ),
-            )
-        self._conn.commit()
+                    (
+                        record.tenant_id,
+                        record.organization_ref,
+                        record.lifecycle_state.value,
+                        record.expected_schema_version,
+                        record.database_association_ref.store_ref,
+                        record.database_association_ref.version,
+                        record.federation_config_ref,
+                        record.created_at,
+                        record.updated_at,
+                        record.version,
+                    ),
+                )
+            self._conn.commit()
+        except Exception:
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass  # connection-level failure: the original error below is the signal
+            raise
 
     def compare_and_swap_tenant(self, updated: TenantRecord, *, expected_version: int) -> TenantRecord:
         # PRD 07D-2e (D-2e-1/D-2e-4): version-predicated lifecycle write. The UPDATE matches a
@@ -222,14 +263,22 @@ class PostgresControlStore(ControlStore):
 
     # -- membership -----------------------------------------------------------
     def put_membership(self, record: MembershipRecord) -> None:
-        with self._conn.cursor() as cur:
-            cur.execute(
-                """INSERT INTO control_memberships (principal_ref, tenant_id, role)
+        # PRD 07D-3b (AT-07D3A-3): rollback on failure — no dangling open transaction.
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO control_memberships (principal_ref, tenant_id, role)
                    VALUES (%s,%s,%s) ON CONFLICT (principal_ref, tenant_id) DO UPDATE
                    SET role = EXCLUDED.role""",
-                (record.principal_ref, record.tenant_id, record.role.value),
-            )
-        self._conn.commit()
+                    (record.principal_ref, record.tenant_id, record.role.value),
+                )
+            self._conn.commit()
+        except Exception:
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass
+            raise
 
     def list_memberships(self, principal_ref: Optional[str] = None, tenant_id: Optional[str] = None) -> List[MembershipRecord]:
         clauses, params = [], []
@@ -246,9 +295,11 @@ class PostgresControlStore(ControlStore):
 
     # -- federation config ----------------------------------------------------
     def put_federation(self, config: FederationConfig) -> None:
-        with self._conn.cursor() as cur:
-            cur.execute(
-                """INSERT INTO control_federation
+        # PRD 07D-3b (AT-07D3A-3): rollback on failure — no dangling open transaction.
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO control_federation
                        (tenant_id, oidc_issuer, oidc_audience, jwks_ref, claim_to_tenant_rule)
                    VALUES (%s,%s,%s,%s,%s)
                    ON CONFLICT (tenant_id) DO UPDATE SET
@@ -256,9 +307,15 @@ class PostgresControlStore(ControlStore):
                        oidc_audience = EXCLUDED.oidc_audience,
                        jwks_ref = EXCLUDED.jwks_ref,
                        claim_to_tenant_rule = EXCLUDED.claim_to_tenant_rule""",
-                (config.tenant_id, config.oidc_issuer, config.oidc_audience, config.jwks_ref, config.claim_to_tenant_rule),
-            )
-        self._conn.commit()
+                    (config.tenant_id, config.oidc_issuer, config.oidc_audience, config.jwks_ref, config.claim_to_tenant_rule),
+                )
+            self._conn.commit()
+        except Exception:
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass
+            raise
 
     def get_federation(self, tenant_id: str) -> Optional[FederationConfig]:
         with self._conn.cursor() as cur:
@@ -274,15 +331,23 @@ class PostgresControlStore(ControlStore):
 
     # -- global discovery platform --------------------------------------------
     def put_directory_record(self, record: DirectoryRecord) -> None:
-        with self._conn.cursor() as cur:
-            cur.execute(
-                """INSERT INTO control_directory (directory, record_id, display_name, attributes)
+        # PRD 07D-3b (AT-07D3A-3): rollback on failure — no dangling open transaction.
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO control_directory (directory, record_id, display_name, attributes)
                    VALUES (%s,%s,%s,%s)
                    ON CONFLICT (directory, record_id) DO UPDATE SET
                        display_name = EXCLUDED.display_name, attributes = EXCLUDED.attributes""",
-                (record.directory.value, record.record_id, record.display_name, dict(record.attributes)),
-            )
-        self._conn.commit()
+                    (record.directory.value, record.record_id, record.display_name, dict(record.attributes)),
+                )
+            self._conn.commit()
+        except Exception:
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass
+            raise
 
     def get_directory_record(self, directory: DirectoryKind, record_id: str) -> Optional[DirectoryRecord]:
         with self._conn.cursor() as cur:
