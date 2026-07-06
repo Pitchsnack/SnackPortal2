@@ -74,7 +74,7 @@ _SCHEMA = "sp2_mcc_control_schema_scratch"
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
 _CONTROL = _REPO_ROOT / "infrastructure" / "db" / "control"
-_DDL_ORDER = [  # applied 001 -> 007 (001-003 prerequisites; 004-007 the MCC registry DDL under proof)
+_DDL_ORDER = [  # applied 001 -> 009 (001-003 prerequisites; 004-007 the MCC registry DDL; 009 the 07D-2e CAS version column)
     "001_distinctness_ledger.sql",
     "002_provisioning_audit.sql",
     "003_provisioning_audit_append_only.sql",
@@ -82,6 +82,7 @@ _DDL_ORDER = [  # applied 001 -> 007 (001-003 prerequisites; 004-007 the MCC reg
     "005_control_memberships.sql",
     "006_control_federation.sql",
     "007_control_directory.sql",
+    "009_control_tenants_cas_version.sql",
 ]
 
 # Reviewed MCC DDL blobs (full LF-normalized git-blob SHA-1; Option P — MCC exec-auth V2 §15). The applied
@@ -91,11 +92,14 @@ _REVIEWED_004_BLOB = "8194408e62f08533e649612981f10089b8a3b1b0"
 _REVIEWED_005_BLOB = "a0df9ec58b6825aa298b1b9656cc0028d9831c14"
 _REVIEWED_006_BLOB = "c929af89da85ec7614b716bdb40af611da9613f2"
 _REVIEWED_007_BLOB = "aa6066a7398cfb81e8e96067927023c3f11bb391"
+# PRD 07D-2e: the control_tenants CAS version column (R-2c-LWW closure) — same lockstep pattern.
+_REVIEWED_009_BLOB = "64f8227e829d446a74efeb3784e06b0e28f47549"
 _MCC_PINS = [
     ("004_control_tenants.sql", _REVIEWED_004_BLOB),
     ("005_control_memberships.sql", _REVIEWED_005_BLOB),
     ("006_control_federation.sql", _REVIEWED_006_BLOB),
     ("007_control_directory.sql", _REVIEWED_007_BLOB),
+    ("009_control_tenants_cas_version.sql", _REVIEWED_009_BLOB),
 ]
 
 # The exact table set 001-007 creates — proves NO tenant-business / agents / sharing / global_* tables.
@@ -119,6 +123,7 @@ _TENANTS_COLS = [
     "created_at",
     "updated_at",
     "tenant_type",
+    "version",  # PRD 07D-2e (009): bigint CAS write-version — the ONE non-text column
 ]
 _MEMBERSHIPS_COLS = ["principal_ref", "tenant_id", "role"]
 _FEDERATION_COLS = ["tenant_id", "oidc_issuer", "oidc_audience", "jwks_ref", "claim_to_tenant_rule"]
@@ -234,12 +239,14 @@ def test_mcc_live_pg_control_schema(admin_dsn: str) -> None:
         assert tables == _EXPECTED_TABLES, f"scratch table set {sorted(tables)} != expected {sorted(_EXPECTED_TABLES)}"
         print(f"PASS: C4 DDL apply 001-007 (exact table set = {len(_EXPECTED_TABLES)} control_* tables; no business/agents/global tables)")
 
-        # C5 — control_tenants shape: columns/order, ALL text, NOT NULL, tenant_type default, PK, no identity/id
+        # C5 — control_tenants shape: columns/order, text typing (version bigint — PRD 07D-2e),
+        # NOT NULL, tenant_type default, version default 0, PK, no identity/id
         cols = _columns(conn, "control_tenants")
         names = [c[0] for c in cols]
         assert names == _TENANTS_COLS, f"control_tenants columns {names} != {_TENANTS_COLS}"
         for cname, dtype, nullable, identity, _default in cols:
-            assert dtype == "text", f"control_tenants.{cname} must be text; got {dtype}"
+            want = "bigint" if cname == "version" else "text"  # 07D-2e: version is the ONE non-text column
+            assert dtype == want, f"control_tenants.{cname} must be {want}; got {dtype}"
             assert nullable == "NO", f"control_tenants.{cname} must be NOT NULL"
             assert identity == "NO", f"control_tenants.{cname} must not be IDENTITY"
         meta = {c[0]: c for c in cols}
@@ -248,6 +255,7 @@ def test_mcc_live_pg_control_schema(admin_dsn: str) -> None:
         )
         assert meta["expected_schema_version"][1] == "text", "expected_schema_version must be text, NOT integer"
         assert "customer" in (meta["tenant_type"][4] or ""), f"tenant_type default must be 'customer'; got {meta['tenant_type'][4]!r}"
+        assert "0" in (meta["version"][4] or ""), f"version default must be 0 (PRD 07D-2e); got {meta['version'][4]!r}"
         assert _pk_columns(conn, "control_tenants") == ["tenant_id"], "control_tenants PK must be (tenant_id)"
         assert "id" not in names, "no surrogate id column (natural keys only)"
         idx = {
@@ -260,7 +268,10 @@ def test_mcc_live_pg_control_schema(admin_dsn: str) -> None:
         assert singleton and "control_internal" in singleton and "WHERE" in singleton, (
             f"partial unique singleton index missing/wrong: {sorted(idx)}"
         )
-        print("PASS: C5 control_tenants shape (10 text cols NOT NULL, DEFAULT 'customer', PK(tenant_id), singleton partial index)")
+        print(
+            "PASS: C5 control_tenants shape (10 text cols + version bigint DEFAULT 0, all NOT NULL, "
+            "DEFAULT 'customer', PK(tenant_id), singleton partial index)"
+        )
 
         # C6 — control_memberships / control_federation / control_directory shapes
         for table, expected_cols, pk in (

@@ -39,6 +39,13 @@ class TenantRecord:
     federation_config_ref: str
     created_at: str
     updated_at: str
+    # PRD 07D-2e (D-2e-1): optimistic-concurrency version for lifecycle CAS writes (R-2c-LWW).
+    # Appended LAST with a safe default so every existing keyword construction still works;
+    # increments exactly once per successful compare_and_swap_tenant lifecycle mutation and
+    # NEVER on the A1 same-target no-op or a rolled-back conflict. This is the TenantRecord's
+    # own write-version — distinct from database_association_ref.version (the SecretRef
+    # association version; unrelated semantics).
+    version: int = 0
 
 
 class Role(Enum):

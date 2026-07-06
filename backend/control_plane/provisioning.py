@@ -46,13 +46,18 @@ from .distinctness import (
     PhysicalDistinctnessVerifier,
     secret_ref_key,
 )
-from .ports import ControlStore
+from .ports import ControlStore, ControlStoreConcurrencyError
 from .records import TenantLifecycleState, TenantRecord
 from .router_signal import NoOpRouterInvalidation, RouterInvalidationPort
 from .verification import TenantDatabaseProbe
 
 DEFAULT_TENANT_DB_PREFIX = "sp2_tenant_"
 REASON_SCHEMA_MISMATCH = "schema_mismatch"
+# PRD 07D-2e (D-2e-5): outcome reason for a verify() that YIELDS to a legitimate concurrent
+# lifecycle winner (e.g. a suspend that committed between this gate's read and its write).
+# An outcome-category string only — like REASON_SCHEMA_MISMATCH above, it is NOT audit/event
+# vocabulary (nothing records it; the frozen events.py action set is unchanged).
+REASON_CONCURRENT_LIFECYCLE_WINNER = "concurrent_lifecycle_winner"
 
 
 class ProvisioningError(Exception):
@@ -164,7 +169,34 @@ class ProvisioningVerificationService:
         ):
             raise ProvisioningError("illegal lifecycle transition")
 
-        rec = self._transition(rec, TenantLifecycleState.VERIFYING, events.DISTINCTNESS_VERIFICATION_STARTED, actor, correlation_id)
+        # PRD 07D-2e (D-2e-5): the VERIFYING entry write is the CAS arbiter against concurrent
+        # lifecycle writers (R-2c-LWW). On a lost race: re-read and YIELD to a legitimate
+        # winner (suspend/quarantine/decommission/fail) with the EXISTING non-routable
+        # VERIFICATION_INCOMPLETE result and zero side effects (the started event rolled back
+        # with the CAS — no started/terminal pairing violation); never auto-quarantine the
+        # winner. If the record is still mid-flight (Verifying/Provisioning — e.g. a sibling
+        # verifier), allow exactly ONE bounded retry at the fresh version; anything else
+        # (e.g. a READY winner) fails closed.
+        try:
+            rec = self._transition(rec, TenantLifecycleState.VERIFYING, events.DISTINCTNESS_VERIFICATION_STARTED, actor, correlation_id)
+        except ControlStoreConcurrencyError:
+            fresh = self._require(tenant_id)
+            if fresh.lifecycle_state in (
+                TenantLifecycleState.SUSPENDED,
+                TenantLifecycleState.QUARANTINED,
+                TenantLifecycleState.DECOMMISSIONED,
+                TenantLifecycleState.FAILED,
+            ):
+                return DistinctnessOutcome(DistinctnessResult.VERIFICATION_INCOMPLETE, REASON_CONCURRENT_LIFECYCLE_WINNER)
+            if fresh.lifecycle_state in (TenantLifecycleState.VERIFYING, TenantLifecycleState.PROVISIONING):
+                try:  # one bounded retry with the freshly observed version
+                    rec = self._transition(
+                        fresh, TenantLifecycleState.VERIFYING, events.DISTINCTNESS_VERIFICATION_STARTED, actor, correlation_id
+                    )
+                except ControlStoreConcurrencyError as exc:
+                    raise ProvisioningError("concurrent lifecycle transition") from exc
+            else:
+                raise ProvisioningError("concurrent lifecycle transition") from None
         intended_target = tenant_database_name(tenant_id)
 
         # Registry / lifecycle validation: reachability + version-gated schema (D-17).
@@ -234,7 +266,14 @@ class ProvisioningVerificationService:
                     correlation_id,
                     anomaly=True,
                 )
-            self._transition(rec, TenantLifecycleState.READY, events.DISTINCTNESS_VERIFICATION_PASSED, actor, correlation_id)
+            # PRD 07D-2e: a mid-gate CAS conflict on the READY commit fails closed (routing is
+            # never enabled over a concurrent lifecycle write). Under the 07D-2d READY-only
+            # suspend a legitimate suspend cannot land on VERIFYING, so a conflict here is a
+            # sibling writer (e.g. a concurrent re-verify/reassociate) — an error, not a yield.
+            try:
+                self._transition(rec, TenantLifecycleState.READY, events.DISTINCTNESS_VERIFICATION_PASSED, actor, correlation_id)
+            except ControlStoreConcurrencyError as exc:
+                raise ProvisioningError("concurrent lifecycle transition") from exc
             self._event(tenant_id, events.ROUTING_ENABLED, actor, correlation_id)
             return outcome
 
@@ -266,7 +305,14 @@ class ProvisioningVerificationService:
             lifecycle_state=TenantLifecycleState.VERIFYING,
             updated_at=now_iso(),
         )
-        # Fail-closed ordering (B7B-D5): required audit write precedes the irreversible put_tenant.
+        # PRD 07D-2e (D-2e-4): CAS-then-audit — the durable store commits the association
+        # overwrite and the required audit record in ONE transaction (conflict → no audit, no
+        # overwrite; audit failure → state rolled back). A lost race fails closed: the caller
+        # re-reads and re-issues against the winner's state.
+        try:
+            self._store.compare_and_swap_tenant(updated, expected_version=rec.version)
+        except ControlStoreConcurrencyError as exc:
+            raise ProvisioningError("concurrent lifecycle transition") from exc
         self._audit.record(
             actor=actor,
             tenant_id=tenant_id,
@@ -275,7 +321,6 @@ class ProvisioningVerificationService:
             to_state=TenantLifecycleState.VERIFYING.value,
             correlation_id=correlation_id,
         )
-        self._store.put_tenant(updated)
         # PRD 07D-2b.2a (AT-07D1-7): the NEW association reference is registered here — emit the
         # same reference-only marker onboarding emits for the initial association (IC-002 §69).
         self._event(tenant_id, events.SECRET_REFERENCE_REGISTERED, actor, correlation_id)
@@ -308,9 +353,13 @@ class ProvisioningVerificationService:
         correlation_id: str,
     ) -> TenantRecord:
         updated = replace(rec, lifecycle_state=to_state, updated_at=now_iso())
-        # Fail-closed ordering (PRD 06 B-7B / B7B-D5): the required audit write precedes the
-        # irreversible put_tenant commit, so a failed durable audit write rejects the transition
-        # with NO committed partial state. The in-memory default is unaffected (writes never fail).
+        # PRD 07D-2e (D-2e-4): version-predicated CAS first (uncommitted in the durable store),
+        # required audit append second — the store commits BOTH in one Control-DB transaction.
+        # A lost race raises ControlStoreConcurrencyError with NO audit written (no orphan);
+        # a failed required audit write rolls the state change back (the B7B-D5 fail-closed
+        # guarantee, now transactional). The typed conflict propagates to the caller's policy
+        # (verify()'s yield/retry at entry; fail-closed conversion elsewhere).
+        persisted = self._store.compare_and_swap_tenant(updated, expected_version=rec.version)
         self._audit.record(
             actor=actor,
             tenant_id=rec.tenant_id,
@@ -319,8 +368,7 @@ class ProvisioningVerificationService:
             to_state=to_state.value,
             correlation_id=correlation_id,
         )
-        self._store.put_tenant(updated)
-        return updated
+        return persisted
 
     def _event(self, tenant_id: str, action: str, actor: str, correlation_id: str) -> None:
         """Non-transition operational-audit event (reference-only; no state change)."""
@@ -349,16 +397,22 @@ class ProvisioningVerificationService:
         anomaly: bool = False,
     ) -> DistinctnessOutcome:
         self._ledger.remove(rec.tenant_id)
-        if anomaly:
-            # PRD 07D-2b.2a (IC-002 Failure Behavior): isolation-class anomalies MUST quarantine
-            # automatically at classification time (the automatic `Verifying → Quarantined` edge),
-            # so a tenant resting in Failed is by construction non-anomalous. The transition keeps
-            # the verification attempt's terminal action (started/terminal pairing unchanged);
-            # TenantQuarantined marks the hold and IsolationAnomaly the incident (§23 S7/S8) —
-            # evidence-preserving: the record and any physical database are retained unmodified.
-            self._transition(rec, TenantLifecycleState.QUARANTINED, event_action, actor, correlation_id)
-            self._event(rec.tenant_id, events.TENANT_QUARANTINED, actor, correlation_id)
-            self._event(rec.tenant_id, events.ISOLATION_ANOMALY, actor, correlation_id)
-        else:
-            self._transition(rec, TenantLifecycleState.FAILED, event_action, actor, correlation_id)
+        # PRD 07D-2e: a CAS conflict on a terminal transition fails closed as a ProvisioningError
+        # (a legitimate suspend cannot land on VERIFYING under 07D-2d B2, so a conflict here is a
+        # sibling writer; the caller re-issues against the winner's state — never a lost write).
+        try:
+            if anomaly:
+                # PRD 07D-2b.2a (IC-002 Failure Behavior): isolation-class anomalies MUST quarantine
+                # automatically at classification time (the automatic `Verifying → Quarantined` edge),
+                # so a tenant resting in Failed is by construction non-anomalous. The transition keeps
+                # the verification attempt's terminal action (started/terminal pairing unchanged);
+                # TenantQuarantined marks the hold and IsolationAnomaly the incident (§23 S7/S8) —
+                # evidence-preserving: the record and any physical database are retained unmodified.
+                self._transition(rec, TenantLifecycleState.QUARANTINED, event_action, actor, correlation_id)
+                self._event(rec.tenant_id, events.TENANT_QUARANTINED, actor, correlation_id)
+                self._event(rec.tenant_id, events.ISOLATION_ANOMALY, actor, correlation_id)
+            else:
+                self._transition(rec, TenantLifecycleState.FAILED, event_action, actor, correlation_id)
+        except ControlStoreConcurrencyError as exc:
+            raise ProvisioningError("concurrent lifecycle transition") from exc
         return DistinctnessOutcome(result, reason)

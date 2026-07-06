@@ -75,6 +75,10 @@ _PIN_004 = "8194408e62f08533e649612981f10089b8a3b1b0"
 _PIN_005 = "a0df9ec58b6825aa298b1b9656cc0028d9831c14"
 _PIN_006 = "c929af89da85ec7614b716bdb40af611da9613f2"
 _PIN_007 = "aa6066a7398cfb81e8e96067927023c3f11bb391"
+# PRD 07D-2e: 009 adds the control_tenants CAS version column (R-2c-LWW closure). Pinned in the
+# same lockstep pattern: the MCC live-PG harness applies + pins it under _REVIEWED_009_BLOB.
+_DDL_009 = _CONTROL / "009_control_tenants_cas_version.sql"
+_PIN_009 = "64f8227e829d446a74efeb3784e06b0e28f47549"
 _MCC_HARNESS = _scan.BACKEND_ROOT / "tests" / "control_plane" / "requires_pg" / "test_pg_control_schema_mcc.py"
 # (harness var name, guard pin, DDL path) — var names are LITERAL so the b7c1r2 meta-guard's pin-var scan sees them.
 _MCC_PINS = [
@@ -82,6 +86,7 @@ _MCC_PINS = [
     ("_REVIEWED_005_BLOB", _PIN_005, _DDL_005),
     ("_REVIEWED_006_BLOB", _PIN_006, _DDL_006),
     ("_REVIEWED_007_BLOB", _PIN_007, _DDL_007),
+    ("_REVIEWED_009_BLOB", _PIN_009, _DDL_009),
 ]
 
 
