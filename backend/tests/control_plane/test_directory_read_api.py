@@ -64,10 +64,12 @@ def test_dispatcher_directory_routes() -> None:
 
 def test_directory_http_roundtrip_best_effort() -> None:
     from control_plane.adapters.providers.http_read_api import make_server
+    from control_plane.main import ControlPlane
     from import_service.adapters.providers.http_directory_read import HttpDirectoryRead
 
     try:
-        server, base = make_server(_store(), "127.0.0.1", 0)
+        # PRD 07E-1: make_server binds a ControlPlane (per-request UoW), not a store.
+        server, base = make_server(ControlPlane(store=_store()), "127.0.0.1", 0)
     except OSError:
         return
     thread = threading.Thread(target=server.serve_forever, daemon=True)

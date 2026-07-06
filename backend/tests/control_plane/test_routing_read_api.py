@@ -81,11 +81,13 @@ def test_http_transport_roundtrip_best_effort() -> None:
     # Exercises the REAL stdlib HTTP server (control plane) against the urllib routing
     # client (database_router). Self-skips if sockets are unavailable in the sandbox.
     from control_plane.adapters.providers.http_read_api import make_server
+    from control_plane.main import ControlPlane
     from database_router.adapters.providers.http_routing_read import HttpRoutingRead
 
     store = _store_with_ready_tenant()
     try:
-        server, base = make_server(store, "127.0.0.1", 0)
+        # PRD 07E-1: make_server binds a ControlPlane (per-request UoW), not a store.
+        server, base = make_server(ControlPlane(store=store), "127.0.0.1", 0)
     except OSError:
         return  # binding unavailable; transport check skipped
     thread = threading.Thread(target=server.serve_forever, daemon=True)
