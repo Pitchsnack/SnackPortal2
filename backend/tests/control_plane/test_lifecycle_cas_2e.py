@@ -173,6 +173,28 @@ def test_inmemory_cas_unknown_tenant_fails_closed() -> None:
     assert store.get_tenant("ghost") is None
 
 
+def test_3a_inmemory_two_writer_convergence() -> None:
+    # PRD 07D-3a DS-1: two logical writers race the same tenant transition off the SAME
+    # pre-image version — exactly one CAS wins; the refused writer surfaces the typed error
+    # and leaves state/version untouched. The in-memory Tier-1 separate-instance convergence
+    # floor mirroring the live-PG two-instance proof (test_pg_control_store_runtime_wiring).
+    store = InMemoryControlStore()
+    rec = _seed(store, state=TenantLifecycleState.READY)
+    writer_a = replace(rec, lifecycle_state=TenantLifecycleState.SUSPENDED, updated_at="t1")
+    writer_b = replace(rec, lifecycle_state=TenantLifecycleState.SUSPENDED, updated_at="t1b")
+    won = store.compare_and_swap_tenant(writer_a, expected_version=0)
+    assert won.version == 1, "the first writer must win with exactly one version increment"
+    raised = False
+    try:
+        store.compare_and_swap_tenant(writer_b, expected_version=0)  # same stale pre-image
+    except ControlStoreConcurrencyError:
+        raised = True
+    assert raised, "the second writer off the same pre-image must surface the typed conflict"
+    final = store.get_tenant(rec.tenant_id)
+    assert final is not None and final.lifecycle_state is TenantLifecycleState.SUSPENDED, "winner preserved"
+    assert final.version == 1 and final.updated_at == "t1", f"exactly ONE durable transition may remain after the two-writer race: {final}"
+
+
 # --- registry CAS routing -----------------------------------------------------------------------
 def test_registry_transition_cas_success_increments_version_once() -> None:
     store = InMemoryControlStore()
@@ -413,6 +435,7 @@ _TESTS = [
     test_inmemory_cas_success_increments_version,
     test_inmemory_cas_stale_version_fails_closed,
     test_inmemory_cas_unknown_tenant_fails_closed,
+    test_3a_inmemory_two_writer_convergence,
     test_registry_transition_cas_success_increments_version_once,
     test_registry_transition_cas_conflict_no_state_change_no_orphan_audit,
     test_a1_noop_does_not_increment_version_or_reach_cas,
