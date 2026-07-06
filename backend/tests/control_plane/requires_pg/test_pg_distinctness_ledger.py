@@ -20,6 +20,8 @@ import hashlib
 import os
 import pathlib
 import sys
+import threading
+import time
 from dataclasses import replace
 from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit
@@ -29,11 +31,13 @@ import _pg  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))  # backend on path
 
+from control_plane.adapters.providers import postgres_distinctness_ledger as ledger_mod  # noqa: E402
 from control_plane.adapters.providers.postgres_distinctness_ledger import PostgresDistinctnessLedger  # noqa: E402
-from control_plane.distinctness import DistinctnessEvidence  # noqa: E402
+from control_plane.distinctness import DistinctnessCollisionError, DistinctnessEvidence  # noqa: E402
 from shared.secrets import SecretRef, SecretStore, SecretValue  # noqa: E402
 
 _DDL = pathlib.Path(__file__).resolve().parents[4] / "infrastructure" / "db" / "control" / "001_distinctness_ledger.sql"
+_DDL_008 = pathlib.Path(__file__).resolve().parents[4] / "infrastructure" / "db" / "control" / "008_distinctness_fingerprint_unique.sql"
 _CONTROL_REF = SecretRef(store_ref="control_secret", version="1")
 
 
@@ -354,6 +358,174 @@ def test_b4_fail_closed_matrix(admin_dsn: str) -> None:
     _b4_permission_denied_optional(admin_dsn)
 
 
+# --- PRD 07D-2c live additions (008 fingerprint uniqueness + the two-writer interleave, L-3) ---
+# The reviewed 008 DDL artifact's git blob hash (07D-2c D-1 pin; LF-normalized, matching the
+# default-suite blob guard's _PIN_008 in lockstep — b7c1r2 INV-A/INV-B).
+_REVIEWED_008_BLOB = "c510ebbaa881e3fc325dbb8ee8bf49b114e522ab"
+
+
+def _fresh_table_2c(ledger: PostgresDistinctnessLedger) -> None:
+    """Fresh ledger table WITH the 07D-2c fingerprint-uniqueness constraint applied (001 + 008)."""
+    _exec(ledger, "DROP TABLE IF EXISTS control_distinctness_ledger")
+    _exec(ledger, _DDL.read_text(encoding="utf-8"))
+    _exec(ledger, _DDL_008.read_text(encoding="utf-8"))
+
+
+def test_2c_008_pin_and_idempotent_apply(admin_dsn: str) -> None:
+    # D-1: the applied 008 is byte-identical to the reviewed artifact (git blob pin), and the
+    # DDL is additive/idempotent — re-applying IF NOT EXISTS over live rows preserves them.
+    assert _git_blob_sha1(_DDL_008) == _REVIEWED_008_BLOB, f"008 DDL must equal the reviewed blob {_REVIEWED_008_BLOB}"
+    ledger = _ledger(admin_dsn)
+    _fresh_table_2c(ledger)
+    try:
+        ledger.record_evidence("t1", _evidence("t1"))
+        _exec(ledger, _DDL_008.read_text(encoding="utf-8"))  # apply again — must not error, rows preserved
+        assert "t1" in ledger.evidence_excluding("other"), "008 re-apply must preserve existing rows (idempotent)"
+    finally:
+        _drop_table(ledger)
+
+
+def test_2c_cross_tenant_fingerprint_collision_sequential(admin_dsn: str) -> None:
+    # §9 check 2 (MC-1 kill site, live leg): a SECOND tenant recording the SAME fingerprint is
+    # refused with the typed collision (23505 mapped); the ledger still holds only the winner.
+    ledger = _ledger(admin_dsn)
+    _fresh_table_2c(ledger)
+    try:
+        ev_win = _evidence("t_win")
+        ledger.record_evidence("t_win", ev_win)
+        loser = replace(
+            _evidence("t_lose"),
+            system_identifier=ev_win.system_identifier,
+            database_identity=ev_win.database_identity,  # same fingerprint, different tenant
+        )
+        raised = False
+        try:
+            _ledger(admin_dsn).record_evidence("t_lose", loser)
+        except DistinctnessCollisionError:
+            raised = True
+        assert raised, "a cross-tenant same-fingerprint insert must surface DistinctnessCollisionError"
+        rows = _raw_rows(ledger)
+        assert len(rows) == 1 and rows[0][0] == "t_win", f"exactly the winner's row must survive: {rows}"
+    finally:
+        _drop_table(ledger)
+
+
+def test_2c_same_tenant_upsert_legal_and_remove_frees_fingerprint(admin_dsn: str) -> None:
+    # §9 check 3: same-tenant re-record (upsert) stays legal; a fingerprint change onto a value
+    # another tenant holds is refused; remove() frees the fingerprint for a new claimant.
+    ledger = _ledger(admin_dsn)
+    _fresh_table_2c(ledger)
+    try:
+        ev1 = _evidence("t1")
+        ledger.record_evidence("t1", ev1)
+        ledger.record_evidence("t1", ev1)  # same-tenant re-record of the SAME fingerprint: legal
+        ledger.record_evidence("t2", _evidence("t2"))  # distinct fingerprint: legal
+        colliding = replace(
+            _evidence("t2"),
+            system_identifier=ev1.system_identifier,
+            database_identity=ev1.database_identity,  # t2 changing onto t1's fingerprint
+        )
+        raised = False
+        try:
+            ledger.record_evidence("t2", colliding)
+        except DistinctnessCollisionError:
+            raised = True
+        assert raised, "a fingerprint change onto another tenant's value must be refused"
+        assert ledger.evidence_excluding("t1")["t2"].database_identity == "t2:42", "the refused change must not land"
+        ledger.remove("t1")  # frees the fingerprint
+        ledger.record_evidence("t2", colliding)  # the freed fingerprint is claimable again
+        assert ledger.evidence_excluding("t1")["t2"].database_identity == ev1.database_identity
+    finally:
+        _drop_table(ledger)
+
+
+def test_2c_two_writer_interleave(admin_dsn: str) -> None:
+    # L-3 discharge (D-9 recipe; the C19 precedent): writer A INSERTs the fingerprint and holds
+    # it UNCOMMITTED; writer B — the REAL adapter record_evidence on its own thread — INSERTs
+    # the SAME fingerprint under another tenant and is observed LOCK-waiting on the in-doubt
+    # unique key via pg_stat_activity; A commits PROMPTLY (CI PGOPTIONS lock_timeout=5000 kills
+    # a blocked INSERT at 5 s); B surfaces the unique violation mapped to the typed collision;
+    # exactly one surviving row. All connections come from the adapter (driver stays confined).
+    ledger = _ledger(admin_dsn)
+    _fresh_table_2c(ledger)
+    winner_conn = None
+    try:
+        ev_w = _evidence("t_win")
+        ev_l = replace(
+            _evidence("t_lose"),
+            system_identifier=ev_w.system_identifier,
+            database_identity=ev_w.database_identity,  # the SAME fingerprint
+        )
+        # Writer A: the winner's recording — the adapter's own upsert statement, executed on a
+        # held-open connection and NOT yet committed (the overlap window the gate cannot see).
+        winner_conn = ledger._connect()
+        with winner_conn.cursor() as cur:
+            cur.execute(
+                ledger_mod._UPSERT,
+                (
+                    "t_win",
+                    ev_w.system_identifier,
+                    ev_w.database_identity,
+                    ev_w.observed_target,
+                    ev_w.secret_ref_key,
+                    ev_w.sentinel_namespace,
+                    ev_w.sentinel_token,
+                    ev_w.sentinel_written,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+        # Writer B: the REAL adapter path on its own thread (its INSERT blocks on the in-doubt
+        # unique key until A's transaction resolves). Outcome captured; failures assertion-shaped.
+        outcome: dict = {}
+
+        def _loser() -> None:
+            try:
+                _ledger(admin_dsn).record_evidence("t_lose", ev_l)
+                outcome["result"] = "no-error"
+            except DistinctnessCollisionError:
+                outcome["result"] = "collision"  # mapped + typed — NOT a raw driver exception
+            except Exception as exc:  # a raw driver error leaking past the adapter = FAIL
+                outcome["result"] = f"raw:{type(exc).__name__}"
+
+        loser_thread = threading.Thread(target=_loser)
+        loser_thread.start()
+
+        # Deterministic overlap proof: poll until B is visibly LOCK-blocked on A's transaction.
+        mon = ledger._connect()
+        try:
+            deadline = time.time() + 30
+            blocked = False
+            while time.time() < deadline:
+                with mon.cursor() as cur:
+                    cur.execute("SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'")
+                    n = cur.fetchone()[0]
+                mon.rollback()  # end the read txn so each poll observes fresh activity
+                if n and n >= 1:
+                    blocked = True
+                    break
+                time.sleep(0.05)
+            assert blocked, "the losing writer never LOCK-blocked on the winner's uncommitted row — overlap not established"
+        finally:
+            mon.close()
+        print("PASS: 2c overlap established (loser LOCK-blocked while the winner's insert is uncommitted)")
+
+        winner_conn.commit()  # winner commits -> B's INSERT surfaces the unique violation
+        loser_thread.join(timeout=30)
+        assert not loser_thread.is_alive(), "loser thread must finish after the winner commits"
+        assert outcome.get("result") == "collision", (
+            f"the lost race must surface as the mapped DistinctnessCollisionError, got: {outcome.get('result')}"
+        )
+        rows = _raw_rows(ledger)
+        assert len(rows) == 1 and rows[0][0] == "t_win", f"exactly the winner's row must survive: {rows}"
+    finally:
+        if winner_conn is not None:
+            try:
+                winner_conn.close()  # close BEFORE the drop so an aborted winner txn cannot block it
+            except Exception:
+                pass
+        _drop_table(_ledger(admin_dsn))
+
+
 if __name__ == "__main__":
     _pg.run(
         [
@@ -364,5 +536,9 @@ if __name__ == "__main__":
             test_b4_cross_instance_durability,
             test_b4_remove_cross_instance,
             test_b4_fail_closed_matrix,
+            test_2c_008_pin_and_idempotent_apply,
+            test_2c_cross_tenant_fingerprint_collision_sequential,
+            test_2c_same_tenant_upsert_legal_and_remove_frees_fingerprint,
+            test_2c_two_writer_interleave,
         ]
     )

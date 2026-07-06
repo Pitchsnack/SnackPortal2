@@ -29,6 +29,7 @@ from control_plane import events  # noqa: E402
 from control_plane import main as cp_main  # noqa: E402
 from control_plane.adapters.providers import postgres_distinctness_ledger as ledger_mod  # noqa: E402
 from control_plane.distinctness import (  # noqa: E402
+    DistinctnessCollisionError,
     DistinctnessEvidence,
     DistinctnessLedger,
     InMemoryDistinctnessLedger,
@@ -876,6 +877,98 @@ def test_adapter_sql_columns_subset_of_ddl() -> None:
     assert _insert_columns()[0] == "tenant_id"
 
 
+# === PRD 07D-2c — typed fingerprint-collision refusal (adapter mapping + in-memory parity) =======
+class _SqlstateError(RuntimeError):
+    """Driver-shaped error carrying a SQLSTATE (the duck-typed attribute the adapter maps on)."""
+
+    def __init__(self, msg: str, sqlstate: str) -> None:
+        super().__init__(msg)
+        self.sqlstate = sqlstate
+
+
+class _ExcRaisingCursor(_FakeCursor):
+    """Fake cursor whose execute raises a GIVEN exception (records the SQL first)."""
+
+    def __init__(self, exc: Exception) -> None:
+        super().__init__()
+        self._exc = exc
+
+    def execute(self, sql, params=None):
+        self.executed.append((sql, params))
+        raise self._exc
+
+
+def test_2c_durable_collision_sqlstate_maps_to_typed_error() -> None:
+    # MC-1 kill site (unit leg): a unique-violation SQLSTATE 23505 from record_evidence maps to
+    # the typed, driver-free DistinctnessCollisionError; no commit; the connection still closes.
+    driver_exc = _SqlstateError("unique violation", "23505")
+    cur = _ExcRaisingCursor(driver_exc)
+    conn = _FakeConn(cur)
+    restore = _patch_connect(conn)
+    try:
+        raised = None
+        try:
+            _adapter().record_evidence("t2", _ev("t2"))
+        except DistinctnessCollisionError as exc:
+            raised = exc
+        assert raised is not None, "SQLSTATE 23505 must map to DistinctnessCollisionError"
+        assert raised.__cause__ is driver_exc, "the driver error must be chained as the cause"
+        assert conn.committed == 0, "a losing write must not commit"
+        assert conn.closed == 1, "the connection must still be closed"
+    finally:
+        restore()
+
+
+def test_2c_durable_other_errors_propagate_unmapped() -> None:
+    # D-4: EVERY other error keeps propagating unchanged (the fail-closed-by-raise contract is
+    # untouched): a non-23505 SQLSTATE and a sqlstate-less error both surface as themselves.
+    for exc in (_SqlstateError("not-null violation", "23502"), RuntimeError("connection dropped")):
+        cur = _ExcRaisingCursor(exc)
+        conn = _FakeConn(cur)
+        restore = _patch_connect(conn)
+        try:
+            raised = None
+            try:
+                _adapter().record_evidence("t1", _ev("t1"))
+            except Exception as got:
+                raised = got
+            assert raised is exc, f"non-collision errors must propagate unchanged, got {raised!r}"
+            assert not isinstance(raised, DistinctnessCollisionError)
+            assert conn.committed == 0 and conn.closed == 1
+        finally:
+            restore()
+
+
+def test_2c_collision_parity_in_memory_and_durable() -> None:
+    # D-5 parity pair (MC-2 kill site): both ledgers raise the IDENTICAL typed error under the
+    # IDENTICAL predicate — ANOTHER tenant already holding an equal fingerprint. Same-tenant
+    # re-record (upsert) stays legal; distinct-fingerprint multi-tenant recording stays legal.
+    led = InMemoryDistinctnessLedger()
+    led.record_evidence("t1", _ev("t1", system_identifier="sysX", database_identity="db:9"))
+    led.record_evidence("t1", _ev("t1", system_identifier="sysX", database_identity="db:9"))  # same-tenant upsert legal
+    led.record_evidence("t2", _ev("t2"))  # distinct fingerprint legal
+    in_memory_raised = None
+    try:
+        led.record_evidence("t3", _ev("t3", system_identifier="sysX", database_identity="db:9"))
+    except DistinctnessCollisionError as exc:
+        in_memory_raised = exc
+    assert in_memory_raised is not None, "in-memory: an equal fingerprint under another tenant must refuse"
+    assert set(led.evidence_excluding("").keys()) == {"t1", "t2"}, "the losing write must record nothing"
+
+    cur = _ExcRaisingCursor(_SqlstateError("unique violation", "23505"))
+    restore = _patch_connect(_FakeConn(cur))
+    try:
+        durable_raised = None
+        try:
+            _adapter().record_evidence("t3", _ev("t3", system_identifier="sysX", database_identity="db:9"))
+        except DistinctnessCollisionError as exc:
+            durable_raised = exc
+        assert durable_raised is not None, "durable: the mapped 23505 must refuse identically"
+    finally:
+        restore()
+    assert type(in_memory_raised) is type(durable_raised) is DistinctnessCollisionError, "IDENTICAL typed error on both paths"
+
+
 _TESTS = [
     test_inmemory_inventory_semantics,
     test_default_ledger_is_in_memory,
@@ -910,6 +1003,9 @@ _TESTS = [
     test_ddl_is_reference_only_idempotent_additive,
     test_ledger_row_matches_evidence_fields,
     test_adapter_applies_no_ddl,
+    test_2c_durable_collision_sqlstate_maps_to_typed_error,
+    test_2c_durable_other_errors_propagate_unmapped,
+    test_2c_collision_parity_in_memory_and_durable,
 ]
 
 if __name__ == "__main__":

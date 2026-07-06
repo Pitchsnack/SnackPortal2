@@ -35,6 +35,8 @@ from .audit import ControlPlaneAudit
 from .distinctness import (
     REASON_CONTROL_DB_COLLISION,
     REASON_INCOMPLETE_EVIDENCE,
+    REASON_TENANT_COLLISION,
+    DistinctnessCollisionError,
     DistinctnessEvidence,
     DistinctnessEvidenceProvider,
     DistinctnessLedger,
@@ -213,7 +215,25 @@ class ProvisioningVerificationService:
         )
 
         if outcome.result is DistinctnessResult.VERIFIED and evidence is not None:
-            self._ledger.record_evidence(tenant_id, evidence)
+            # PRD 07D-2c: the recording write is the atomic arbiter of the §6.1 fingerprint
+            # rule. A DistinctnessCollisionError here is a LOST concurrent race — another
+            # tenant's evidence landed between this gate's inventory read (the CHECK feeding
+            # the verifier above) and this ACT, so the verifier could not see it. Route it to
+            # the EXISTING IC-010 §P / IC-002 anomaly path (auto-quarantine via _fail): the
+            # loser never reaches Ready/RoutingEnabled, the winner is unaffected, and no new
+            # event names are introduced.
+            try:
+                self._ledger.record_evidence(tenant_id, evidence)
+            except DistinctnessCollisionError:
+                return self._fail(
+                    rec,
+                    DistinctnessResult.ISOLATION_ANOMALY,
+                    REASON_TENANT_COLLISION,
+                    events.DISTINCTNESS_VERIFICATION_FAILED,
+                    actor,
+                    correlation_id,
+                    anomaly=True,
+                )
             self._transition(rec, TenantLifecycleState.READY, events.DISTINCTNESS_VERIFICATION_PASSED, actor, correlation_id)
             self._event(tenant_id, events.ROUTING_ENABLED, actor, correlation_id)
             return outcome

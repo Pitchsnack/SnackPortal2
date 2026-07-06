@@ -332,6 +332,21 @@ class DeprovisionOutcome:
     reason: str  # non-sensitive category (REASON_* above)
 
 
+class _TerminalLatch:
+    """Emit-once tracker for the deprovision terminal record (PRD 07D-2c O-1).
+
+    ``attempted`` flips True immediately BEFORE each terminal emit attempt
+    (``TenantDeprovisionCompleted`` | ``TenantDeprovisionFailed``) and for NO other event —
+    ``TenantQuarantined`` is a registry-side hold marker, not a terminal, and must never
+    satisfy the latch. The outer exception handler in ``deprovision_tenant_database``
+    consults it so a request records at MOST one terminal even when a port raises mid-flow
+    or the audit sink itself fails during a terminal emit (no double terminal; the
+    exactly-one-terminal Requested/Completed|Failed pairing is preserved)."""
+
+    def __init__(self) -> None:
+        self.attempted: bool = False
+
+
 class RecoveryCompensationService:
     """Explicit-only, ownership-proof-gated tenant-database compensation (IC-002).
 
@@ -371,23 +386,59 @@ class RecoveryCompensationService:
         target = tenant_database_name(tenant_id)  # §7.2: recomputed, never caller-supplied
         self._event(tenant_id, events.TENANT_DEPROVISION_REQUESTED, actor, correlation_id)
 
+        # O-1 (PRD 07D-2c): everything after the Requested record runs under an emit-once
+        # terminal guarantee. The most production-plausible raiser is the durable ledger read
+        # (it propagates by design — the port this slice modifies); without this handler a
+        # raise would strand the trail at Requested-with-no-terminal. On a raise with no
+        # terminal attempted yet: best-effort ``TenantDeprovisionFailed`` DIRECTLY (not via
+        # _fail — its registry/quarantine calls touch the very ports that may be down), then
+        # RE-RAISE the original exception (caller-visible semantics preserved; no new event
+        # names, no new reasons). If the audit sink itself is the failing port the best-effort
+        # emit is swallowed and the original error prevails — a Requested-without-terminal
+        # trail then remains possible only while the sink is down (documented residual).
+        latch = _TerminalLatch()
+        try:
+            return self._proven_deprovision(tenant_id, target, latch, actor, correlation_id)
+        except Exception:
+            if not latch.attempted:
+                latch.attempted = True
+                try:
+                    self._event(tenant_id, events.TENANT_DEPROVISION_FAILED, actor, correlation_id)
+                except Exception:
+                    pass  # audit sink down: swallow the emit failure; the original error prevails
+            raise
+
+    def _proven_deprovision(
+        self,
+        tenant_id: str,
+        target: str,
+        latch: _TerminalLatch,
+        actor: str,
+        correlation_id: str,
+    ) -> DeprovisionOutcome:
+        """The ownership-proof-gated body (runs under the O-1 emit-once terminal latch)."""
         # §7 elements 1 + 2 + 5 (name-leg) — the non-content proof.
         failure = self._non_content_proof(tenant_id, target, fingerprint=None)
         if failure is None:
             # §7 element 3 — canonical association-reference shape for THIS tenant.
             record = self._registry.get_tenant_status(tenant_id)
-            assert record is not None  # element 1 just proved existence
-            if tenant_id_from_dsn_ref(record.database_association_ref.store_ref) != tenant_id:
+            if record is None:
+                # O-1 (PRD 07D-2c, pin d): element 1 proved existence moments ago, so a None
+                # here is a concurrent registry change — route to the terminal Failed path,
+                # never an assert crash (an AssertionError would strand the audit trail).
+                failure = REASON_UNKNOWN_TENANT
+            elif tenant_id_from_dsn_ref(record.database_association_ref.store_ref) != tenant_id:
                 failure = REASON_NON_CANONICAL_REF
         if failure is not None:
-            return self._fail(tenant_id, target, failure, actor, correlation_id)
+            return self._fail(tenant_id, target, failure, actor, correlation_id, latch=latch)
 
         exists = self._inspection.database_exists(target)
         if exists is None:
-            return self._fail(tenant_id, target, REASON_INSPECTION_UNAVAILABLE, actor, correlation_id)
+            return self._fail(tenant_id, target, REASON_INSPECTION_UNAVAILABLE, actor, correlation_id, latch=latch)
         if exists is False:
             # §8.3 idempotency by outcome: the non-content proof identifies the same eligible
             # tenant and the target is already absent — a safe no-op completion (no DROP).
+            latch.attempted = True
             self._event(tenant_id, events.TENANT_DEPROVISION_COMPLETED, actor, correlation_id)
             return DeprovisionOutcome(tenant_id=tenant_id, target=target, dropped=False, completed=True, reason=REASON_ABSENT_NOOP)
 
@@ -395,14 +446,14 @@ class RecoveryCompensationService:
         # I/O step — the §7.1 window the pre-DROP re-validation below exists to close).
         inspection = self._inspection.inspect_database(target)
         if inspection is None:
-            return self._fail(tenant_id, target, REASON_INSPECTION_UNAVAILABLE, actor, correlation_id)
+            return self._fail(tenant_id, target, REASON_INSPECTION_UNAVAILABLE, actor, correlation_id, latch=latch)
         own_evidence = dict(self._ledger.evidence_excluding(_NO_TENANT)).get(tenant_id)
         if own_evidence is not None and (own_evidence.fingerprint != inspection.fingerprint or own_evidence.observed_target != target):
             # The tenant's own recorded physical identity disagrees with the observed one —
             # a swapped/restored database is evidence, never a droppable target (§7 element 5).
-            return self._fail(tenant_id, target, REASON_FINGERPRINT_MISMATCH, actor, correlation_id)
+            return self._fail(tenant_id, target, REASON_FINGERPRINT_MISMATCH, actor, correlation_id, latch=latch)
         if classify_content(inspection, supported_schema_versions=self._supported) == CONTENT_NON_EMPTY:
-            return self._fail(tenant_id, target, REASON_CONTENT_NOT_EMPTY, actor, correlation_id)
+            return self._fail(tenant_id, target, REASON_CONTENT_NOT_EMPTY, actor, correlation_id, latch=latch)
 
         # §7.1 TOCTOU rule (R1-9) + §7 element 5 fingerprint legs: ONE final re-validation of
         # the critical non-content proof IMMEDIATELY before the destructive step — re-reads
@@ -412,14 +463,15 @@ class RecoveryCompensationService:
         # change between the first proof and this point refuses with NO DROP. MR-13 kill site.
         failure = self._non_content_proof(tenant_id, target, fingerprint=inspection.fingerprint)
         if failure is not None:
-            return self._fail(tenant_id, target, failure, actor, correlation_id)
+            return self._fail(tenant_id, target, failure, actor, correlation_id, latch=latch)
 
         try:
             self._operator.deprovision(target=target)
         except Exception:
             # Operational failure (not an integrity anomaly): terminal Failed, no quarantine,
             # no state change — never a partial/ambiguous success (fail closed).
-            return self._fail(tenant_id, target, REASON_DEPROVISION_FAILED, actor, correlation_id, quarantine=False)
+            return self._fail(tenant_id, target, REASON_DEPROVISION_FAILED, actor, correlation_id, quarantine=False, latch=latch)
+        latch.attempted = True
         self._event(tenant_id, events.TENANT_DEPROVISION_COMPLETED, actor, correlation_id)
         return DeprovisionOutcome(tenant_id=tenant_id, target=target, dropped=True, completed=True, reason=REASON_DEPROVISIONED)
 
@@ -474,18 +526,23 @@ class RecoveryCompensationService:
         correlation_id: str,
         *,
         quarantine: bool = True,
+        latch: _TerminalLatch,
     ) -> DeprovisionOutcome:
         """Terminal refusal: quarantine where applicable (R1-5), then the Failed record.
 
         Quarantine fires ONLY for isolation/integrity-class reasons AND only when the
         current state is inside ``quarantine_tenant``'s allowed_from ({Provisioning,
         Failed}); an already-Quarantined tenant STAYS (a re-quarantine would raise) and
-        ineligible states keep the Requested→Failed trail with zero state change."""
+        ineligible states keep the Requested→Failed trail with zero state change. The
+        O-1 latch (PRD 07D-2c) flips immediately before the terminal emit — NOT for the
+        ``TenantQuarantined`` marker above it — so a quarantine-port raise still yields a
+        best-effort terminal upstream, while a sink raise mid-terminal never doubles it."""
         if quarantine and reason in _ANOMALY_REASONS:
             record = self._registry.get_tenant_status(tenant_id)
             if record is not None and record.lifecycle_state in _QUARANTINE_ELIGIBLE_STATES:
                 self._registry.quarantine_tenant(tenant_id, actor=actor, correlation_id=correlation_id)
                 self._event(tenant_id, events.TENANT_QUARANTINED, actor, correlation_id)
+        latch.attempted = True
         self._event(tenant_id, events.TENANT_DEPROVISION_FAILED, actor, correlation_id)
         return DeprovisionOutcome(tenant_id=tenant_id, target=target, dropped=False, completed=False, reason=reason)
 

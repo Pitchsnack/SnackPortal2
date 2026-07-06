@@ -560,6 +560,271 @@ def test_final_proof_re_proves_own_evidence_leg() -> None:
     assert service._non_content_proof("t1", target, fingerprint=observed_fingerprint) is None
 
 
+# --- AT-PMV46-11 — own-evidence target-mismatch differentials (fingerprint MATCHES) ------------
+def test_own_target_mismatch_differential_pre_census_leg() -> None:
+    # PRD 07D-2c (AT-PMV46-11; MC-4 kill site): own evidence whose FINGERPRINT MATCHES the
+    # observed database but whose observed_target DIFFERS must refuse at the PRE-CENSUS
+    # own-evidence check with fingerprint_mismatch. The census content is deliberately
+    # NON-EMPTY: if the observed_target disjunct were deleted, the flow would fall through to
+    # the census and report content_not_empty — so the asserted reason isolates the disjunct.
+    store, audit, registry, op, ledger, inspection, service, _ = _plane(state=TenantLifecycleState.FAILED)
+    target = tenant_database_name("t1")
+    insp = _bootstrap_inspection(target)
+    tables = dict(insp.user_tables)
+    tables["public.startups"] = 2  # non-empty: the fall-through reason would differ
+    inspection.set_database(replace(insp, user_tables=tables))
+    ledger.record_evidence(
+        "t1",
+        DistinctnessEvidence(
+            system_identifier="cluster_a",  # fingerprint MATCHES the observed inspection
+            database_identity=f"{target}:101",
+            observed_target=tenant_database_name("elsewhere"),  # recorded target DIFFERS
+            secret_ref_key=tenant_dsn_ref("t1"),
+            sentinel_namespace="dv_sentinel_t1",
+            sentinel_token="tok",
+            sentinel_written=True,
+        ),
+    )
+    out = _deprovision(service)
+    assert out.reason == REASON_FINGERPRINT_MISMATCH, f"the observed_target disjunct must refuse: {out}"
+    assert not out.completed and op.deprovision_calls == []
+
+
+def test_own_target_mismatch_differential_final_proof_leg() -> None:
+    # PRD 07D-2c (AT-PMV46-11): the §7.1 final-proof own-evidence leg refuses on an
+    # observed_target mismatch even when the fingerprint matches (the re-proof disjunct,
+    # exercised directly — the sibling of the AT-PMV46-2 fingerprint-differing case).
+    store, audit, registry, op, ledger, inspection, service, _ = _plane()
+    target = tenant_database_name("t1")
+    op.provision("t1", target=target)
+    observed_fingerprint = f"::{target}:db"  # the in-memory double's identity for the target
+    ledger.record_evidence(
+        "t1",
+        DistinctnessEvidence(
+            system_identifier="",
+            database_identity=f"{target}:db",  # fingerprint MATCHES
+            observed_target=tenant_database_name("elsewhere"),  # recorded target DIFFERS
+            secret_ref_key=tenant_dsn_ref("t1"),
+            sentinel_namespace="dv_sentinel_t1",
+            sentinel_token="tok",
+            sentinel_written=True,
+        ),
+    )
+    assert service._non_content_proof("t1", target, fingerprint=observed_fingerprint) == REASON_FINGERPRINT_MISMATCH
+
+
+def test_own_target_mismatch_differential_scan_leg() -> None:
+    # PRD 07D-2c (AT-PMV46-11): the scan's own-tenant leg flags fingerprint_mismatch when the
+    # recorded observed_target differs from the database name while the fingerprint matches.
+    store, audit, registry, op, ledger, inspection, service, scan = _plane(state=TenantLifecycleState.FAILED)
+    target = tenant_database_name("t1")
+    inspection.set_database(_bootstrap_inspection(target))
+    ledger.record_evidence(
+        "t1",
+        DistinctnessEvidence(
+            system_identifier="cluster_a",
+            database_identity=f"{target}:101",  # fingerprint MATCHES the observed database
+            observed_target=tenant_database_name("elsewhere"),  # recorded target DIFFERS
+            secret_ref_key=tenant_dsn_ref("t1"),
+            sentinel_namespace="dv_sentinel_t1",
+            sentinel_token="tok",
+            sentinel_written=True,
+        ),
+    )
+    entry = next(e for e in scan.scan_for_orphans() if e.database_name == target)
+    assert entry.fingerprint_mismatch and entry.classification == CLASS_FINGERPRINT_MISMATCH
+    assert not entry.safe_to_deprovision
+
+
+# --- O-1 emit-once terminal latch (PRD 07D-2c D-8) ----------------------------------------------
+class _RaisingReadLedger(InMemoryDistinctnessLedger):
+    """Durable-ledger stand-in whose inventory READ raises — the port O-1 protects against
+    (the durable adapter's evidence_excluding propagates by design)."""
+
+    def evidence_excluding(self, tenant_id):
+        raise RuntimeError("durable ledger read failed")
+
+
+class _ActionRaisingAudit(ControlPlaneAudit):
+    """Audit sink that raises on ONE configured action (raising-port double for the latch)."""
+
+    def __init__(self, store, *, raise_on: str) -> None:
+        super().__init__(store)
+        self._raise_on = raise_on
+
+    def record(self, *, actor, tenant_id, action, from_state, to_state, correlation_id):
+        if action == self._raise_on:
+            raise RuntimeError(f"audit sink unavailable for {action}")
+        return super().record(
+            actor=actor,
+            tenant_id=tenant_id,
+            action=action,
+            from_state=from_state,
+            to_state=to_state,
+            correlation_id=correlation_id,
+        )
+
+
+class _VanishingRegistry(TenantRegistry):
+    """Registry whose get_tenant_status serves N reads, then None (a concurrent delete)."""
+
+    def __init__(self, store, audit, *, present_reads: int) -> None:
+        super().__init__(store, audit)
+        self._reads_left = present_reads
+
+    def get_tenant_status(self, tenant_id):
+        if self._reads_left <= 0:
+            return None
+        self._reads_left -= 1
+        return super().get_tenant_status(tenant_id)
+
+
+class _QuarantineRaisingRegistry(TenantRegistry):
+    """Registry whose quarantine_tenant raises (the quarantine-port raising double)."""
+
+    def quarantine_tenant(self, tenant_id, *, actor, correlation_id):
+        raise RuntimeError("registry quarantine port down")
+
+
+def _custom_plane(*, state=TenantLifecycleState.PROVISIONING, make_audit=None, make_registry=None, ledger=None):
+    """A recovery plane with swappable audit/registry/ledger doubles (O-1 latch tests)."""
+    store = InMemoryControlStore()
+    audit = make_audit(store) if make_audit else ControlPlaneAudit(store)
+    registry = make_registry(store, audit) if make_registry else TenantRegistry(store, audit)
+    op = _SpyOperator()
+    led = ledger or InMemoryDistinctnessLedger()
+    inspection = InMemoryRecoveryInspection(
+        control_database_name=_CONTROL_NAME,
+        provisioned_view=lambda: set(op.provisioned),
+    )
+    store.put_tenant(_record("t1", state))
+    service = RecoveryCompensationService(registry, op, audit, inspection, led, supported_schema_versions=["1"])
+    return store, op, inspection, service
+
+
+def test_o1_ledger_read_raise_yields_single_failed_terminal_and_reraises() -> None:
+    # D-8 (O-1): the durable ledger read is the production-plausible raiser — a raise after
+    # Requested must record EXACTLY ONE Failed terminal (best-effort, NOT via _fail) and
+    # RE-RAISE the original error; pairing (1,0,1); zero state change; no quarantine attempt.
+    store, op, inspection, service = _custom_plane(ledger=_RaisingReadLedger())
+    op.provision("t1", target=tenant_database_name("t1"))
+    raised = False
+    try:
+        _deprovision(service)
+    except RuntimeError:
+        raised = True
+    assert raised, "the original port error must re-raise (never swallowed into a quiet outcome)"
+    assert _pairing(store) == (1, 0, 1), "exactly one Failed terminal after the raise"
+    assert op.deprovision_calls == [], "no DROP under a raising proof port"
+    rec = store.get_tenant("t1")
+    assert rec is not None and rec.lifecycle_state is TenantLifecycleState.PROVISIONING, "zero state change"
+    assert events.TENANT_QUARANTINED not in _actions(store), "best-effort terminal only — no quarantine path"
+
+
+def test_o1_post_drop_completed_emit_raise_honors_latch_no_second_terminal() -> None:
+    # D-8 pins (a)+(b): the DROP succeeded and the COMPLETED terminal emit itself raises — the
+    # latch was already attempted, so the handler must NOT add a Failed terminal after a genuine
+    # completion (no double terminal; no false Failed after a successful drop); error re-raises.
+    store, op, inspection, service = _custom_plane(
+        make_audit=lambda s: _ActionRaisingAudit(s, raise_on=events.TENANT_DEPROVISION_COMPLETED),
+    )
+    op.provision("t1", target=tenant_database_name("t1"))
+    raised = False
+    try:
+        _deprovision(service)
+    except RuntimeError:
+        raised = True
+    assert raised
+    assert op.deprovision_calls == [tenant_database_name("t1")], "the DROP ran before the sink failed"
+    assert _pairing(store) == (1, 0, 0), "sink down mid-COMPLETED: no terminal recorded, and NO second terminal added"
+    assert events.TENANT_DEPROVISION_FAILED not in _actions(store), "a successful drop must never gain a Failed terminal"
+
+
+def test_o1_failed_terminal_emit_raise_never_doubles_the_terminal() -> None:
+    # D-8 pin (a): once the Failed terminal emit is ATTEMPTED, a sink raise mid-emit must not
+    # produce a second attempt from the outer handler (quarantine transition already recorded).
+    store, op, inspection, service = _custom_plane(
+        state=TenantLifecycleState.FAILED,
+        make_audit=lambda s: _ActionRaisingAudit(s, raise_on=events.TENANT_DEPROVISION_FAILED),
+    )
+    target = tenant_database_name("t1")
+    insp = _bootstrap_inspection(target)
+    tables = dict(insp.user_tables)
+    tables["public.startups"] = 2  # evidence content -> anomaly-class refusal
+    inspection.set_database(replace(insp, user_tables=tables))
+    raised = False
+    try:
+        _deprovision(service)
+    except RuntimeError:
+        raised = True
+    assert raised
+    assert _pairing(store) == (1, 0, 0), "the Failed emit failed at the sink; the handler must not retry it"
+    assert _actions(store).count(events.TENANT_QUARANTINED) == 1, "the quarantine marker recorded once"
+    rec = store.get_tenant("t1")
+    assert rec is not None and rec.lifecycle_state is TenantLifecycleState.QUARANTINED
+
+
+def test_o1_quarantine_marker_raise_still_yields_failed_terminal() -> None:
+    # D-8 pin (c): TenantQuarantined is a registry-side marker and must NOT satisfy the latch.
+    # If its emit raises AFTER the quarantine transition but BEFORE the Failed terminal is
+    # attempted, the handler must still record the best-effort Failed terminal — (1,0,1).
+    store, op, inspection, service = _custom_plane(
+        state=TenantLifecycleState.FAILED,
+        make_audit=lambda s: _ActionRaisingAudit(s, raise_on=events.TENANT_QUARANTINED),
+    )
+    target = tenant_database_name("t1")
+    insp = _bootstrap_inspection(target)
+    tables = dict(insp.user_tables)
+    tables["public.startups"] = 2
+    inspection.set_database(replace(insp, user_tables=tables))
+    raised = False
+    try:
+        _deprovision(service)
+    except RuntimeError:
+        raised = True
+    assert raised
+    assert _pairing(store) == (1, 0, 1), "the terminal Failed must still be recorded (TenantQuarantined never latches)"
+    assert events.TENANT_QUARANTINED not in _actions(store), "the marker emit itself failed at the sink"
+
+
+def test_o1_quarantine_port_raise_still_yields_failed_terminal() -> None:
+    # D-8: a raising registry quarantine port must not strand the trail at Requested — the
+    # best-effort Failed terminal is recorded, the original error re-raises, (1,0,1) holds.
+    store, op, inspection, service = _custom_plane(
+        state=TenantLifecycleState.FAILED,
+        make_registry=lambda s, a: _QuarantineRaisingRegistry(s, a),
+    )
+    target = tenant_database_name("t1")
+    insp = _bootstrap_inspection(target)
+    tables = dict(insp.user_tables)
+    tables["public.deals"] = 1
+    inspection.set_database(replace(insp, user_tables=tables))
+    raised = False
+    try:
+        _deprovision(service)
+    except RuntimeError:
+        raised = True
+    assert raised
+    assert _pairing(store) == (1, 0, 1)
+    assert events.TENANT_QUARANTINED not in _actions(store), "the quarantine port failed before its marker"
+    rec = store.get_tenant("t1")
+    assert rec is not None and rec.lifecycle_state is TenantLifecycleState.FAILED, "no state change recorded"
+
+
+def test_o1_registry_record_vanishing_mid_flight_routes_to_failed_path() -> None:
+    # D-8 pin (d): the former bare assert is now an explicit None-check routed to the terminal
+    # Failed path — a record vanishing between element 1 and element 3 yields a clean
+    # unknown_tenant refusal (1,0,1), never an AssertionError that strands the audit trail.
+    store, op, inspection, service = _custom_plane(
+        make_registry=lambda s, a: _VanishingRegistry(s, a, present_reads=1),
+    )
+    op.provision("t1", target=tenant_database_name("t1"))
+    out = _deprovision(service)
+    assert not out.completed and out.reason == REASON_UNKNOWN_TENANT
+    assert _pairing(store) == (1, 0, 1)
+    assert op.deprovision_calls == []
+
+
 # --- ScanForOrphans (§9): read-only classification --------------------------------------------
 def test_scan_is_read_only_zero_events_and_never_calls_deprovision() -> None:
     store, audit, registry, op, ledger, inspection, service, scan = _plane()
@@ -597,22 +862,29 @@ def test_scan_reports_database_without_registry_record() -> None:
     inspection.set_database(
         DatabaseInspection(database_name="sp2_tenant_ghost", system_identifier="c", database_identity="sp2_tenant_ghost:7")
     )
+    audit_before = store.list_audit()  # AT-PMV46-6: direction (a) is report-only
     entries = scan.scan_for_orphans()
     assert len(entries) == 1
     entry = entries[0]
     assert entry.classification == CLASS_NO_REGISTRY_RECORD
     assert entry.tenant_id is None and not entry.safe_to_deprovision
     assert entry.recommended_action == "manual_review"
+    assert store.list_audit() == audit_before, "ghost-DB row: ZERO audit events (AT-PMV46-6)"
+    assert store.list_tenant_ids() == [], "ghost-DB row: ZERO registry writes (record invariance)"
 
 
 def test_scan_reports_registry_record_without_database() -> None:
     store, audit, registry, op, ledger, inspection, service, scan = _plane()  # t1 PROVISIONING, no DB
+    audit_before = store.list_audit()  # AT-PMV46-6: direction (a) is report-only
+    rec_before = store.get_tenant("t1")
     entries = scan.scan_for_orphans()
     assert len(entries) == 1
     entry = entries[0]
     assert entry.classification == CLASS_REGISTRY_NO_DATABASE
     assert entry.tenant_id == "t1" and entry.database_name == tenant_database_name("t1")
     assert entry.content_class is None and not entry.safe_to_deprovision
+    assert store.list_audit() == audit_before, "registry-sweep row: ZERO audit events (AT-PMV46-6)"
+    assert store.get_tenant("t1") == rec_before, "registry-sweep row: record byte-invariant"
 
 
 def test_scan_flags_control_db_target() -> None:
@@ -863,6 +1135,15 @@ _TESTS = [
     test_toctou_revalidation_refuses_concurrent_state_change,
     test_toctou_revalidation_refuses_concurrent_ledger_claim,
     test_final_proof_re_proves_own_evidence_leg,
+    test_own_target_mismatch_differential_pre_census_leg,
+    test_own_target_mismatch_differential_final_proof_leg,
+    test_own_target_mismatch_differential_scan_leg,
+    test_o1_ledger_read_raise_yields_single_failed_terminal_and_reraises,
+    test_o1_post_drop_completed_emit_raise_honors_latch_no_second_terminal,
+    test_o1_failed_terminal_emit_raise_never_doubles_the_terminal,
+    test_o1_quarantine_marker_raise_still_yields_failed_terminal,
+    test_o1_quarantine_port_raise_still_yields_failed_terminal,
+    test_o1_registry_record_vanishing_mid_flight_routes_to_failed_path,
     test_scan_is_read_only_zero_events_and_never_calls_deprovision,
     test_scan_classifies_eligible_and_active_rows,
     test_scan_reports_database_without_registry_record,
