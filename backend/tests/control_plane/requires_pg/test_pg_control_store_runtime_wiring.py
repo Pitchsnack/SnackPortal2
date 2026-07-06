@@ -596,5 +596,176 @@ def test_2e_cas_lifecycle_live(admin_dsn: str) -> None:
         conn.close()
 
 
+# --- PRD 07D-3a — Tier-1 two-INSTANCE CAS convergence (multi-instance readiness, LP-1) -----------
+# Folded into this ALREADY-ENROLLED harness (D-3-3/D-3-4: no workflow edit, run-set stays 13).
+# 2E-5/2E-6 raced a raw store CAS against the wired services on ONE plane's stores; this proof
+# frames the same durable boundary as TWO INDEPENDENT PostgresControlStore INSTANCES (one
+# connection each — the separate-process/multi-instance shape of D-3-5 Tier-1): both instances
+# read the same pre-image, race the same tenant transition with a deterministic lock-block
+# overlap, and exactly one durable CAS survives; the losing INSTANCE gets the typed refusal,
+# leaves NO orphan audit, never routes over the winner, and recovers a fresh consistent view
+# on its own connection. Tier-2 (concurrent requests SHARING one instance) remains OPEN
+# (AT-PMV46-4 / PRD 07D-3b) and is fenced statically, not proven here.
+_MI_SCHEMA = "sp2_3a_tier1_scratch"
+
+
+def _mi_store(admin_dsn: str, *, autocommit: bool = False) -> PostgresControlStore:
+    """A store whose session search_path is the 07D-3a Tier-1 scratch schema ONLY."""
+    s = PostgresControlStore(admin_dsn)
+    if autocommit:
+        s._conn.autocommit = True
+    with s._conn.cursor() as cur:
+        cur.execute(f"SET search_path TO {_MI_SCHEMA}")
+    if not autocommit:
+        s._conn.commit()
+    return s
+
+
+def _mi_tenant(tid: str, state: TenantLifecycleState) -> TenantRecord:
+    return TenantRecord(
+        tenant_id=tid,
+        organization_ref="org-3a",
+        lifecycle_state=state,
+        expected_schema_version="1",
+        database_association_ref=SecretRef(f"tenant/{tid}/dsn", "1"),
+        federation_config_ref="fed-3a",
+        created_at=now_iso(),
+        updated_at=now_iso(),
+    )
+
+
+def test_3a_tier1_two_instance_cas_convergence(admin_dsn: str) -> None:
+    boot = _mi_store(admin_dsn, autocommit=True)
+    conn = boot._conn
+    with conn.cursor() as cur:
+        cur.execute(f"DROP SCHEMA IF EXISTS {_MI_SCHEMA} CASCADE")
+        cur.execute(f"CREATE SCHEMA {_MI_SCHEMA}")
+        cur.execute(f"SET search_path TO {_MI_SCHEMA}")
+    opened: list = []
+    try:
+        for ddl in (_DDL_002, _DDL_003, _DDL_004, _DDL_009):
+            with conn.cursor() as cur:
+                cur.execute(ddl.read_text(encoding="utf-8"))
+
+        # Two INDEPENDENT store instances — one Control-DB connection each (the multi-instance shape).
+        store_x = _mi_store(admin_dsn)
+        opened.append(store_x)
+        store_y = _mi_store(admin_dsn)
+        opened.append(store_y)
+        assert store_x._conn is not store_y._conn, "the two instances must hold separate connections"
+
+        # 3A-1 — non-vacuity pre-image: BOTH instances read the same record at version 0.
+        store_x.put_tenant(_mi_tenant("t_mi", TenantLifecycleState.READY))
+        rx = store_x.get_tenant("t_mi")
+        ry = store_y.get_tenant("t_mi")
+        assert rx is not None and ry is not None and rx.version == 0 and ry.version == 0, (
+            f"both instances must observe the same pre-image (x={rx}, y={ry})"
+        )
+        print("PASS: 3A-1 two independent instances share the same durable pre-image (version 0)")
+
+        # 3A-2 — the race: X's suspend CAS held UNCOMMITTED (row lock; window open); Y's CAS,
+        # off the SAME pre-image version, lock-blocks (observed via pg_stat_activity), then X
+        # commits atomically with its audit and Y must surface the typed refusal.
+        store_x.compare_and_swap_tenant(
+            replace(rx, lifecycle_state=TenantLifecycleState.SUSPENDED, updated_at=now_iso()), expected_version=0
+        )
+        outcome: dict = {}
+
+        def _loser() -> None:
+            try:
+                store_y.compare_and_swap_tenant(
+                    replace(ry, lifecycle_state=TenantLifecycleState.SUSPENDED, updated_at=now_iso()),
+                    expected_version=0,
+                )
+                outcome["result"] = "won"  # must be unreachable
+            except ControlStoreConcurrencyError:
+                outcome["result"] = "typed-conflict"
+            except Exception as exc:
+                outcome["result"] = f"raw:{type(exc).__name__}"
+
+        loser_thread = threading.Thread(target=_loser)
+        loser_thread.start()
+        deadline = time.time() + 30
+        blocked = False
+        while time.time() < deadline:
+            n = conn.execute(
+                "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'"
+            ).fetchone()[0]
+            if n and n >= 1:
+                blocked = True
+                break
+            time.sleep(0.05)
+        assert blocked, "instance Y never LOCK-blocked on X's uncommitted CAS — overlap not established"
+        print("PASS: 3A-2a overlap established (instance Y LOCK-blocked on instance X's uncommitted CAS)")
+        store_x.append_audit(  # X commits: CAS + audit durable in ONE transaction
+            ControlAuditRecord(
+                actor="op-3a-x",
+                tenant_id="t_mi",
+                action="SuspendTenant",
+                from_state="Ready",
+                to_state="Suspended",
+                timestamp=now_iso(),
+                correlation_id="c-3a-x",
+            )
+        )
+        loser_thread.join(timeout=30)
+        assert not loser_thread.is_alive(), "the losing instance must finish after the winner commits"
+        assert outcome.get("result") == "typed-conflict", f"the losing instance must surface ControlStoreConcurrencyError: {outcome}"
+        print("PASS: 3A-2 exactly one CAS wins across instances (loser typed-refused)")
+
+        # 3A-3 — exactly ONE durable transition; the loser left NO orphan audit; no routing
+        # was enabled over the winner.
+        row = conn.execute("SELECT lifecycle_state, version FROM control_tenants WHERE tenant_id='t_mi'").fetchone()
+        assert row == ("Suspended", 1), f"the winner's single transition must be the durable state: {row}"
+        acts = conn.execute("SELECT action, correlation_id FROM control_audit WHERE tenant_id='t_mi'").fetchall()
+        assert acts == [("SuspendTenant", "c-3a-x")], f"exactly the winner's ONE audit row may exist (loser rolled back, no orphan): {acts}"
+        assert events.ROUTING_ENABLED not in [a for a, _ in acts], "routing must NEVER be enabled over the winner"
+        print("PASS: 3A-3 one durable transition + winner's single audit row (no orphan; no routing)")
+
+        # 3A-4 — the losing INSTANCE recovers: its typed refusal rolled its transaction back,
+        # and a fresh read on ITS OWN connection observes the winner's committed state.
+        fresh = store_y.get_tenant("t_mi")
+        assert fresh is not None and fresh.lifecycle_state is TenantLifecycleState.SUSPENDED and fresh.version == 1, (
+            f"the losing instance must observe the winner on re-read: {fresh}"
+        )
+        print("PASS: 3A-4 losing instance recovers a fresh consistent view on its own connection")
+
+        # 3A-5 — non-vacuity control: with a FRESH (correct) expected version the second
+        # instance's CAS succeeds and commits with its audit — the refusal above was the
+        # version predicate at work, not a broken instance.
+        store_y.put_tenant(_mi_tenant("t_mi2", TenantLifecycleState.READY))
+        r2 = store_y.get_tenant("t_mi2")
+        assert r2 is not None and r2.version == 0
+        store_y.compare_and_swap_tenant(
+            replace(r2, lifecycle_state=TenantLifecycleState.SUSPENDED, updated_at=now_iso()), expected_version=0
+        )
+        store_y.append_audit(
+            ControlAuditRecord(
+                actor="op-3a-y",
+                tenant_id="t_mi2",
+                action="SuspendTenant",
+                from_state="Ready",
+                to_state="Suspended",
+                timestamp=now_iso(),
+                correlation_id="c-3a-y",
+            )
+        )
+        row2 = conn.execute("SELECT lifecycle_state, version FROM control_tenants WHERE tenant_id='t_mi2'").fetchone()
+        assert row2 == ("Suspended", 1), f"a correct-version CAS from the second instance must succeed: {row2}"
+        print("PASS: 3A-5 non-vacuity control (fresh-version CAS from the second instance succeeds)")
+
+        print("ALL 3A TIER-1 TWO-INSTANCE CHECKS PASSED")
+    finally:
+        for s in opened:
+            try:
+                if s._conn_cache is not None:
+                    s._conn_cache.close()
+            except Exception:
+                pass
+        with conn.cursor() as cur:
+            cur.execute(f"DROP SCHEMA IF EXISTS {_MI_SCHEMA} CASCADE")
+        conn.close()
+
+
 if __name__ == "__main__":
-    _pg.run([test_b7b_live_pg_runtime_wiring, test_2e_cas_lifecycle_live])
+    _pg.run([test_b7b_live_pg_runtime_wiring, test_2e_cas_lifecycle_live, test_3a_tier1_two_instance_cas_convergence])

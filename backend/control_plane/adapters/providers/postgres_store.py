@@ -79,6 +79,17 @@ class PostgresControlStore(ControlStore):
         self._secrets = secrets
         self._ref = ref
         self._schema_version = schema_version
+        # 07D-3A-TIER2-CONSTRAINT: NOT safe to share one store instance across concurrent
+        # requests/threads. This adapter holds ONE lazily-cached connection per store instance
+        # (no pool, no lock, no per-request scoping), and lifecycle CAS writes stay UNCOMMITTED
+        # until the transition's audit append commits both — so a second logical writer on the
+        # same instance would share this connection's open transaction (cross-request
+        # commit/rollback leakage). Separate instances (one store + connection each) are safe:
+        # cross-writer races are closed by the version-predicated CAS (PRD 07D-2e).
+        # Per-unit-of-work connection/transaction scoping (PRD 07D-3b, AT-PMV46-4) is REQUIRED
+        # before any concurrent-request transport is wired over a shared instance; the static
+        # guard test_07d3_multiinstance_readiness_static.py pins this marker and fails if it is
+        # removed without the 07D-3b rework.
         self._conn_cache: Any = None
 
     @property
