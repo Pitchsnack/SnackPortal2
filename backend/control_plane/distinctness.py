@@ -194,12 +194,32 @@ class DistinctnessEvidenceProvider(ABC):
     ) -> Optional[DistinctnessEvidence]: ...
 
 
+class DistinctnessCollisionError(Exception):
+    """Another tenant already holds the candidate's physical-database fingerprint (§6.1).
+
+    Raised by ``DistinctnessLedger.record_evidence`` (PRD 07D-2c) when recording would leave
+    two DISTINCT tenants sharing one (system_identifier, database_identity) fingerprint —
+    the losing side of a concurrent CHECK->ACT race that the inventory read alone cannot
+    serialize. Driver-free domain error: the durable adapter maps its driver's
+    unique-violation onto this type, so the readiness gate can route a lost race onto the
+    EXISTING IC-010 §P anomaly path (reason ``tenant_collision``) without any driver import
+    outside the provider zone. Carries a non-sensitive category message only — never
+    identifiers, credentials, or PII.
+    """
+
+
 class DistinctnessLedger(ABC):
     """Reference-only inventory of per-tenant distinctness evidence (§9.2 input 8).
 
     Kept separate from the frozen ControlStore port so the existing Control-DB persistence
     interface is unchanged. Holds comparison keys only (no credentials/PII); the default is
     in-memory. Used to detect tenant-vs-tenant collisions during verification.
+
+    ``record_evidence`` upserts the tenant's LATEST evidence and raises
+    ``DistinctnessCollisionError`` when ANOTHER tenant already holds an equal fingerprint
+    (PRD 07D-2c): the write itself is the atomic arbiter of the §6.1 fingerprint rule, so a
+    lost CHECK->ACT race surfaces as this typed refusal instead of a silent second Ready.
+    Same-tenant re-record (upsert) stays legal.
     """
 
     @abstractmethod
@@ -217,6 +237,12 @@ class InMemoryDistinctnessLedger(DistinctnessLedger):
         self._by_tenant: Dict[str, DistinctnessEvidence] = {}
 
     def record_evidence(self, tenant_id: str, evidence: DistinctnessEvidence) -> None:
+        # PRD 07D-2c: fingerprint-scoped write guard — the same predicate, and the same typed
+        # refusal, as the durable ledger's unique fingerprint constraint. Same-tenant
+        # re-record (upsert) stays legal; distinct fingerprints across tenants stay legal.
+        for other_id, other in self._by_tenant.items():
+            if other_id != tenant_id and other.fingerprint == evidence.fingerprint:
+                raise DistinctnessCollisionError("distinctness fingerprint already recorded for another tenant")
         self._by_tenant[tenant_id] = evidence
 
     def evidence_excluding(self, tenant_id: str) -> Mapping[str, DistinctnessEvidence]:

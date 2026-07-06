@@ -55,6 +55,13 @@ _DDL_001 = _CONTROL / "001_distinctness_ledger.sql"
 _PIN_001 = "30956ff1e85e8dab1c9f55cbfc121ee9212f3ca0"
 _DISTINCTNESS_HARNESS = _scan.BACKEND_ROOT / "tests" / "control_plane" / "requires_pg" / "test_pg_distinctness_ledger.py"
 
+# PRD 07D-2c: pin 008_distinctness_fingerprint_unique.sql — the unique fingerprint constraint
+# (system_identifier, database_identity) that serializes the D15 gate's CHECK->ACT window. The same
+# distinctness-ledger harness applies it live and pins the same blob under _REVIEWED_008_BLOB
+# (b7c1r2 INV-A/INV-B lockstep: guard pin + harness pin must move together with the DDL bytes).
+_DDL_008 = _CONTROL / "008_distinctness_fingerprint_unique.sql"
+_PIN_008 = "c510ebbaa881e3fc325dbb8ee8bf49b114e522ab"
+
 # MCC (Control DB Schema): pin the Control-DB registry DDL 004-007 — control_tenants / control_memberships /
 # control_federation / control_directory, the wired-but-previously-DDL-less tables postgres_store.py already
 # targets. The MCC live-PG harness (test_pg_control_schema_mcc.py) pins the same blobs under
@@ -123,6 +130,24 @@ def test_distinctness_harness_pin_matches_current_ddl() -> None:
     assert m001.group(1) == computed_001, "test_pg_distinctness_ledger.py _REVIEWED_DDL_BLOB diverges from the current 001 DDL blob"
 
 
+def test_distinctness_fingerprint_008_ddl_blob_matches_pin() -> None:
+    # PRD 07D-2c: 008 fingerprint-uniqueness DDL (separate pin variable in the same harness).
+    assert _git_blob_sha1(_DDL_008) == _PIN_008, (
+        f"008_distinctness_fingerprint_unique.sql drifted from pin {_PIN_008}; a governed DDL change must "
+        f"update this guard and the test_pg_distinctness_ledger.py _REVIEWED_008_BLOB pin in lockstep"
+    )
+
+
+def test_distinctness_harness_008_pin_matches_current_ddl() -> None:
+    # PRD 07D-2c: the distinctness-ledger harness pins 008 under _REVIEWED_008_BLOB; the harness
+    # pin must equal the CURRENT blob of the DDL (single source of truth = the DDL bytes).
+    computed_008 = _git_blob_sha1(_DDL_008)
+    text = _DISTINCTNESS_HARNESS.read_text(encoding="utf-8")
+    m008 = re.search(r'_REVIEWED_008_BLOB\s*=\s*"([0-9a-f]{40})"', text)
+    assert m008, "test_pg_distinctness_ledger.py must pin _REVIEWED_008_BLOB (008 fingerprint-uniqueness DDL)"
+    assert m008.group(1) == computed_008, "test_pg_distinctness_ledger.py _REVIEWED_008_BLOB diverges from the current 008 DDL blob"
+
+
 def test_mcc_control_registry_ddl_blobs_match_known_pins() -> None:
     # MCC: 004-007 Control-DB registry DDL (control_tenants/memberships/federation/directory).
     for _var, pin, ddl in _MCC_PINS:
@@ -149,6 +174,8 @@ if __name__ == "__main__":
             test_requires_pg_harness_pins_match_current_ddl,
             test_distinctness_ledger_ddl_blob_matches_pin,
             test_distinctness_harness_pin_matches_current_ddl,
+            test_distinctness_fingerprint_008_ddl_blob_matches_pin,
+            test_distinctness_harness_008_pin_matches_current_ddl,
             test_mcc_control_registry_ddl_blobs_match_known_pins,
             test_mcc_harness_pins_match_current_ddl,
         ]

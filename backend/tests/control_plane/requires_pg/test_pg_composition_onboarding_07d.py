@@ -895,10 +895,12 @@ def test_07d_composition_onboarding(admin_dsn: str) -> None:
         print("PASS: 07D2B2B-3 bootstrap-only tenant DB deprovisioned (schema + seed + schema_version accepted by the R1-3 census)")
 
         # --- 07D2B2B-4: NON-EMPTY tenant DB preserved + quarantined --------------------------------
-        # AT-PMV46-1 (PR #46 pre-merge V-1): three INDEPENDENT evidence classes, each proven
-        # to refuse ALONE — (A) a materialized view (physically stored rows invisible to a
-        # relkind='r'-only census), (B) a large object (pg_largeobject; invisible to any
-        # user-relation scan), (C) an extra ordinary table (the original characterization).
+        # AT-PMV46-1 (PR #46 pre-merge V-1): three evidence classes — (A) a materialized view
+        # (physically stored rows invisible to a relkind='r'-only census) and (B) a large
+        # object (pg_largeobject; invisible to any user-relation scan), each proven to refuse
+        # ALONE; then (C) extra-table (+ residual large object) — the original
+        # characterization, with Phase B's large object deliberately left in place
+        # (AT-PMV46-13: Phase C is NOT an alone-proof).
         out_ne = cp.onboarding.onboard(
             tid_ne,
             organization_ref=_ORG,
@@ -949,7 +951,8 @@ def test_07d_composition_onboarding(admin_dsn: str) -> None:
         assert rec_ne_lo is not None and rec_ne_lo.lifecycle_state is TenantLifecycleState.QUARANTINED, (
             "an already-QUARANTINED tenant STAYS on a further proof failure (R1-5, live)"
         )
-        # Phase C — EXTRA-TABLE evidence (the original characterization).
+        # Phase C — EXTRA-TABLE (+ residual large object) evidence (the original
+        # characterization; the Phase-B large object remains in place — AT-PMV46-13).
         ne_conn = psycopg.connect(_pg.swap_db(admin_dsn, ne_db))
         try:
             with ne_conn.cursor() as cur:
@@ -974,8 +977,9 @@ def test_07d_composition_onboarding(admin_dsn: str) -> None:
         finally:
             ne_check.close()
         print(
-            "PASS: 07D2B2B-4 non-empty tenant DB preserved (matview-only, large-object-only, and extra-table "
-            "evidence EACH refuse alone; no DROP; scan reports non_empty_evidence; FAILED -> QUARANTINED once, then stays)"
+            "PASS: 07D2B2B-4 non-empty tenant DB preserved (matview-only and large-object-only evidence EACH "
+            "refuse alone; extra-table (+ residual large object) also refuses; no DROP; scan reports "
+            "non_empty_evidence; FAILED -> QUARANTINED once, then stays)"
         )
 
         # --- 07D2B2B-5: Control DB non-droppable (fails BEFORE the operator; Control DB survives) --

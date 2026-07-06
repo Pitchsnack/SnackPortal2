@@ -38,10 +38,14 @@ from control_plane.adapters.providers.in_memory_tenant_schema_applicator import 
 from control_plane.adapters.providers.postgres_provisioning_operator import PostgresProvisioningOperator  # noqa: E402
 from control_plane.audit import ControlPlaneAudit  # noqa: E402
 from control_plane.distinctness import (  # noqa: E402
+    REASON_TENANT_COLLISION,
+    DistinctnessCollisionError,
     DistinctnessEvidence,
     DistinctnessEvidenceProvider,
+    DistinctnessLedger,
     DistinctnessOutcome,
     DistinctnessResult,
+    InMemoryDistinctnessLedger,
 )
 from control_plane.onboarding import OnboardingError, OnboardingOrchestrator, tenant_dsn_ref, tenant_id_from_dsn_ref  # noqa: E402
 from control_plane.provisioning import (  # noqa: E402
@@ -147,6 +151,7 @@ def _orchestrator(
     operator: Optional[ProvisioningOperator] = None,
     probe: Optional[TenantDatabaseProbe] = None,
     evidence: Optional[DistinctnessEvidenceProvider] = None,
+    ledger: Optional[DistinctnessLedger] = None,
 ) -> OnboardingOrchestrator:
     audit = ControlPlaneAudit(store)
     registry = TenantRegistry(store, audit)
@@ -159,6 +164,7 @@ def _orchestrator(
         evidence or cp_main.CanonicalTenantRefInMemoryEvidence(),
         nonprod_control_db_evidence(),
         supported_schema_versions=["1"],
+        ledger=ledger,
     )
     return OnboardingOrchestrator(registry, operator or InMemoryProvisioningOperator(), gate, audit, InMemoryTenantSchemaApplicator())
 
@@ -221,6 +227,51 @@ def test_schema_mismatch_fails_closed() -> None:
     out = _onboard(_orchestrator(store, probe=InMemoryTenantDatabaseProbe(schema_version="2")))
     assert out.result is not DistinctnessResult.VERIFIED
     assert _state(store) is TenantLifecycleState.FAILED
+
+
+class _RaceLosingLedger(InMemoryDistinctnessLedger):
+    """Ledger double simulating the LOSING side of the CHECK->ACT fingerprint race for ONE
+    tenant (PRD 07D-2c): the inventory read shows no rival (the CHECK passes and the verifier
+    returns VERIFIED), but the recording write refuses with the typed collision — the winner's
+    row landed first at the storage layer, inside the window the verifier cannot see."""
+
+    def __init__(self, losing_tenant_id: str) -> None:
+        super().__init__()
+        self._loser = losing_tenant_id
+
+    def record_evidence(self, tenant_id: str, evidence: DistinctnessEvidence) -> None:
+        if tenant_id == self._loser:
+            raise DistinctnessCollisionError("distinctness fingerprint already recorded for another tenant")
+        super().record_evidence(tenant_id, evidence)
+
+
+def test_losing_racer_maps_to_existing_anomaly_path() -> None:
+    # PRD 07D-2c (D-6; MC-3 kill site): a DistinctnessCollisionError from record_evidence — the
+    # lost CHECK->ACT race — routes to the EXISTING anomaly path: ISOLATION_ANOMALY /
+    # tenant_collision -> DistinctnessVerificationFailed -> auto-quarantine. The loser never
+    # reaches Ready/RoutingEnabled; the winner is unaffected; no new event names.
+    store = InMemoryControlStore()
+    ledger = _RaceLosingLedger("t_loser")
+    orch = _orchestrator(store, ledger=ledger)
+    assert _onboard(orch, "t_winner", "c-2c-w").result is DistinctnessResult.VERIFIED
+    out = _onboard(orch, "t_loser", "c-2c-l")
+    assert out.result is DistinctnessResult.ISOLATION_ANOMALY
+    assert out.reason == REASON_TENANT_COLLISION, "the EXISTING contracted reason — no new vocabulary"
+    assert _state(store, "t_loser") is TenantLifecycleState.QUARANTINED, "the loser auto-quarantines (IC-002)"
+    assert _state(store, "t_winner") is TenantLifecycleState.READY, "the winner is unaffected"
+    loser_acts = [r.action for r in store.list_audit() if r.tenant_id == "t_loser"]
+    assert events.DISTINCTNESS_VERIFICATION_FAILED in loser_acts
+    assert events.TENANT_QUARANTINED in loser_acts and events.ISOLATION_ANOMALY in loser_acts
+    assert events.ROUTING_ENABLED not in loser_acts, "the loser must never enable routing"
+    assert events.DISTINCTNESS_VERIFICATION_PASSED not in loser_acts
+    assert set(ledger.evidence_excluding("t_loser").keys()) == {"t_winner"}, "only the winner's evidence survives"
+    # Zero new event names: every events.py constant recorded here is in the frozen vocabulary
+    # (the module-level freeze itself is test_no_new_audit_vocabulary; registry transition
+    # actions such as QuarantineTenant are operation names, outside the events.py vocabulary).
+    emitted = {r.action for r in store.list_audit()}
+    assert emitted & EXPECTED_EVENT_ACTIONS == emitted - {"RegisterTenant", "MarkProvisioning", "QuarantineTenant"}, (
+        "the losing racer must emit only frozen event names plus existing registry operation actions"
+    )
 
 
 def test_isolation_anomaly_quarantines_at_classification_time() -> None:
@@ -1066,6 +1117,7 @@ _TESTS = [
     test_unreachable_fails_closed,
     test_schema_mismatch_fails_closed,
     test_isolation_anomaly_quarantines_at_classification_time,
+    test_losing_racer_maps_to_existing_anomaly_path,
     test_idempotent_onboard_does_not_reverify,
     test_reassociate_reverifies,
     test_disable_routing,

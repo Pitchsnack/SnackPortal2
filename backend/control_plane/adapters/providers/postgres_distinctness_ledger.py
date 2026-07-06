@@ -46,7 +46,7 @@ from typing import Any, Dict, Mapping, Optional
 import psycopg  # type: ignore  # noqa: F401  (driver import confined to this zone)
 
 from control_plane._util import now_iso
-from control_plane.distinctness import DistinctnessEvidence, DistinctnessLedger
+from control_plane.distinctness import DistinctnessCollisionError, DistinctnessEvidence, DistinctnessLedger
 from shared.secrets import SecretRef, SecretStore
 
 # Control-plane-owned ledger table (Control Database). DDL is an additive, reference-only
@@ -74,6 +74,12 @@ _SELECT_EXCLUDING = (
 )
 _DELETE = f"DELETE FROM {LEDGER_TABLE} WHERE tenant_id = %s"
 
+# SQLSTATE for the driver's unique-violation error class (PRD 07D-2c). The 008 unique
+# fingerprint constraint on (system_identifier, database_identity) — reference-only DDL under
+# infrastructure/db/control/, applied by the live exercise, never by this adapter — rejects a
+# row that would leave two DISTINCT tenants on one physical database.
+_UNIQUE_VIOLATION_SQLSTATE = "23505"
+
 
 class PostgresDistinctnessLedger(DistinctnessLedger):
     """Control-DB-backed durable distinctness ledger (lazy-connect, references-only)."""
@@ -100,21 +106,33 @@ class PostgresDistinctnessLedger(DistinctnessLedger):
     def record_evidence(self, tenant_id: str, evidence: DistinctnessEvidence) -> None:
         conn = self._connect()
         try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    _UPSERT,
-                    (
-                        tenant_id,
-                        evidence.system_identifier,
-                        evidence.database_identity,
-                        evidence.observed_target,
-                        evidence.secret_ref_key,
-                        evidence.sentinel_namespace,
-                        evidence.sentinel_token,
-                        evidence.sentinel_written,
-                        now_iso(),
-                    ),
-                )
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        _UPSERT,
+                        (
+                            tenant_id,
+                            evidence.system_identifier,
+                            evidence.database_identity,
+                            evidence.observed_target,
+                            evidence.secret_ref_key,
+                            evidence.sentinel_namespace,
+                            evidence.sentinel_token,
+                            evidence.sentinel_written,
+                            now_iso(),
+                        ),
+                    )
+            except Exception as exc:
+                # PRD 07D-2c: map ONLY the unique-violation SQLSTATE onto the typed domain
+                # refusal. Same-tenant writes resolve via the (tenant_id) conflict arbiter and
+                # never reach this path, so a 23505 here is the losing side of a cross-tenant
+                # fingerprint race (008 unique fingerprint constraint). Every other error keeps
+                # propagating unchanged — the documented fail-closed-by-raise contract below is
+                # untouched. Detection is by the driver-standard `sqlstate` attribute (no
+                # driver-typed exception classes leak into the domain).
+                if getattr(exc, "sqlstate", None) == _UNIQUE_VIOLATION_SQLSTATE:
+                    raise DistinctnessCollisionError("distinctness fingerprint already recorded for another tenant") from exc
+                raise
             conn.commit()
         finally:
             conn.close()
