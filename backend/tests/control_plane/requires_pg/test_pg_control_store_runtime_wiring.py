@@ -35,6 +35,7 @@ With SNACKPORTAL_TEST_DSN unset (or psycopg absent) it clean-skips (exit 0).
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import pathlib
@@ -52,6 +53,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))  # backend 
 
 from control_plane import events  # noqa: E402
 from control_plane._util import now_iso  # noqa: E402
+from control_plane.adapters.providers.control_store_factory import PostgresControlStoreFactory  # noqa: E402
 from control_plane.adapters.providers.in_memory_distinctness import nonprod_control_db_evidence  # noqa: E402
 from control_plane.adapters.providers.in_memory_probe import InMemoryTenantDatabaseProbe  # noqa: E402
 from control_plane.adapters.providers.postgres_store import PostgresControlStore  # noqa: E402
@@ -767,5 +769,250 @@ def test_3a_tier1_two_instance_cas_convergence(admin_dsn: str) -> None:
         conn.close()
 
 
+# --- PRD 07D-3b — Tier-2 per-unit-of-work POSITIVE proof (in-process concurrent requests) --------
+# Folded into this ALREADY-ENROLLED harness (D-3b-7: no workflow edit, run-set stays 13).
+# ONE PostgresControlStoreFactory issues per-request units of work (fresh store + fresh
+# connection each, released rollback+close at UoW end). Proves the post-fix properties the
+# negative unit proof (test_lifecycle_cas_2e.py) shows are violated on a shared connection:
+# no cross-request commit/rollback leakage, exactly one durable winner with a typed loser,
+# no orphan audit, no routing over the winner, fresh-read recovery, clean connection return.
+_T2_SCHEMA = "sp2_3b_tier2_scratch"
+
+
+def _t2_tenant(tid: str, state: TenantLifecycleState) -> TenantRecord:
+    return TenantRecord(
+        tenant_id=tid,
+        organization_ref="org-3b",
+        lifecycle_state=state,
+        expected_schema_version="1",
+        database_association_ref=SecretRef(f"tenant/{tid}/dsn", "1"),
+        federation_config_ref="fed-3b",
+        created_at=now_iso(),
+        updated_at=now_iso(),
+    )
+
+
+def test_3b_tier2_per_uow_live(admin_dsn: str) -> None:
+    boot = PostgresControlStore(admin_dsn)
+    boot._conn.autocommit = True
+    conn = boot._conn
+    with conn.cursor() as cur:
+        cur.execute(f"DROP SCHEMA IF EXISTS {_T2_SCHEMA} CASCADE")
+        cur.execute(f"CREATE SCHEMA {_T2_SCHEMA}")
+        cur.execute(f"SET search_path TO {_T2_SCHEMA}")
+    try:
+        for ddl in (_DDL_002, _DDL_003, _DDL_004, _DDL_009):
+            with conn.cursor() as cur:
+                cur.execute(ddl.read_text(encoding="utf-8"))
+
+        # ONE factory; every unit of work lands in the scratch schema via the DSN options
+        # (no per-store SET search_path) — the same mechanism a composed deployment uses.
+        factory = PostgresControlStoreFactory(_dsn_with_search_path(admin_dsn, _T2_SCHEMA))
+
+        with contextlib.ExitStack() as stack:
+            uow_a = stack.enter_context(factory.acquire())
+            uow_b = stack.enter_context(factory.acquire())
+
+            # T2-1 — two concurrent UoWs: fresh stores, DISTINCT connections, same pre-image;
+            # autocommit pinned False; isolation = READ COMMITTED (the proven CAS model).
+            uow_a.put_tenant(_t2_tenant("t_t2", TenantLifecycleState.READY))
+            ra, rb = uow_a.get_tenant("t_t2"), uow_b.get_tenant("t_t2")
+            assert uow_a is not uow_b and uow_a._conn is not uow_b._conn, "UoWs must not share a store/connection"
+            assert ra is not None and rb is not None and ra.version == 0 and rb.version == 0
+            assert uow_a._conn.autocommit is False and uow_b._conn.autocommit is False, "autocommit must be pinned False"
+            iso = conn.execute("SHOW transaction_isolation").fetchone()[0]
+            assert iso == "read committed", f"isolation must be the proven READ COMMITTED default: {iso}"
+            print("PASS: T2-1 one factory, two UoWs -> two fresh stores/connections; autocommit/isolation pinned")
+
+            # T2-2 — NO cross-request commit: A's CAS pending on A's connection; B commits an
+            # unrelated audit on ITS OWN connection; A's CAS must remain invisible/uncommitted
+            # (on the shared pre-3b shape B's commit would have finalized it — the unit
+            # negative proof demonstrates exactly that).
+            uow_a.compare_and_swap_tenant(
+                replace(ra, lifecycle_state=TenantLifecycleState.SUSPENDED, updated_at=now_iso()), expected_version=0
+            )
+            uow_b.append_audit(
+                ControlAuditRecord(
+                    actor="request-b",
+                    tenant_id=None,
+                    action="t2.unrelated.audit",
+                    from_state=None,
+                    to_state=None,
+                    timestamp=now_iso(),
+                    correlation_id="c-3b-unrelated",
+                )
+            )
+            visible = conn.execute("SELECT lifecycle_state, version FROM control_tenants WHERE tenant_id='t_t2'").fetchone()
+            assert visible == ("Ready", 0), f"B's commit must NOT finalize A's pending CAS: {visible}"
+            print("PASS: T2-2 no cross-request commit (sibling UoW commit leaves A's CAS pending)")
+
+            # T2-3 — per-transition atomicity intact: A completes ITS transition (CAS + audit
+            # on A's one connection) and only then is the state durable.
+            uow_a.append_audit(
+                ControlAuditRecord(
+                    actor="request-a",
+                    tenant_id="t_t2",
+                    action="SuspendTenant",
+                    from_state="Ready",
+                    to_state="Suspended",
+                    timestamp=now_iso(),
+                    correlation_id="c-3b-a",
+                )
+            )
+            durable = conn.execute("SELECT lifecycle_state, version FROM control_tenants WHERE tenant_id='t_t2'").fetchone()
+            assert durable == ("Suspended", 1), f"A's own audit commit must make its CAS durable: {durable}"
+            print("PASS: T2-3 per-transition atomicity on the UoW's single connection (CAS+audit commit together)")
+
+        # T2-4/5/6/7 — the concurrent race through per-request UoWs: one winner, typed loser,
+        # no orphan audit, no routing, loser fresh-read recovery. Deterministic lock-block.
+        with contextlib.ExitStack() as stack:
+            uow_c = stack.enter_context(factory.acquire())
+            uow_d = stack.enter_context(factory.acquire())
+            uow_c.put_tenant(_t2_tenant("t_t2b", TenantLifecycleState.READY))
+            rc, rd = uow_c.get_tenant("t_t2b"), uow_d.get_tenant("t_t2b")
+            assert rc is not None and rd is not None and rc.version == 0 and rd.version == 0
+            uow_c.compare_and_swap_tenant(
+                replace(rc, lifecycle_state=TenantLifecycleState.SUSPENDED, updated_at=now_iso()), expected_version=0
+            )
+            outcome: dict = {}
+
+            def _loser() -> None:
+                try:
+                    uow_d.compare_and_swap_tenant(
+                        replace(rd, lifecycle_state=TenantLifecycleState.SUSPENDED, updated_at=now_iso()),
+                        expected_version=0,
+                    )
+                    outcome["result"] = "won"  # must be unreachable
+                except ControlStoreConcurrencyError:
+                    outcome["result"] = "typed-conflict"
+                except Exception as exc:
+                    outcome["result"] = f"raw:{type(exc).__name__}"
+
+            loser_thread = threading.Thread(target=_loser)
+            loser_thread.start()
+            deadline = time.time() + 30
+            blocked = False
+            while time.time() < deadline:
+                n = conn.execute(
+                    "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'"
+                ).fetchone()[0]
+                if n and n >= 1:
+                    blocked = True
+                    break
+                time.sleep(0.05)
+            assert blocked, "UoW D never LOCK-blocked on UoW C's uncommitted CAS — overlap not established"
+            print("PASS: T2-4a overlap established (request D LOCK-blocked on request C's uncommitted CAS)")
+            uow_c.append_audit(
+                ControlAuditRecord(
+                    actor="request-c",
+                    tenant_id="t_t2b",
+                    action="SuspendTenant",
+                    from_state="Ready",
+                    to_state="Suspended",
+                    timestamp=now_iso(),
+                    correlation_id="c-3b-c",
+                )
+            )
+            loser_thread.join(timeout=30)
+            assert not loser_thread.is_alive()
+            assert outcome.get("result") == "typed-conflict", f"the losing request must get the typed refusal: {outcome}"
+            row = conn.execute("SELECT lifecycle_state, version FROM control_tenants WHERE tenant_id='t_t2b'").fetchone()
+            assert row == ("Suspended", 1), f"exactly ONE durable transition: {row}"
+            acts = conn.execute("SELECT action, correlation_id FROM control_audit WHERE tenant_id='t_t2b'").fetchall()
+            assert acts == [("SuspendTenant", "c-3b-c")], f"only the winner's ONE audit row (no orphan): {acts}"
+            assert events.ROUTING_ENABLED not in [a for a, _ in acts], "no routing over the winner"
+            print("PASS: T2-4 one durable winner; typed-refused loser  |  T2-5 no orphan audit  |  T2-6 no routing")
+            fresh = uow_d.get_tenant("t_t2b")
+            assert fresh is not None and fresh.lifecycle_state is TenantLifecycleState.SUSPENDED and fresh.version == 1, (
+                f"the losing UoW must observe the winner on its own connection: {fresh}"
+            )
+            print("PASS: T2-7 losing request recovers a fresh consistent view on its own connection")
+
+        # T2-8 — clean release: a UoW abandoned with a PENDING CAS is rolled back and its
+        # connection closed — the durable row is untouched and NO idle-in-transaction session
+        # survives (nothing can leak into a later unit of work).
+        with factory.acquire() as uow_e:
+            uow_e.put_tenant(_t2_tenant("t_t2c", TenantLifecycleState.READY))
+            re_ = uow_e.get_tenant("t_t2c")
+            assert re_ is not None
+            uow_e.compare_and_swap_tenant(
+                replace(re_, lifecycle_state=TenantLifecycleState.SUSPENDED, updated_at=now_iso()), expected_version=0
+            )
+        after_release = conn.execute("SELECT lifecycle_state, version FROM control_tenants WHERE tenant_id='t_t2c'").fetchone()
+        assert after_release == ("Ready", 0), f"an abandoned UoW's pending CAS must be discarded: {after_release}"
+        idle_in_txn = conn.execute(
+            "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND state = 'idle in transaction'"
+        ).fetchone()[0]
+        assert idle_in_txn == 0, f"released UoWs must leave no idle-in-transaction session: {idle_in_txn}"
+        print("PASS: T2-8 release discards pending work and returns the connection clean (no idle-in-transaction)")
+
+        # T2-9 — non-vacuity control: a FRESH unit of work with the correct version succeeds
+        # (the refusals above were the version predicate + isolation at work).
+        with factory.acquire() as uow_f:
+            rf = uow_f.get_tenant("t_t2c")
+            assert rf is not None and rf.version == 0
+            uow_f.compare_and_swap_tenant(
+                replace(rf, lifecycle_state=TenantLifecycleState.SUSPENDED, updated_at=now_iso()), expected_version=0
+            )
+            uow_f.append_audit(
+                ControlAuditRecord(
+                    actor="request-f",
+                    tenant_id="t_t2c",
+                    action="SuspendTenant",
+                    from_state="Ready",
+                    to_state="Suspended",
+                    timestamp=now_iso(),
+                    correlation_id="c-3b-f",
+                )
+            )
+        row_f = conn.execute("SELECT lifecycle_state, version FROM control_tenants WHERE tenant_id='t_t2c'").fetchone()
+        assert row_f == ("Suspended", 1), f"a fresh-version CAS from a new UoW must succeed: {row_f}"
+        print("PASS: T2-9 non-vacuity control (fresh UoW, correct version -> durable success)")
+
+        # T2-10 — audit-failure rollback within a UoW (2E-4's contract through the factory):
+        # a failed required audit write rolls the CAS back on that UoW's connection.
+        with factory.acquire() as uow_g:
+            uow_g.put_tenant(_t2_tenant("t_t2d", TenantLifecycleState.READY))
+            rg = uow_g.get_tenant("t_t2d")
+            assert rg is not None
+            uow_g.compare_and_swap_tenant(
+                replace(rg, lifecycle_state=TenantLifecycleState.SUSPENDED, updated_at=now_iso()), expected_version=0
+            )
+            failed = False
+            try:
+                uow_g.append_audit(
+                    ControlAuditRecord(
+                        actor="request-g",
+                        tenant_id="t_t2d",
+                        action="SuspendTenant",
+                        from_state="Ready",
+                        to_state="Suspended",
+                        timestamp="not-a-timestamp",
+                        correlation_id="c-3b-g",
+                    )
+                )
+            except Exception:
+                failed = True
+            assert failed, "the failed audit append must propagate (fail closed)"
+        row_g = conn.execute("SELECT lifecycle_state, version FROM control_tenants WHERE tenant_id='t_t2d'").fetchone()
+        assert row_g == ("Ready", 0), f"the failed audit must roll the CAS back (no partial state): {row_g}"
+        orphans = conn.execute("SELECT count(*) FROM control_audit WHERE tenant_id='t_t2d'").fetchone()[0]
+        assert orphans == 0, "no orphan audit row after the failed transition"
+        print("PASS: T2-10 audit-failure rollback within a unit of work (no partial state, no orphan audit)")
+
+        print("ALL T2 TIER-2 CHECKS PASSED")
+    finally:
+        with conn.cursor() as cur:
+            cur.execute(f"DROP SCHEMA IF EXISTS {_T2_SCHEMA} CASCADE")
+        conn.close()
+
+
 if __name__ == "__main__":
-    _pg.run([test_b7b_live_pg_runtime_wiring, test_2e_cas_lifecycle_live, test_3a_tier1_two_instance_cas_convergence])
+    _pg.run(
+        [
+            test_b7b_live_pg_runtime_wiring,
+            test_2e_cas_lifecycle_live,
+            test_3a_tier1_two_instance_cas_convergence,
+            test_3b_tier2_per_uow_live,
+        ]
+    )

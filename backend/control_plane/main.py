@@ -12,11 +12,15 @@ from __future__ import annotations
 import os
 import uuid
 from dataclasses import replace
-from typing import Callable, Dict, Iterable, List, NoReturn, Optional, Set, Tuple
+from typing import Callable, ContextManager, Dict, Iterable, List, NoReturn, Optional, Set, Tuple
 
 from shared.adapters.providers.env_reference_secret_store import DEFAULT_ALLOWED, EnvReferenceSecretStore
 from shared.secrets import SecretRef
 
+from .adapters.providers.control_store_factory import (  # driver-free at import (PRD 07D-3b)
+    PostgresControlStoreFactory,
+    SharedControlStoreFactory,
+)
 from .adapters.providers.env_tenant_dsn_secret_store import EnvTenantDsnSecretStore
 from .adapters.providers.in_memory_distinctness import (
     NONPROD_CONTROL_SENTINEL_NAMESPACE,
@@ -324,6 +328,14 @@ class ControlPlane:
         # An explicit store wins (tests / the B-7A harness). Otherwise the Control-Store is
         # selected by env (B-7B); the default is in-memory and construction performs no I/O.
         self.store = store if store is not None else self._build_store()
+        # PRD 07D-3b (AT-PMV46-4): the per-unit-of-work ControlStore boundary. Built ONCE;
+        # no transport is wired here (07E). The 07E contract: every request transport MUST
+        # acquire a fresh unit of work per request via control_store_unit_of_work() and MUST
+        # NOT share it across concurrent requests. self.store remains the single-context
+        # store for the existing non-concurrent composition paths (no I/O at construction).
+        self.store_factory: "SharedControlStoreFactory | PostgresControlStoreFactory" = self._build_store_factory(
+            explicit_store=store is not None
+        )
         self.audit = ControlPlaneAudit(self.store)
         self.registry = TenantRegistry(self.store, self.audit)
         self.membership = MembershipRegistry(self.store)
@@ -496,6 +508,35 @@ class ControlPlane:
         if kind == "postgres":
             return self._build_durable_control_store()
         raise ValueError(f"unsupported {CONTROL_STORE_ENV}={kind!r}; expected 'in_memory' or 'postgres'")
+
+    def _build_store_factory(self, *, explicit_store: bool) -> "SharedControlStoreFactory | PostgresControlStoreFactory":
+        """Build the per-unit-of-work ControlStore factory (PRD 07D-3b; AT-PMV46-4).
+
+        Env-coherent with ``_build_store``: the in-memory default (and any explicit ``store=``
+        injection — tests/harnesses) wraps THE composed store, whose state is the process-local
+        instance; ``postgres`` issues a FRESH lazily-connecting durable store per unit of work
+        with the SAME secret binding (references only, D-14 — no DSN literal transits here).
+        Construction performs no I/O. A request transport (07E, not wired in this slice) must
+        acquire one unit of work per request from this factory and never share it."""
+        if explicit_store:
+            return SharedControlStoreFactory(self.store)
+        kind = (os.environ.get(CONTROL_STORE_ENV) or "in_memory").strip().lower()
+        if kind in ("", "in_memory"):
+            return SharedControlStoreFactory(self.store)
+        if kind == "postgres":
+            control_store_secrets, ref = self._control_store_secret_binding()
+            return PostgresControlStoreFactory(secrets=control_store_secrets, ref=ref)
+        raise ValueError(f"unsupported {CONTROL_STORE_ENV}={kind!r}; expected 'in_memory' or 'postgres'")
+
+    def control_store_unit_of_work(self) -> "ContextManager[ControlStore]":
+        """Acquire ONE ControlStore unit of work (PRD 07D-3b; AT-PMV46-4).
+
+        The Tier-2 boundary: one logical request → one store → one Control-DB connection,
+        held across the request's transitions (CAS + audit commit together on it) and
+        released (rollback + close) at exit. NEVER share the yielded store across concurrent
+        requests — that is the exact hazard 07D-3b closes. 07E transports must call this
+        once per request."""
+        return self.store_factory.acquire()
 
     def _control_store_secret_binding(self) -> Tuple[EnvReferenceSecretStore, SecretRef]:
         """The Control-DB DSN secret binding (D-14; PRD 06 B-7B): resolver + reference, no literal.
