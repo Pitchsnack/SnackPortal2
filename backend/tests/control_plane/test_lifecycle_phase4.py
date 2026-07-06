@@ -101,6 +101,9 @@ def test_activate_requires_verifying() -> None:
 def test_reactivate_suspended_to_ready() -> None:
     store, audit, reg, svc = _wire()
     _register(reg)
+    # PRD 07D-2d (B2): suspend requires READY — drive the tenant to READY through the real
+    # verification path first (Registered -> Verifying -> Ready), then suspend.
+    assert svc.verify_tenant("t1", actor="op", correlation_id="c-v").lifecycle_state is TenantLifecycleState.READY
     reg.suspend_tenant("t1", actor="op", correlation_id="c")
     assert store.get_tenant("t1").lifecycle_state is TenantLifecycleState.SUSPENDED
     rec = svc.reactivate_tenant("t1", actor="op", correlation_id="c")

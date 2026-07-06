@@ -123,15 +123,17 @@ class TenantRegistry:
         )
 
     def suspend_tenant(self, tenant_id: str, *, actor: str, correlation_id: str) -> TenantRecord:
-        # PRD 07D-2b.2a (R1-2/C-2): READY joins allowed_from — the amended IC-002 removed the
+        # PRD 07D-2b.2a (R1-2/C-2): READY joined allowed_from — the amended IC-002 removed the
         # Ready-direct decommission, making Suspended a Ready tenant's ONLY egress; without this
-        # the contract's suspend-first rule is inexecutable. The pre-existing {REGISTERED,
-        # PROVISIONING} wideness (code-lawful, not contract-listed) is a documented residual for
-        # the post-2b.2 docs/contracts reconcile — deliberately NOT removed in this slice.
+        # the contract's suspend-first rule is inexecutable. PRD 07D-2d (DD-2c-2 = B2): the
+        # former {REGISTERED, PROVISIONING} wideness — a code-lawful, not contract-listed
+        # residual carried since 2b.2a — is now REMOVED: IC-002 lists `Ready -> Suspended` only,
+        # so the code narrows to match (no contract edit). Suspended -> Suspended remains legal
+        # solely via the _transition same-target no-op (DD-2c-1 = A1).
         return self._transition(
             tenant_id,
             TenantLifecycleState.SUSPENDED,
-            {TenantLifecycleState.REGISTERED, TenantLifecycleState.PROVISIONING, TenantLifecycleState.READY},
+            {TenantLifecycleState.READY},
             "SuspendTenant",
             actor,
             correlation_id,
@@ -202,6 +204,15 @@ class TenantRegistry:
         record = self._store.get_tenant(tenant_id)
         if record is None:
             raise RegistryError("unknown tenant")
+        # PRD 07D-2d (DD-2c-1 = A1): a same-target lifecycle re-issue is an idempotent no-op —
+        # IC-002 already mandates same-target transition idempotency (the code catches up; no
+        # contract edit). Return the EXISTING record unmutated: no put_tenant, no audit record,
+        # no lifecycle event, no new vocabulary. Placed AFTER the unknown-tenant refusal and
+        # BEFORE the allowed_from guard, so Suspended -> Suspended still no-ops under the
+        # 07D-2d-narrowed suspend set (DD-2c-2 = B2) while every non-same-target illegal
+        # transition keeps failing closed below.
+        if record.lifecycle_state == to_state:
+            return record
         if record.lifecycle_state not in allowed_from:
             raise RegistryError("illegal lifecycle transition")
         updated = replace(record, lifecycle_state=to_state, updated_at=now_iso())
