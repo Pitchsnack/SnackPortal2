@@ -1007,6 +1007,138 @@ def test_3b_tier2_per_uow_live(admin_dsn: str) -> None:
         conn.close()
 
 
+# --- PRD 07E-1 — read-edge per-request UoW live proof (T2E-1..T2E-4; T2E-5 advisory) -------------
+# Folded into this ALREADY-ENROLLED harness (run-set stays 13; no workflow edit). Boots the
+# REAL composed durable app (create_app + env-selected PostgresControlStoreFactory), serves
+# the REAL stdlib read edge over loopback (server-in-a-thread is a TEST-side driver only),
+# and proves: each HTTP request runs on a DISTINCT Control-DB backend PID (fresh UoW
+# connection per request), zero idle-in-transaction sessions survive any request, the
+# transport holds no module-global store, and a dead Control DB fails closed (503, empty
+# body, no leaked session). T2E-5 (client-disconnect/orphan teardown) is ADVISORY only and
+# is recorded as not-run — it is not acceptance-gating.
+_T2E_SCHEMA = "sp2_07e1_read_edge_scratch"
+
+
+def test_07e1_read_edge_uow_live(admin_dsn: str) -> None:
+    import urllib.error
+    import urllib.request
+
+    from control_plane.adapters.providers.control_store_factory import PostgresControlStoreFactory
+    from control_plane.adapters.providers.http_read_api import make_server
+
+    saved_env = {k: os.environ.get(k) for k in (CONTROL_STORE_ENV, CONTROL_STORE_DSN_REF_ENV, _secret_env_key())}
+    scratch_dsn = _dsn_with_search_path(admin_dsn, _T2E_SCHEMA)
+    boot = PostgresControlStore(admin_dsn)
+    boot._conn.autocommit = True
+    conn = boot._conn
+    with conn.cursor() as cur:
+        cur.execute(f"DROP SCHEMA IF EXISTS {_T2E_SCHEMA} CASCADE")
+        cur.execute(f"CREATE SCHEMA {_T2E_SCHEMA}")
+        cur.execute(f"SET search_path TO {_T2E_SCHEMA}")
+    servers: list = []
+    try:
+        for ddl in (_DDL_002, _DDL_003, _DDL_004, _DDL_009):
+            with conn.cursor() as cur:
+                cur.execute(ddl.read_text(encoding="utf-8"))
+
+        os.environ[CONTROL_STORE_ENV] = "postgres"
+        os.environ.pop(CONTROL_STORE_DSN_REF_ENV, None)
+        os.environ[_secret_env_key()] = scratch_dsn
+        cp = create_app()
+        assert isinstance(cp.store_factory, PostgresControlStoreFactory), "durable per-UoW factory must be composed"
+        with cp.control_store_unit_of_work() as seed_store:
+            seed_store.put_tenant(_cas_tenant("t_e1", TenantLifecycleState.READY))
+
+        # PID probe: record each UoW's Control-DB backend PID at release (test-side wrap).
+        real_factory = cp.store_factory
+        pids: list = []
+
+        class _PidProbeFactory:
+            def acquire(self):  # type: ignore[no-untyped-def]
+                import contextlib as _ctx
+
+                @_ctx.contextmanager
+                def _cm():  # type: ignore[no-untyped-def]
+                    with real_factory.acquire() as store:
+                        try:
+                            yield store
+                        finally:
+                            c = store._conn_cache
+                            if c is not None:
+                                pids.append(c.info.backend_pid)
+
+                return _cm()
+
+        cp.store_factory = _PidProbeFactory()  # type: ignore[assignment]
+        server, base = make_server(cp, "127.0.0.1", 0)
+        servers.append(server)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+
+        # T2E-1 — sequential REAL HTTP requests each use a DISTINCT backend PID.
+        for i in range(3):
+            with urllib.request.urlopen(f"{base}/internal/routing/tenants/t_e1", timeout=10) as resp:
+                assert resp.status == 200, f"request {i}: expected 200, got {resp.status}"
+            # T2E-2 (per request) — no idle-in-transaction session survives the request.
+            idle = conn.execute(
+                "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND state = 'idle in transaction'"
+            ).fetchone()[0]
+            assert idle == 0, f"request {i}: idle-in-transaction sessions leaked: {idle}"
+        assert len(pids) == 3 and len(set(pids)) == 3, (  # one probed UoW per HTTP request
+            f"every request must ride a FRESH Control-DB connection (3 requests -> 3 distinct PIDs): {pids}"
+        )
+        print("PASS: T2E-1 sequential HTTP requests each used a distinct Control-DB backend PID")
+        print("PASS: T2E-2 zero idle-in-transaction sessions after each request")
+
+        # T2E-3 — no runtime module-global store reuse in the transport module.
+        import control_plane.adapters.providers.http_read_api as read_edge_module
+        from control_plane.ports import ControlStore as _CS
+
+        assert not any(isinstance(v, _CS) for v in vars(read_edge_module).values()), "http_read_api must hold no module-global ControlStore"
+        print("PASS: T2E-3 no runtime module-global store reuse (distinct PIDs + module census)")
+
+        # T2E-4 — dead/unreachable Control DB fails closed: 503, EMPTY body, no leaked session.
+        os.environ[_secret_env_key()] = _derive_unreachable_dsn(scratch_dsn)
+        cp_dead = create_app()
+        server_dead, base_dead = make_server(cp_dead, "127.0.0.1", 0)
+        servers.append(server_dead)
+        threading.Thread(target=server_dead.serve_forever, daemon=True).start()
+        dead_status, dead_body = 0, b"x"
+        try:
+            with urllib.request.urlopen(f"{base_dead}/tenants/t_e1/state", timeout=15) as resp:
+                dead_status = resp.status
+        except urllib.error.HTTPError as err:
+            dead_status, dead_body = err.code, err.read()
+            leak_blob = str(err.headers).lower()
+            for needle in ("postgresql", "password", "dsn"):
+                assert needle not in leak_blob, f"dead-DB refusal must not leak connection detail: {needle}"
+        assert dead_status == 503, f"a dead Control DB must fail closed with 503 (got {dead_status})"
+        assert dead_body == b"", f"the 503 body must be EMPTY (got {dead_body!r})"
+        idle = conn.execute(
+            "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND state = 'idle in transaction'"
+        ).fetchone()[0]
+        assert idle == 0, f"the failed request must leak no session: {idle}"
+        os.environ[_secret_env_key()] = scratch_dsn
+        print("PASS: T2E-4 dead Control DB fails closed (503, empty body, no leaked session)")
+        print("NOTE: T2E-5 advisory (client-disconnect/orphan teardown observation) NOT RUN — best-effort only")
+
+        print("ALL T2E READ-EDGE CHECKS PASSED")
+    finally:
+        for s in servers:
+            try:
+                s.shutdown()
+                s.server_close()
+            except Exception:
+                pass
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        with conn.cursor() as cur:
+            cur.execute(f"DROP SCHEMA IF EXISTS {_T2E_SCHEMA} CASCADE")
+        conn.close()
+
+
 if __name__ == "__main__":
     _pg.run(
         [
@@ -1014,5 +1146,6 @@ if __name__ == "__main__":
             test_2e_cas_lifecycle_live,
             test_3a_tier1_two_instance_cas_convergence,
             test_3b_tier2_per_uow_live,
+            test_07e1_read_edge_uow_live,
         ]
     )

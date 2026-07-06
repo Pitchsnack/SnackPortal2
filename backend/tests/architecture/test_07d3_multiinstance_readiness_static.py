@@ -203,24 +203,59 @@ def test_composition_root_wires_no_concurrent_transport() -> None:
         assert name not in used, f"main.py must not reference {name} (transport wiring is 07E scope)"
 
 
-def test_http_read_api_stays_dormant_get_only_single_threaded() -> None:
-    # AR-2 leg (c) / V-1: the dormant read-API binding is a REAL request-handler surface.
-    # Pin its hazard-relevant shape: GET-only, plain single-threaded HTTPServer, no thread
-    # machinery of its own, and NO production caller (wiring stays test-only until 07E).
-    assert _READ_API.exists(), "http_read_api.py is a recognized dormant transport surface (V-1) — update this guard if it moves"
+def test_http_read_api_per_request_uow_get_only_single_threaded() -> None:
+    # AR-2 leg (c), EVOLVED by PRD 07E-1 (authorized Guard Evolution Matrix #4): the read
+    # edge is now WIRED — the dormancy census is replaced by a POSITIVE per-handler-UoW
+    # census. Every GET request must acquire a fresh control_store_unit_of_work() and use
+    # only the yielded store; the GET-only and single-threaded pins remain; the machinery
+    # ban now covers http_read_api.py; and no OTHER production module wires the edge.
+    assert _READ_API.exists(), "http_read_api.py is the wired read edge (07E-1) — update this guard if it moves"
     text = _READ_API.read_text(encoding="utf-8")
     tree = _tree(_READ_API)
     handlers = [
         node.name for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("do_")
     ]
-    assert handlers == ["do_GET"], f"the read API must stay GET-only (found handlers: {handlers})"
+    assert handlers == ["do_GET"], f"the read edge must stay GET-only (served handlers: {handlers})"
     for marker in ("ThreadingHTTPServer", "ThreadingMixIn"):
         assert marker not in text, f"http_read_api.py must stay single-threaded plain HTTPServer (found {marker})"
+    # Machinery-import ban extended to the transport module (07E-1 §6.7/§6.8).
+    banned = {"threading", "asyncio", "contextvars", "psycopg_pool", "concurrent.futures"}
     imported = set(_scan.imported_modules(_READ_API))
-    assert "threading" not in imported and "asyncio" not in imported, (
-        "http_read_api.py must not grow its own thread/async machinery before 07D-3b"
-    )
-    # Dormancy census: no production module imports it or calls its constructors.
+    hits = {m for m in imported if m in banned or m.split(".")[0] in {b.split(".")[0] for b in banned}}
+    assert not hits, f"http_read_api.py must stay single-threaded stdlib (banned machinery: {hits})"
+    # POSITIVE per-handler-UoW census (non-vacuous): do_GET must exist, must open exactly
+    # one `with ... control_store_unit_of_work() / .acquire()` unit of work, and must not
+    # touch any ControlPlane facade-bound service.
+    do_get = None
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "do_GET":
+            do_get = node
+    assert do_get is not None, "the wired read edge must define do_GET (positive census is non-vacuous)"
+    uow_withs = [
+        w
+        for w in ast.walk(do_get)
+        if isinstance(w, ast.With)
+        and any(
+            isinstance(item.context_expr, ast.Call)
+            and isinstance(item.context_expr.func, ast.Attribute)
+            and item.context_expr.func.attr in ("control_store_unit_of_work", "acquire")
+            for item in w.items
+        )
+    ]
+    assert uow_withs, "do_GET must acquire a fresh control_store_unit_of_work() per request (with-block)"
+    facade_banned = {"store", "registry", "membership", "federation", "directory", "audit"}
+    facade_hits = sorted({node.attr for node in ast.walk(do_get) if isinstance(node, ast.Attribute) and node.attr in facade_banned})
+    assert not facade_hits, f"do_GET must use ONLY the yielded UoW store — facade-bound access: {facade_hits}"
+    # The server binds a ControlPlane, never a store; the runnable entrypoint lives here.
+    for fn_name in ("_make_handler", "make_server"):
+        fn = next(n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == fn_name)
+        first_arg = fn.args.args[0].arg if fn.args.args else None
+        assert first_arg == "control_plane", f"{fn_name} must take the ControlPlane accessor, not a store ({first_arg!r})"
+    assert "def serve_read_api" in text, "the runnable entrypoint (serve_read_api) must live in http_read_api.py"
+    assert "from control_plane.main import create_app" in text, "entrypoint composes via function-local create_app import"
+    assert "503" in text, "the fail-closed 5xx (503, empty body) contract must survive in the transport"
+    # Single-wiring census: no OTHER production module imports the edge or its server
+    # symbols (main.py stays transport-free — see the composition-root guard).
     offenders: List[str] = []
     for pkg in _scan.SERVICE_PACKAGES + ["shared"]:
         for path in _product_files(_scan.BACKEND_ROOT / pkg):
@@ -232,7 +267,7 @@ def test_http_read_api_stays_dormant_get_only_single_threaded() -> None:
             used = _names_used(_tree(path))
             if "make_server" in used or "serve_forever" in used:
                 offenders.append(f"{_scan.relposix(path)} references make_server/serve_forever")
-    assert not offenders, f"the HTTP read API must stay product-unwired until the 07E transport decision (with 07D-3b): {offenders}"
+    assert not offenders, f"the read edge must have no OTHER production wiring (07E-1 single-entrypoint): {offenders}"
 
 
 def test_product_thread_import_census_is_frozen_to_benign_set() -> None:
@@ -293,7 +328,7 @@ if __name__ == "__main__":
             test_lifecycle_service_not_wired_in_any_product_module,
             test_control_store_per_uow_scoping_and_tier2_marker,
             test_composition_root_wires_no_concurrent_transport,
-            test_http_read_api_stays_dormant_get_only_single_threaded,
+            test_http_read_api_per_request_uow_get_only_single_threaded,
             test_product_thread_import_census_is_frozen_to_benign_set,
             test_verify_yield_policy_constants_pinned,
             test_cas_caller_census_frozen_to_five_production_sites,
