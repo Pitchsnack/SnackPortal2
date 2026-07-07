@@ -173,3 +173,15 @@ These do **not** reopen the architecture:
 - Exact access-token TTL value and clock-skew tolerance (operational tuning).
 - Whether to enable the optional emergency `jti` denylist, and its (control-plane) storage choice.
 - Wildcard certificate / DNS management if subdomains are used for addressing.
+
+## 07E-3a auth transport wire contract capture (governance; PRD-07E-3a, 2026-07-08)
+
+*Insert-only governance note. References the internal gateway↔auth-router authentication transport wire captured for future runtime work (07E-3b). No normative change to the authentication model — token validation, JWKS, OIDC, the JWT lifecycle, roles, tenant-context, carrier, or denial semantics above are unchanged.*
+
+- **IC-005 remains the authority** for authentication semantics (Phase 0/1, OIDC stateless JWT validation, roles D-32, tenant carriage D-06, carrier match-or-reject D-33, denial semantics). This note adds nothing normative.
+- `docs/auth/AUTH-TRANSPORT-SPEC-01-Gateway-AuthRouter-Wire-Contract.md` captures the **internal API Gateway ↔ Auth Router** authentication transport wire (the authentication analogue of the D-15-T1a dispatch capture in IC-010).
+- The **Auth Router validates the inbound authentication artifact** (Stage 1: DB-free JWT validation; Stage 2: tenant/membership/role/readiness resolution via the approved control-plane read) and **resolves references**. The API Gateway performs neither stage and consumes the result as input (IC-010 §D).
+- The Auth Router returns **only the 4-field `AuthContext` / `AuthResult` shape** (`correlation_id`, `principal_ref`, `active_tenant_id`, `role`) — references only. CONTROL context is derived (`active_tenant_id` is null), never a carried field.
+- The Auth Router **does not return** tokens, JWKS/key material, secrets, credentials, the inbound authorization header, PII (email/name/display name/profile), business payloads, database material (DSN/database name/handle), membership lists, permission matrices, or authorization decisions. The inbound bearer credential is validated server-side and is **never logged, never returned, and never forwarded to the Database Router**.
+- Consistent with the *Runtime Operational Audit Emission* reconciliation above, the API Gateway remains the sole single-edge audit emitter; the Auth Router detects and surfaces the authenticated context (and the tenantless-CONTROL condition) but does not itself emit.
+- **Runtime implementation remains deferred to 07E-3b** (the gateway authenticator transport client + the Auth Router authentication server). This note authorizes no runtime code, no server, no token validation, and no database access. **B5-BLK-4 remains OPEN; Physical Multi-Database MVP is mandatory and NOT complete.**
