@@ -29,11 +29,25 @@ on:
       - "infrastructure/db/**"
       - "backend/tests/**/requires_pg/**"
       - ".github/workflows/live-pg-durable-path.yml"
+      # PRD 07E-1A (AT-07E1-1): read-edge / per-request-UoW runtime source. A change to these files
+      # alters the durable-path behaviour the requires_pg harnesses prove, so re-run this advisory
+      # live-PG evidence. Trigger-only: this does NOT add entries to the harness run-loop below.
+      - "backend/control_plane/adapters/providers/http_read_api.py"
+      - "backend/control_plane/read_api.py"
+      - "backend/control_plane/main.py"
+      - "backend/control_plane/adapters/providers/control_store_factory.py"
+      - "backend/control_plane/adapters/providers/postgres_store.py"
   pull_request:
     paths:
       - "infrastructure/db/**"
       - "backend/tests/**/requires_pg/**"
       - ".github/workflows/live-pg-durable-path.yml"
+      # PRD 07E-1A (AT-07E1-1): read-edge / per-request-UoW runtime source (see push: rationale above).
+      - "backend/control_plane/adapters/providers/http_read_api.py"
+      - "backend/control_plane/read_api.py"
+      - "backend/control_plane/main.py"
+      - "backend/control_plane/adapters/providers/control_store_factory.py"
+      - "backend/control_plane/adapters/providers/postgres_store.py"
 
 # Own least-privilege floor (a new workflow does not inherit ci.yml's top-level default).
 permissions:
