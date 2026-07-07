@@ -71,6 +71,44 @@ def _do(
         conn.close()
 
 
+# OBS-1 (D-15-T1c): the router dispatch server is a single-threaded stdlib HTTP/1.0 server that
+# closes the connection immediately after a bodiless 405/404 (_respond_empty), before reading any
+# request body. On Windows loopback that immediate close intermittently (~1 in 6 local runs)
+# surfaces client-side as ``ConnectionAbortedError: [WinError 10053]`` (or a reset) while
+# http.client reads the response. Linux CI is deterministic; the runtime is correct — this is a
+# test-harness robustness concern only.
+_REFUSAL_PROBE_ATTEMPTS = 5
+
+
+def _do_refusal_probe(
+    base_url: str,
+    *,
+    method: str = "POST",
+    path: str = _PATH,
+    payload: Optional[dict] = None,
+    raw_body: Optional[bytes] = None,
+) -> Tuple[int, bytes]:
+    """Retry wrapper used SOLELY for the OBS-1 refusal probes (GET wrong-method -> 405 empty,
+    POST wrong-path -> 404 empty).
+
+    Tolerates only the narrow transient Windows-loopback abort/reset classes and retries with a
+    FRESH connection each attempt (every attempt re-calls ``_do``, which opens and closes its own
+    ``http.client.HTTPConnection`` — an aborted loopback socket is never reused). Every other
+    exception (including an ``AssertionError``) propagates unchanged, and the last transient error
+    re-raises after the bounded attempts are exhausted, so a persistent/real abort still fails the
+    test. Restricted to the refusal probes, which perform no ``route()`` call, open no tenant DB,
+    and append no ``Route`` audit — so re-sending them is side-effect-free. This wrapper must NOT be
+    used for any request that reaches ``route()`` (the tenant/CONTROL success POSTs)."""
+    for attempt in range(_REFUSAL_PROBE_ATTEMPTS):
+        try:
+            return _do(base_url, method=method, path=path, payload=payload, raw_body=raw_body)
+        except (ConnectionAbortedError, ConnectionResetError):
+            # ConnectionResetError also covers http.client.RemoteDisconnected (a subclass).
+            if attempt == _REFUSAL_PROBE_ATTEMPTS - 1:
+                raise
+    raise AssertionError("unreachable: bounded refusal-probe retry exhausted without returning or raising")  # pragma: no cover
+
+
 def _env(
     *,
     correlation_id: str = "c1",
@@ -184,9 +222,12 @@ def test_wrong_method_405_empty_and_wrong_path_404_empty_no_route() -> None:
     router, _pool, factory, audit = _compose()
     server, base_url = _host(router)
     try:
-        s_get, b_get = _do(base_url, method="GET")
+        # OBS-1: the two refusal probes are hardened against the Windows-loopback abort via
+        # _do_refusal_probe (bounded retry, fresh connection per attempt); the refusal semantics
+        # below are asserted unchanged on the real response.
+        s_get, b_get = _do_refusal_probe(base_url, method="GET")
         assert s_get == 405 and b_get == b"", "non-POST must be 405 empty body"
-        s_path, b_path = _do(base_url, path="/nope", payload=_env(active_tenant_id="t1", role="TENANT_AGENT"))
+        s_path, b_path = _do_refusal_probe(base_url, path="/nope", payload=_env(active_tenant_id="t1", role="TENANT_AGENT"))
         assert s_path == 404 and b_path == b"", "wrong path must be 404 empty body"
         assert not factory.opens and "Route" not in audit.actions(), "wrong path must not route"
     finally:
