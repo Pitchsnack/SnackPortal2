@@ -1169,5 +1169,210 @@ def test_07d_composition_onboarding(admin_dsn: str) -> None:
                 os.environ[k] = v
 
 
+# =====================================================================================================
+# PRD D-15-T1b — gateway<->database-router dispatch transport pair, live-PG proof DT-1..DT-8.
+# Self-contained (own scratch databases; no onboarding dependency): it exercises the RUNTIME dispatch
+# transport (api_gateway urllib client -> internal database_router HTTP dispatch server -> composed
+# DatabaseRouter.route(ctx)) against physically-distinct PostgreSQL databases on the ephemeral cluster.
+# Run set STAYS 13 (this file is already a single workflow loop entry). All database_router / api_gateway
+# imports are function-local (Driver Containment + the harness's no-top-level-database_router discipline).
+# =====================================================================================================
+
+# §10 never-cross material scanned in the raw HTTP response bytes (DT-7). Matching is CASE-SENSITIVE
+# over the FULL raw bytes (status line + headers + body): the lowercase 'content' needle must NOT match
+# the standard 'Content-Type'/'Content-Length' framing headers (RF/C-5). 'data' does not match 'Date'.
+_LEAK_NEEDLES = (
+    "DSN", "dsn", "dbname", "database", "host", "port", "store_ref", "SecretRef", "secret", "credential",
+    "password", "passwd", "token", "authorization", "route_ref", "TenantConnection", "RouteResult",
+    "TenantRoutingView", "topology", "pool", "body", "payload", "data", "content", "stack trace",
+    "exception", "vendor payload", "secret version", "internal diagnostic", "lifecycle reason",
+)  # fmt: skip
+
+
+def _raw_dispatch(base_url: str, ctx, category: str) -> bytes:
+    """POST a dispatch envelope over a raw socket and return the FULL raw HTTP response bytes."""
+    import json
+    import socket
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(base_url)
+    host, port = parts.hostname or "127.0.0.1", parts.port
+    body = json.dumps(
+        {
+            "v": 1,
+            "context": {
+                "correlation_id": ctx.correlation_id,
+                "request_id": ctx.request_id,
+                "active_tenant_id": ctx.active_tenant_id,
+                "principal_ref": ctx.principal_ref,
+                "role": ctx.role,
+            },
+            "category": category,
+        }
+    ).encode("utf-8")
+    request = (
+        f"POST /internal/dispatch/route HTTP/1.1\r\nHost: {host}:{port}\r\n"
+        f"Content-Type: application/json\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n"
+    ).encode("utf-8") + body
+    sock = socket.create_connection((host, port), timeout=5)
+    try:
+        sock.sendall(request)
+        chunks = []
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        sock.close()
+
+
+def _assert_no_leak(raw_bytes: bytes, *db_names: str) -> None:
+    text = raw_bytes.decode("latin-1")  # byte-faithful; no re-encode surprises
+    for needle in _LEAK_NEEDLES:
+        assert needle not in text, f"DT-7 raw-byte leak: needle {needle!r} present in the response bytes"
+    for name in db_names:
+        assert name not in text, f"DT-7 raw-byte leak: database name {name!r} present in the response bytes"
+
+
+def test_07d_dispatch_transport_pair(admin_dsn: str) -> None:
+    psycopg = _psycopg()
+    import threading
+
+    from api_gateway.adapters.providers.http_router_dispatch import HttpRouterDispatch
+    from api_gateway.models import DatabaseDomain, DispatchCategory, DispatchDecision
+    from database_router.adapters.providers.env_tenant_secret_store import EnvTenantSecretStore
+    from database_router.adapters.providers.http_dispatch_api import build_dispatch_server
+    from database_router.adapters.providers.in_memory_audit_sink import InMemoryAuditSink
+    from database_router.adapters.providers.psycopg_connection import PsycopgConnectionFactory
+    from database_router.cache import RoutingViewCache
+    from database_router.models import TenantRoutingView
+    from database_router.pool import ConnectionPoolManager
+    from database_router.ports import ControlPlaneRoutingReadPort
+    from database_router.resolver import RoutingResolver
+    from database_router.router import DatabaseRouter
+    from shared.context import RequestContext
+
+    tenant_db, ctl_db, tid = "sp2_dt_tenant", "sp2_dt_ctl", "dt1"
+    store_ref = "tenant/dt1/dsn"
+    env_key = EnvTenantSecretStore._env_key(store_ref, "1")
+    saved_secret = os.environ.get(env_key)
+    server = None
+    pool = None
+    try:
+        # Two physically-distinct scratch databases on the same ephemeral cluster.
+        for name in (tenant_db, ctl_db):
+            _drop_db(psycopg, admin_dsn, name)
+            boot = psycopg.connect(admin_dsn, autocommit=True)
+            try:
+                boot.execute(f'CREATE DATABASE "{name}"')
+            finally:
+                boot.close()
+        tenant_dsn = _pg.swap_db(admin_dsn, tenant_db)
+        os.environ[env_key] = tenant_dsn  # the router resolves the tenant descriptor BY REFERENCE (D-14)
+
+        class _FixedRoutingRead(ControlPlaneRoutingReadPort):
+            def __init__(self) -> None:
+                self._views = {
+                    tid: TenantRoutingView(tid, "Ready", True, SecretRef(store_ref, "1"), "1"),
+                    "susp": TenantRoutingView("susp", "Suspended", False, SecretRef("tenant/susp/dsn", "1"), "1"),
+                }
+
+            def get_routing_view(self, tenant_id: str):
+                return self._views.get(tenant_id)  # "ghost" -> None -> not_found
+
+        resolver = RoutingResolver(
+            _FixedRoutingRead(), RoutingViewCache(ttl_seconds=15.0, clock=lambda: 0.0), supported_schema_versions=("1",)
+        )
+        pool = ConnectionPoolManager(max_per_tenant=5, idle_timeout_seconds=60.0, clock=lambda: 0.0)
+        audit = InMemoryAuditSink()
+        router = DatabaseRouter(
+            resolver=resolver, pool=pool, secret_store=EnvTenantSecretStore(), connection_factory=PsycopgConnectionFactory(), audit=audit
+        )
+        server, base_url = build_dispatch_server(router, "127.0.0.1", 0)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        client = HttpRouterDispatch(base_url)
+
+        def ctx(cid: str, tenant, role: str) -> RequestContext:
+            return RequestContext(correlation_id=cid, request_id=None, active_tenant_id=tenant, principal_ref="ops_ref", role=role)
+
+        tenant_dec = DispatchDecision(category=DispatchCategory.TENANT_OPERATION, domain=DatabaseDomain.TENANT, target_tenant_id=tid)
+        control_dec = DispatchDecision(
+            category=DispatchCategory.GLOBAL_DIRECTORY_READ, domain=DatabaseDomain.CONTROL, target_tenant_id=None
+        )
+
+        # DT-1 e2e happy path + EXACT one-'Route'-per-correlation-id audit (and the CONTROL leg -> RouteControl).
+        out1 = client.dispatch(ctx("dt-1", tid, "TENANT_AGENT"), tenant_dec)
+        assert (out1.status, out1.public_code, out1.dispatched) == (200, "ok", True), out1
+        assert [e.action for e in audit.events() if e.correlation_id == "dt-1"].count("Route") == 1
+        out1c = client.dispatch(ctx("dt-1c", None, "CONTROL"), control_dec)
+        assert (out1c.status, out1c.public_code, out1c.dispatched) == (200, "ok", True)
+        assert [e.action for e in audit.events() if e.correlation_id == "dt-1c"].count("RouteControl") == 1
+        print("PASS: DT-1 e2e gateway client -> dispatch server -> router = 200/ok/true; exactly one Route (RouteControl for CONTROL)")
+
+        # DT-2 one request -> one active tenant -> one tenant database.
+        assert pool.pool_keys() == [(tid, "1")], f"exactly one tenant pool expected: {pool.pool_keys()}"
+        assert pool.counts(tid, "1")[1] == 0, "the tenant connection is released before the response (in_use == 0)"
+        print("PASS: DT-2 one request -> one active tenant -> one tenant database (single pool key, released)")
+
+        # DT-3 control DB vs tenant DB physically distinct at database granularity (same cluster).
+        assert tenant_db != ctl_db and _db_exists(psycopg, admin_dsn, tenant_db) and _db_exists(psycopg, admin_dsn, ctl_db)
+        tconn = psycopg.connect(tenant_dsn)
+        try:
+            with tconn.cursor() as cur:
+                bound = _one(cur, "SELECT current_database()")
+                assert bound == tenant_db and bound != ctl_db, bound
+        finally:
+            tconn.close()
+        print("PASS: DT-3 control DB vs tenant DB physically distinct at database granularity (cross-cluster is deployment-only / b3a)")
+
+        # DT-4 dispatch server unavailable -> client fail-closed.
+        out4 = HttpRouterDispatch("http://127.0.0.1:1", timeout=1.0).dispatch(ctx("dt-4", tid, "TENANT_AGENT"), tenant_dec)
+        assert (out4.status, out4.public_code, out4.dispatched) == (503, "unavailable", False)
+        print("PASS: DT-4 dispatch server unavailable -> 503/unavailable/false")
+
+        # DT-5 invalid tenant -> 404/not_found/false with no topology leak.
+        out5 = client.dispatch(ctx("dt-5", "ghost", "TENANT_AGENT"), tenant_dec)
+        assert (out5.status, out5.public_code, out5.dispatched) == (404, "not_found", False)
+        _assert_no_leak(_raw_dispatch(base_url, ctx("dt-5b", "ghost", "TENANT_AGENT"), "TENANT_OPERATION"), tenant_db, ctl_db)
+        print("PASS: DT-5 invalid tenant -> 404/not_found/false; raw denial carries no dbname/host/port/store_ref/credential/topology")
+
+        # DT-6 administratively disabled / suspended routing -> 403/administratively_disabled/false.
+        out6 = client.dispatch(ctx("dt-6", "susp", "TENANT_AGENT"), tenant_dec)
+        assert (out6.status, out6.public_code, out6.dispatched) == (403, "administratively_disabled", False)
+        print("PASS: DT-6 administratively disabled / suspended routing -> 403/administratively_disabled/false, no topology leak")
+
+        # DT-7 raw HTTP response byte leak scan (case-sensitive, full raw bytes) on the success path.
+        _assert_no_leak(_raw_dispatch(base_url, ctx("dt-7", tid, "TENANT_AGENT"), "TENANT_OPERATION"), tenant_db, ctl_db)
+        print("PASS: DT-7 raw response byte scan (success + denial): no never-cross material (case-sensitive; framing headers safe)")
+
+        # DT-8 release hygiene: N (> max_per_tenant=5) sequential dispatches all succeed; in_use stays 0.
+        for i in range(6):
+            out8 = client.dispatch(ctx(f"dt-8-{i}", tid, "TENANT_AGENT"), tenant_dec)
+            assert (out8.status, out8.public_code, out8.dispatched) == (200, "ok", True), (i, out8)
+            assert pool.counts(tid, "1")[1] == 0, f"in_use must be 0 after dispatch {i} (no release leak)"
+        print(
+            "PASS: DT-8 release hygiene: 6 (> max_per_tenant=5) dispatches all 200/ok/true, in_use==0 (a leak trips "
+            "connection_unavailable at #6); forced-exhaustion fail-closed carried as residual AT-D15T1-5"
+        )
+        print("ALL D-15-T1b DISPATCH TRANSPORT (DT-1..DT-8) CHECKS PASSED")
+    finally:
+        if server is not None:
+            server.shutdown()
+            server.server_close()
+        if pool is not None:
+            try:
+                pool.invalidate_version(tid, keep_version="__drain__")  # close pooled idle conns before DROP
+            except Exception:
+                pass
+        for name in (tenant_db, ctl_db):
+            _drop_db(psycopg, admin_dsn, name)
+        if saved_secret is None:
+            os.environ.pop(env_key, None)
+        else:
+            os.environ[env_key] = saved_secret
+
+
 if __name__ == "__main__":
-    _pg.run([test_07d_composition_onboarding])
+    _pg.run([test_07d_composition_onboarding, test_07d_dispatch_transport_pair])

@@ -37,6 +37,11 @@ on:
       - "backend/control_plane/main.py"
       - "backend/control_plane/adapters/providers/control_store_factory.py"
       - "backend/control_plane/adapters/providers/postgres_store.py"
+      # PRD D-15-T1b: the runtime gateway<->router dispatch transport pair proven by DT-1..DT-8 (folded
+      # into test_pg_composition_onboarding_07d.py). A change to these modules alters the dispatch
+      # behaviour the live-PG proof exercises. Trigger-only: this does NOT add a harness run-loop entry.
+      - "backend/database_router/adapters/providers/http_dispatch_api.py"
+      - "backend/api_gateway/adapters/providers/http_router_dispatch.py"
   pull_request:
     paths:
       - "infrastructure/db/**"
@@ -48,6 +53,11 @@ on:
       - "backend/control_plane/main.py"
       - "backend/control_plane/adapters/providers/control_store_factory.py"
       - "backend/control_plane/adapters/providers/postgres_store.py"
+      # PRD D-15-T1b: the runtime gateway<->router dispatch transport pair proven by DT-1..DT-8 (folded
+      # into test_pg_composition_onboarding_07d.py). A change to these modules alters the dispatch
+      # behaviour the live-PG proof exercises. Trigger-only: this does NOT add a harness run-loop entry.
+      - "backend/database_router/adapters/providers/http_dispatch_api.py"
+      - "backend/api_gateway/adapters/providers/http_router_dispatch.py"
 
 # Own least-privilege floor (a new workflow does not inherit ci.yml's top-level default).
 permissions:
