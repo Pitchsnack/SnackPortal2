@@ -136,9 +136,16 @@ class Gateway:
             return GatewayResponse(status=403, public_code=denied.public_code)
 
         # Hand off to the Database Router (it selects exactly one DB from the signed claim).
-        # The gateway resolves no database (§X/§H).
-        self._router.dispatch(context, decision)
-        return GatewayResponse(status=200, public_code="ok", dispatched=True, category=category)
+        # The gateway resolves no database (§X/§H); it maps the router's references-only
+        # RouteOutcome into the response. `category` stays gateway-owned (§Q) — it is the
+        # gateway's own per-request classification and is NEVER taken from the router.
+        outcome = self._router.dispatch(context, decision)
+        return GatewayResponse(
+            status=outcome.status,
+            public_code=outcome.public_code,
+            dispatched=outcome.dispatched,
+            category=category,
+        )
 
     @staticmethod
     def _correlation_id(request: InboundRequest) -> str:

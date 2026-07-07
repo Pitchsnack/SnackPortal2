@@ -13,7 +13,7 @@ from typing import Optional, Sequence
 
 from shared.context import RequestContext
 
-from .models import AuthResult, DispatchDecision, GatewayAuditEvent, RequestMetric
+from .models import AuthResult, DispatchDecision, GatewayAuditEvent, RequestMetric, RouteOutcome
 
 
 class AuthenticatorPort(ABC):
@@ -31,11 +31,12 @@ class RouterDispatchPort(ABC):
     reached over transport (NO in-process import of database_router). The gateway hands
     the already-resolved RequestContext + a single DispatchDecision; the ROUTER selects
     exactly one database from the signed claim. The gateway never resolves a database
-    (IC-010 §X). Live end-to-end routing is D-15-deferred; this seam is exercised against
-    a stub."""
+    (IC-010 §X). Returns a references-only ``RouteOutcome`` (status/public_code/dispatched)
+    that carries no DB handle/name/DSN/secret/credential or body/payload — still non-live:
+    end-to-end routing remains D-15-deferred and is exercised against a stub."""
 
     @abstractmethod
-    def dispatch(self, context: RequestContext, decision: DispatchDecision) -> None: ...
+    def dispatch(self, context: RequestContext, decision: DispatchDecision) -> RouteOutcome: ...
 
 
 class AuditEmitterPort(ABC):

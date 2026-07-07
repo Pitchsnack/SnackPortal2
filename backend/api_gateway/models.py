@@ -110,6 +110,22 @@ class GatewayResponse:
 
 
 @dataclass(frozen=True)
+class RouteOutcome:
+    """References-only router-dispatch outcome (IC-010 §152-154; D-07E-6a; 07E-2-X).
+
+    The Database Router's non-live handoff result that the gateway maps into a
+    GatewayResponse. Carries NO DB handle/connection, tenant id, DB name, secret/DSN/
+    credential, request/response body, or business payload (IC-010 §G/§T; §154 forbids
+    full response-body pass-through) — non-live: it confirms the handoff outcome only.
+    ``category`` is gateway-owned (§Q) and is NEVER carried here.
+    """
+
+    status: int
+    public_code: str
+    dispatched: bool = True
+
+
+@dataclass(frozen=True)
 class RequestMetric:
     """A non-disclosing per-request observability metric (IC-010 §S; WP-11).
 

@@ -19,6 +19,7 @@ from api_gateway.models import (  # noqa: E402
     DispatchDecision,
     GatewayAuditEvent,
     InboundRequest,
+    RouteOutcome,
     carrier_mismatch,
     forbidden,
     unauthenticated,
@@ -64,13 +65,15 @@ class StubAuthenticator(AuthenticatorPort):
 
 
 class StubRouterDispatch(RouterDispatchPort):
-    """Records the (context, decision) handoff. Resolves NO database (D-15-deferred)."""
+    """Records the (context, decision) handoff, then returns the default references-only
+    RouteOutcome. Resolves NO database (D-15-deferred)."""
 
     def __init__(self) -> None:
         self.handoffs: List[Tuple[RequestContext, DispatchDecision]] = []
 
-    def dispatch(self, context: RequestContext, decision: DispatchDecision) -> None:
+    def dispatch(self, context: RequestContext, decision: DispatchDecision) -> RouteOutcome:
         self.handoffs.append((context, decision))
+        return RouteOutcome(status=200, public_code="ok", dispatched=True)
 
 
 class RecordingAuditEmitter(AuditEmitterPort):
