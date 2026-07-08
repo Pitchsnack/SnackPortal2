@@ -121,6 +121,7 @@ _CLIENT_FORBIDDEN_TOPS = frozenset(
 _GATEWAY_MAIN = _scan.BACKEND_ROOT / "api_gateway" / "main.py"
 _GW_MAIN_IMPORT_TOPS_ALLOW = frozenset({"__future__", "os", "typing", "urllib"})
 _GW_SELECTOR_ENV = "SP2_GW_AUTH_ROUTER_BASE_URL"
+_GW_DB_ROUTER_SELECTOR_ENV = "SP2_GW_DB_ROUTER_BASE_URL"  # 07E-3d dispatch seam
 _GW_BUILD_GATEWAY_KWONLY = ["authenticator", "router", "classify", "audit", "metrics"]
 
 _CLIENT_TOPLEVEL_ALLOW = frozenset({"_is_optional_str", "HttpAuthenticator"})
@@ -428,6 +429,46 @@ def test_composition_guard_nonvacuity() -> None:
     )
 
 
+# --- 07E-3d dispatch composition guard: the config-selectable router seam stays boundary-clean -----
+def test_router_dispatch_composition_boundary_guard() -> None:
+    text = _GATEWAY_MAIN.read_text(encoding="utf-8")
+    tree = _tree(_GATEWAY_MAIN)
+    # Additive + boundary-clean: the router seam does not widen the composition root's stdlib import
+    # surface (relative in-package adapter imports are skipped by _scan), and imports none of the
+    # banned tops — critically NO database_router (the gateway reaches the router over transport only).
+    tops = _import_tops(_GATEWAY_MAIN)
+    assert not (tops - _GW_MAIN_IMPORT_TOPS_ALLOW), (
+        f"the router seam must not widen the stdlib import surface: {sorted(tops - _GW_MAIN_IMPORT_TOPS_ALLOW)}"
+    )
+    assert not (tops & _CLIENT_FORBIDDEN_TOPS), "the router seam must import no database_router/auth_router/jwt/crypto/driver/threading"
+    # The dispatch config-selectable seam exists: selector literal + helper def + the in-package client.
+    assert _GW_DB_ROUTER_SELECTOR_ENV in text, "composition root must pin the SP2_GW_DB_ROUTER_BASE_URL selector"
+    assert "build_router_dispatch_from_env" in _top_level_defs(tree), "the dispatch config-selectable seam helper must exist"
+    assert "HttpRouterDispatch" in _names_used(tree), "the seam must select the in-package HttpRouterDispatch transport client"
+    # No network I/O / DSN / serve lifecycle introduced by the router seam (re-affirmed with it added).
+    assert not _urlopen_calls(tree), "the composition root must perform no network I/O (lazy transport)"
+    lowered = text.lower()
+    for needle in ("dsn", "database_url", "postgresql://", "postgres://"):
+        assert needle not in lowered, f"composition root must not reference {needle}"
+    for needle in ("serve_forever", "threadinghttpserver"):
+        assert needle not in lowered, f"composition root must not carry a serve lifecycle ({needle})"
+
+
+def test_router_dispatch_composition_guard_nonvacuity() -> None:
+    # The ban-set intersection flags a database_router import (the seam must never import it).
+    assert _tops_of_source("from database_router.router import DatabaseRouter\n") & _CLIENT_FORBIDDEN_TOPS == {"database_router"}, (
+        "router composition guard must flag a database_router import"
+    )
+    # The helper-presence check is non-vacuous: a root lacking the dispatch helper is detectable.
+    assert "build_router_dispatch_from_env" not in _top_level_defs(_parse("def other():\n    pass\n")), (
+        "router composition guard must distinguish a root missing the dispatch helper"
+    )
+    # The client-name check distinguishes HttpRouterDispatch from the auth client.
+    assert "HttpRouterDispatch" not in _names_used(_parse("x = HttpAuthenticator()\n")), (
+        "router composition guard must distinguish HttpRouterDispatch usage from HttpAuthenticator"
+    )
+
+
 if __name__ == "__main__":
     _scan.run(
         [
@@ -438,5 +479,7 @@ if __name__ == "__main__":
             test_guard_asymmetry_client_forbids_jwt_server_permits,
             test_composition_boundary_guard,
             test_composition_guard_nonvacuity,
+            test_router_dispatch_composition_boundary_guard,
+            test_router_dispatch_composition_guard_nonvacuity,
         ]
     )
