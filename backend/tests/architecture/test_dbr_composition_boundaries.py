@@ -19,7 +19,11 @@ The composition root (``database_router/main.py``) must:
   ``{__future__, os, typing, urllib, shared}`` only — NO sibling service (independence contract),
   NO top-level ``psycopg``/DB driver (the factory is lazily imported inside the seam), NO threading;
 * perform no network I/O (``urlopen``) and carry no serve lifecycle (``serve_forever`` /
-  ``ThreadingHTTPServer``) at composition — a running service is deployment scope.
+  ``ThreadingHTTPServer``) at composition — a running service is deployment scope;
+* additionally expose the paired ``build_dispatch_server_from_env`` seam (router-gate-first via
+  ``build_router_from_env``, the ``SP2_DBR_DISPATCH_HOST`` / ``SP2_DBR_DISPATCH_PORT`` bind knobs,
+  and the ``build_dispatch_server`` adapter) WITHOUT widening the module-top import surface or adding
+  a serve lifecycle — it constructs a server object (binding an ephemeral socket) but never serves.
 
 Pure stdlib; standalone-runnable:  python tests/architecture/test_dbr_composition_boundaries.py
 """
@@ -37,6 +41,8 @@ import _scan  # noqa: E402
 _DBR_MAIN = _scan.BACKEND_ROOT / "database_router" / "main.py"
 
 _SELECTOR_ENV = "SP2_DBR_ROUTING_READ_BASE_URL"
+_DISPATCH_HOST_ENV = "SP2_DBR_DISPATCH_HOST"
+_DISPATCH_PORT_ENV = "SP2_DBR_DISPATCH_PORT"
 _MAIN_IMPORT_TOPS_ALLOW = frozenset({"__future__", "os", "typing", "urllib", "shared"})
 _BUILD_ROUTER_KWONLY = [
     "read",
@@ -208,10 +214,58 @@ def test_dbr_composition_guard_nonvacuity() -> None:
     )
 
 
+# --- dispatch-server composition guard (build_dispatch_server_from_env) ----------------------------
+def test_dbr_dispatch_server_composition_boundary_guard() -> None:
+    assert _nonempty(_DBR_MAIN), "the database_router composition root must exist and be non-empty"
+    text = _DBR_MAIN.read_text(encoding="utf-8")
+    tree = _tree(_DBR_MAIN)
+    names = _names_used(tree)
+    defs = _top_level_defs(tree)
+
+    # The dispatch seam exists with BOTH new bind selectors, is router-gate-first, and composes the
+    # existing build_dispatch_server adapter (references only — construction binds a socket, not a DB).
+    assert "build_dispatch_server_from_env" in defs, "the dispatch-server composition seam must exist"
+    assert _DISPATCH_HOST_ENV in text, "composition root must pin the SP2_DBR_DISPATCH_HOST selector"
+    assert _DISPATCH_PORT_ENV in text, "composition root must pin the SP2_DBR_DISPATCH_PORT selector"
+    assert "build_dispatch_server" in names, "the dispatch seam must compose via the build_dispatch_server adapter"
+    assert "build_router_from_env" in names, "the dispatch seam must be router-gate-first (calls build_router_from_env)"
+
+    # Additive + boundary-clean: the dispatch seam does NOT widen the module-top import surface
+    # (build_dispatch_server is lazily/relatively imported inside the seam -> skipped by _scan), imports
+    # no sibling service / DB driver / concurrency top, and adds no serve lifecycle at composition.
+    tops = _import_tops(_DBR_MAIN)
+    assert not (tops - _MAIN_IMPORT_TOPS_ALLOW), (
+        f"the dispatch seam must not widen the module-top import surface: {sorted(tops - _MAIN_IMPORT_TOPS_ALLOW)}"
+    )
+    assert not (tops & _FORBIDDEN_TOPS), "the dispatch seam must import no sibling service / DB driver / concurrency at module top"
+    assert "psycopg" not in tops, "the dispatch seam must keep the composition root driver-free at import"
+    assert not _urlopen_calls(tree), "the composition root must perform no network I/O at composition"
+    lowered = text.lower()
+    for needle in ("serve_forever", "threadinghttpserver", "threadingmixin"):
+        assert needle not in lowered, f"the dispatch seam must carry no serve lifecycle ({needle}) — it constructs only"
+
+
+def test_dbr_dispatch_guard_nonvacuity() -> None:
+    # A root missing the dispatch seam is detectable.
+    assert "build_dispatch_server_from_env" not in _top_level_defs(_parse("def other():\n    pass\n")), (
+        "dispatch guard must distinguish a root missing the dispatch seam"
+    )
+    # The serve-lifecycle needle catches a planted serve loop (the seam must construct, never serve).
+    assert "serve_forever" in "threading.Thread(target=server.serve_forever).start()".lower(), (
+        "dispatch guard must detect a planted serve loop"
+    )
+    # The ban-set intersection still flags a sibling-service import in a bad dispatch-seam sample.
+    assert _tops_of_source("from api_gateway.main import build_gateway\n") & _FORBIDDEN_TOPS == {"api_gateway"}, (
+        "dispatch guard must flag a sibling-service import"
+    )
+
+
 if __name__ == "__main__":
     _scan.run(
         [
             test_dbr_composition_boundary_guard,
             test_dbr_composition_guard_nonvacuity,
+            test_dbr_dispatch_server_composition_boundary_guard,
+            test_dbr_dispatch_guard_nonvacuity,
         ]
     )

@@ -16,12 +16,21 @@ no connection, starts no service, and touches no physical database (construction
 It composes ``build_router``'s default in-memory audit sink, so the composed router is
 NOT production-durable; a durable routing-audit sink is a separate follow-on (DBR-AR-2).
 This seam does NOT complete the Physical Multi-Database MVP or make Smoke C runnable.
+
+``build_dispatch_server_from_env`` is the paired follow-on: it composes an internal
+Database Router dispatch **server object** from config — ``build_router_from_env()`` first
+(router-gate: an unset selector returns ``None``), then the ``SP2_DBR_DISPATCH_HOST`` /
+``SP2_DBR_DISPATCH_PORT`` knobs, then the existing ``build_dispatch_server`` adapter. It is
+DB-inert and serve-inert (no serve loop, no thread, no ``route`` call, no ``psycopg.connect``),
+but it is NOT socket-inert: when active, ``HTTPServer`` construction binds an ephemeral (default
+port 0) local listening socket. It does not serve requests, run a service, open a physical
+DB, or make Smoke C runnable.
 """
 
 from __future__ import annotations
 
 import os
-from typing import Dict, Iterable, Optional
+from typing import Dict, Iterable, Optional, Tuple
 from urllib.parse import urlsplit
 
 from shared.audit import OperationalAudit
@@ -45,6 +54,13 @@ SERVICE = "database_router"
 # anything else raises ValueError (fail closed — never a silent fallback from malformed
 # production config to a double).
 SP2_DBR_ROUTING_READ_BASE_URL = "SP2_DBR_ROUTING_READ_BASE_URL"
+
+# The dispatch-server bind knobs (paired follow-on). Non-secret internal config: the host
+# and port the internal Gateway->Database-Router dispatch server binds. Both optional — the
+# defaults are the loopback host and an ephemeral port (IC-010 §R internal-only surface).
+# Only consulted when the router seam is active (SP2_DBR_ROUTING_READ_BASE_URL selected).
+SP2_DBR_DISPATCH_HOST = "SP2_DBR_DISPATCH_HOST"
+SP2_DBR_DISPATCH_PORT = "SP2_DBR_DISPATCH_PORT"
 
 
 def build_router(
@@ -131,6 +147,63 @@ def build_router_from_env() -> Optional[DatabaseRouter]:
         secret_store=EnvTenantSecretStore(),
         connection_factory=PsycopgConnectionFactory(),
     )
+
+
+def _dispatch_port_from_env() -> int:
+    """Parse ``SP2_DBR_DISPATCH_PORT`` fail-closed: unset/empty/whitespace → ``0`` (ephemeral);
+    otherwise a base-10 integer in ``[0, 65535]``, else ``ValueError`` — raised BEFORE any socket
+    bind so malformed config never opens a listener."""
+    raw = (os.environ.get(SP2_DBR_DISPATCH_PORT) or "").strip()
+    if not raw:
+        return 0
+    try:
+        port = int(raw, 10)
+    except ValueError:
+        raise ValueError(f"invalid {SP2_DBR_DISPATCH_PORT}={raw!r}; expected an integer in [0, 65535]") from None
+    if not (0 <= port <= 65535):
+        raise ValueError(f"invalid {SP2_DBR_DISPATCH_PORT}={raw!r}; port out of range [0, 65535]")
+    return port
+
+
+def build_dispatch_server_from_env() -> Optional[Tuple[object, str]]:
+    """The paired dispatch-server composition seam (follow-on to ``build_router_from_env``).
+
+    Router-gate-first: compose the router via ``build_router_from_env()``; if the router
+    selector (``SP2_DBR_ROUTING_READ_BASE_URL``) is inactive it returns ``None`` and this seam
+    returns ``None`` WITHOUT consulting the dispatch knobs. When the router is composed, read the
+    dispatch bind config and construct the server via the existing ``build_dispatch_server``
+    adapter, returning ``(server, base_url)``.
+
+    * ``SP2_DBR_ROUTING_READ_BASE_URL`` unset/empty → ``None`` (dispatch host/port unread). A
+      malformed routing URL raises ``ValueError`` (inherited from ``build_router_from_env``).
+    * ``SP2_DBR_DISPATCH_HOST`` — optional; unset/empty/whitespace → ``127.0.0.1`` (internal
+      loopback, IC-010 §R); otherwise passed through (an unbindable host surfaces as ``OSError``
+      from ``HTTPServer`` construction — deployment scope; no deep host validation here).
+    * ``SP2_DBR_DISPATCH_PORT`` — optional; unset/empty → ``0`` (ephemeral); otherwise an integer
+      in ``[0, 65535]``; non-integer / negative / out-of-range → ``ValueError`` raised BEFORE
+      ``build_dispatch_server`` so a bad port never binds a socket.
+
+    Side-effect boundary (LOAD-BEARING): this seam is DB-inert and serve-inert — it opens no
+    connection, calls no ``route`` / ``psycopg.connect`` and performs no network client I/O, starts
+    no serve loop, thread, daemon, or service. But it is NOT socket-inert: when active,
+    ``build_dispatch_server`` constructs an ``HTTPServer`` which binds + activates a local listening
+    socket at construction (default ``port=0`` → ephemeral). Callers/tests own the socket lifecycle
+    and must close it.
+
+    No overclaim: it composes a dispatch server *object* from config; it does NOT serve requests,
+    run a production service, open a physical database, complete the Physical Multi-Database MVP,
+    or make Smoke C runnable. It is one prerequisite among several.
+    """
+    router = build_router_from_env()
+    if router is None:
+        return None
+    host = (os.environ.get(SP2_DBR_DISPATCH_HOST) or "").strip() or "127.0.0.1"
+    port = _dispatch_port_from_env()
+    # Lazy relative import keeps database_router/main.py import-light (http.server is pulled in
+    # only when the seam is active); build_dispatch_server binds the ephemeral socket.
+    from .adapters.providers.http_dispatch_api import build_dispatch_server
+
+    return build_dispatch_server(router, host=host, port=port)
 
 
 def liveness() -> Dict[str, str]:
