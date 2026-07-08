@@ -1,4 +1,4 @@
-"""07E-3b static guards — gateway<->auth-router authentication transport pair (default suite).
+"""07E-3b/07E-3c static guards — gateway<->auth-router authentication transport pair (default suite).
 
 Pins the 07E-3a auth wire contract (docs/auth/AUTH-TRANSPORT-SPEC-01) against the two new
 runtime transport modules, as pure-stdlib AST/text censuses (no PostgreSQL, no driver, no
@@ -21,6 +21,13 @@ module disappears or empties, and each carries a companion proving it flags a ba
   ``api_gateway`` import; no ``RequestContext`` emission; no public login/password/OAuth route;
   no token/authorization logging; adapter-only top-level defs + import surface. The server
   guard PERMITS ``jwt`` (auth_router owns validation) — the client guard forbids it.
+* **Composition guard** (07E-3c; ``api_gateway/main.py``): the config-selectable
+  ``build_authenticator_from_env`` seam exists with the ``SP2_GW_AUTH_ROUTER_BASE_URL``
+  selector; the composition root imports only ``os``/``typing``/``urllib`` stdlib tops (NO
+  ``auth_router``/``database_router``/``jwt``/crypto/DB driver/threading); ``build_gateway``
+  stays required-injection (authenticator + router have NO defaults — no runnable production
+  composition); no DSN, no network I/O (``urlopen``) at composition, and no
+  ``serve_forever``/lifecycle launcher in the composition root OR the auth server module.
 
 Pure stdlib; standalone-runnable:  python tests/architecture/test_07e3b_auth_transport_boundaries.py
 """
@@ -85,12 +92,14 @@ _CLIENT_IMPORT_TOPS_ALLOW = frozenset({"__future__", "json", "urllib", "typing",
 # The server allow-set PERMITS jwt (auth_router owns validation) — the asymmetry vs the client.
 _SERVER_IMPORT_TOPS_ALLOW = frozenset({"__future__", "json", "http", "typing", "auth_router", "jwt"})
 
+# NOTE (07E-3c polish): no "PyJWT" entry — the PyPI distribution PyJWT imports as module
+# ``jwt`` (already banned); a "PyJWT" top is unreachable via _import_tops and would be a
+# dead entry advertising protection it cannot deliver.
 _CLIENT_FORBIDDEN_TOPS = frozenset(
     {
         "auth_router",
         "database_router",
         "jwt",
-        "PyJWT",
         "cryptography",
         "psycopg",
         "psycopg2",
@@ -107,6 +116,12 @@ _CLIENT_FORBIDDEN_TOPS = frozenset(
         "multiprocessing",
     }
 )
+
+# 07E-3c composition guard surface: the gateway composition root and its import allow-set.
+_GATEWAY_MAIN = _scan.BACKEND_ROOT / "api_gateway" / "main.py"
+_GW_MAIN_IMPORT_TOPS_ALLOW = frozenset({"__future__", "os", "typing", "urllib"})
+_GW_SELECTOR_ENV = "SP2_GW_AUTH_ROUTER_BASE_URL"
+_GW_BUILD_GATEWAY_KWONLY = ["authenticator", "router", "classify", "audit", "metrics"]
 
 _CLIENT_TOPLEVEL_ALLOW = frozenset({"_is_optional_str", "HttpAuthenticator"})
 _SERVER_TOPLEVEL_ALLOW = frozenset(
@@ -166,6 +181,19 @@ def _top_level_defs(tree: ast.AST) -> Set[str]:
 
 def _import_tops(path: pathlib.Path) -> Set[str]:
     return {m.split(".")[0] for m in _scan.imported_modules(path)}
+
+
+def _tops_of_source(source: str) -> Set[str]:
+    """Top-level imported module names of an in-memory source sample — the same absolute-import
+    semantics as ``_scan.imported_modules`` (relative imports are intra-package and skipped), so
+    the non-vacuity companions can prove the ban-set intersection mechanism flags a bad module."""
+    mods: List[str] = []
+    for node in ast.walk(_parse(source)):
+        if isinstance(node, ast.Import):
+            mods.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            mods.append(node.module)
+    return {m.split(".")[0] for m in mods}
 
 
 def _method(tree: ast.AST, class_name: str, method_name: str) -> Optional[ast.FunctionDef]:
@@ -263,6 +291,11 @@ def test_client_guard_nonvacuity() -> None:
     unbounded = _urlopen_calls(_parse("urllib.request.urlopen(req)\n"))
     assert unbounded and not any(kw.arg == "timeout" for kw in unbounded[0].keywords), "client guard must detect an unbounded urlopen"
     assert _REQUEST_KEYS not in _string_key_groups(_parse("x = {'v': 1}\n")), "client guard must distinguish the exact request shape"
+    # 07E-3c polish: the concurrency-import ban-set intersection flags a bad sample (the same
+    # `tops & _CLIENT_FORBIDDEN_TOPS` mechanism the client guard applies to the real module).
+    assert _tops_of_source("import threading\nimport asyncio\n") & _CLIENT_FORBIDDEN_TOPS == {"threading", "asyncio"}, (
+        "client guard must flag a planted concurrency import"
+    )
 
 
 # --- server guard ---------------------------------------------------------------------------------
@@ -328,10 +361,71 @@ def test_server_guard_nonvacuity() -> None:
 
 # --- guard asymmetry: client forbids jwt/crypto, server permits jwt -------------------------------
 def test_guard_asymmetry_client_forbids_jwt_server_permits() -> None:
-    assert {"jwt", "PyJWT", "cryptography"} <= _CLIENT_FORBIDDEN_TOPS, "client guard must ban jwt/PyJWT/cryptography"
-    assert not (_import_tops(_CLIENT_MOD) & {"jwt", "PyJWT", "cryptography"}), "client module must import no jwt/crypto"
+    # (07E-3c polish: the dead "PyJWT" entry is gone — the PyPI package imports as `jwt`.)
+    assert {"jwt", "cryptography"} <= _CLIENT_FORBIDDEN_TOPS, "client guard must ban jwt/cryptography"
+    assert not (_import_tops(_CLIENT_MOD) & {"jwt", "cryptography"}), "client module must import no jwt/crypto"
     assert "jwt" in _SERVER_IMPORT_TOPS_ALLOW, "server guard must permit jwt (validation lives in auth_router)"
     assert "jwt" not in _CLIENT_IMPORT_TOPS_ALLOW, "client guard must not permit jwt"
+
+
+# --- 07E-3c composition guard: the config-selectable seam stays boundary-clean ---------------------
+def test_composition_boundary_guard() -> None:
+    assert _nonempty(_GATEWAY_MAIN), "the gateway composition root must exist and be non-empty"
+    text = _GATEWAY_MAIN.read_text(encoding="utf-8")
+    tree = _tree(_GATEWAY_MAIN)
+    # Import surface: stdlib-only absolute tops (relative imports are intra-package); the ban set
+    # covers auth_router/database_router/jwt/crypto/DB driver/supabase/threading explicitly.
+    tops = _import_tops(_GATEWAY_MAIN)
+    extra = tops - _GW_MAIN_IMPORT_TOPS_ALLOW
+    assert not extra, f"composition root imports outside the stdlib surface: {sorted(extra)}"
+    banned = tops & _CLIENT_FORBIDDEN_TOPS
+    assert not banned, f"composition root must import none of auth_router/database_router/jwt/crypto/driver/threading: {sorted(banned)}"
+    # The config-selectable seam exists: selector literal + helper def + the in-package client.
+    assert _GW_SELECTOR_ENV in text, "composition root must pin the SP2_GW_AUTH_ROUTER_BASE_URL selector"
+    assert "build_authenticator_from_env" in _top_level_defs(tree), "the config-selectable seam helper must exist"
+    assert "HttpAuthenticator" in _names_used(tree), "the seam must select the in-package HttpAuthenticator transport client"
+    # build_gateway stays required-injection (no runnable production composition): keyword-only
+    # surface unchanged, authenticator + router carry NO defaults, the tail params keep theirs.
+    bg: Optional[ast.FunctionDef] = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "build_gateway":
+            bg = node
+    assert bg is not None, "build_gateway must remain defined in the composition root"
+    assert [a.arg for a in bg.args.kwonlyargs] == _GW_BUILD_GATEWAY_KWONLY, "build_gateway keyword-only surface must stay unchanged"
+    assert not bg.args.args and not bg.args.posonlyargs, "build_gateway must stay keyword-only"
+    assert bg.args.kw_defaults[0] is None and bg.args.kw_defaults[1] is None, "authenticator + router must stay REQUIRED (no default)"
+    assert all(d is not None for d in bg.args.kw_defaults[2:]), "classify/audit/metrics must keep their defaults"
+    # Composition performs no network I/O and no DSN/DB material; no serve lifecycle anywhere in
+    # the composition root OR the auth server module (a running service is deployment scope).
+    assert not _urlopen_calls(tree), "the composition root must perform no network I/O (lazy transport)"
+    lowered = text.lower()
+    for needle in ("dsn", "database_url", "postgresql://", "postgres://"):
+        assert needle not in lowered, f"composition root must not reference {needle}"
+    for needle in ("serve_forever", "threadinghttpserver"):
+        assert needle not in lowered, f"composition root must not carry a serve lifecycle ({needle})"
+    assert "serve_forever" not in _SERVER_MOD.read_text(encoding="utf-8"), "the auth server module must stay factory-only (no serve loop)"
+    # No token/authorization handling or logging in the composition root.
+    assert "logging" not in tops, "composition root must not import logging"
+    assert not _print_calls(tree), "composition root must not print"
+
+
+def test_composition_guard_nonvacuity() -> None:
+    # The ban-set intersection flags a bad composition sample (same mechanism as the guard).
+    assert _tops_of_source("from auth_router.main import build_authenticator\n") & _CLIENT_FORBIDDEN_TOPS == {"auth_router"}, (
+        "composition guard must flag an auth_router import"
+    )
+    assert _tops_of_source("import psycopg\n") & _CLIENT_FORBIDDEN_TOPS == {"psycopg"}, "composition guard must flag a DB driver import"
+    # A defaulted router (a runnable-composition drift) is detectable on the AST shape.
+    sample = _parse("def build_gateway(*, authenticator=None, router=None):\n    pass\n")
+    bad: Optional[ast.FunctionDef] = None
+    for node in ast.walk(sample):
+        if isinstance(node, ast.FunctionDef):
+            bad = node
+    assert bad is not None and bad.args.kw_defaults[1] is not None, "composition guard must detect a defaulted router"
+    # The serve-lifecycle needle catches a planted run loop.
+    assert "serve_forever" in "threading.Thread(target=server.serve_forever).start()".lower(), (
+        "composition guard must detect a planted serve loop"
+    )
 
 
 if __name__ == "__main__":
@@ -342,5 +436,7 @@ if __name__ == "__main__":
             test_server_boundary_guard,
             test_server_guard_nonvacuity,
             test_guard_asymmetry_client_forbids_jwt_server_permits,
+            test_composition_boundary_guard,
+            test_composition_guard_nonvacuity,
         ]
     )
