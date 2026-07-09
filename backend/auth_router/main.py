@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 from urllib.parse import urlsplit
 
 from shared.audit import OperationalAudit
@@ -54,6 +54,13 @@ SP2_AR_ISSUERS = "SP2_AR_ISSUERS"
 # Production trust pin: asymmetric algorithms only (matching PyJwtSignatureVerifier, which
 # supports exactly these). Symmetric / HS* algorithms are rejected fail-closed at config time.
 _ASYMMETRIC_ALGS = frozenset({"RS256", "RS384", "RS512", "ES256"})
+
+# The authenticate-server bind knobs (Slice 2 paired follow-on). Non-secret internal config: the
+# host and port the internal Gateway->Auth-Router authenticate server binds. Both optional — the
+# defaults are the loopback host and an ephemeral port (IC-010 §R internal-only surface). Only
+# consulted when the authenticator seam is active (SP2_AR_CONTROL_PLANE_READ_BASE_URL selected).
+SP2_AR_AUTHENTICATE_HOST = "SP2_AR_AUTHENTICATE_HOST"
+SP2_AR_AUTHENTICATE_PORT = "SP2_AR_AUTHENTICATE_PORT"
 
 
 def build_authenticator(
@@ -180,6 +187,61 @@ def build_authenticator_from_env() -> Optional[Authenticator]:
         read=HttpControlPlaneRead(raw),
         issuers=issuers,
     )
+
+
+def _authenticate_port_from_env() -> int:
+    """Parse ``SP2_AR_AUTHENTICATE_PORT`` fail-closed: unset/empty/whitespace → ``0`` (ephemeral);
+    otherwise a base-10 integer in ``[0, 65535]``, else ``ValueError`` — raised BEFORE any socket
+    bind so malformed config never opens a listener."""
+    raw = (os.environ.get(SP2_AR_AUTHENTICATE_PORT) or "").strip()
+    if not raw:
+        return 0
+    try:
+        port = int(raw, 10)
+    except ValueError:
+        raise ValueError(f"invalid {SP2_AR_AUTHENTICATE_PORT}={raw!r}; expected an integer in [0, 65535]") from None
+    if not (0 <= port <= 65535):
+        raise ValueError(f"invalid {SP2_AR_AUTHENTICATE_PORT}={raw!r}; port out of range [0, 65535]")
+    return port
+
+
+def build_authenticate_server_from_env() -> Optional[Tuple[object, str]]:
+    """The paired authenticate-server composition seam (follow-on to ``build_authenticator_from_env``).
+
+    Authenticator-gate-first: compose the authenticator via ``build_authenticator_from_env()``; if the
+    authenticator selector (``SP2_AR_CONTROL_PLANE_READ_BASE_URL``) is inactive it returns ``None`` and this
+    seam returns ``None`` WITHOUT consulting the bind knobs. A malformed Slice-1 config (bad URL / invalid
+    ``SP2_AR_ISSUERS``) raises ``ValueError`` (inherited) before any host/port parse. When the authenticator
+    is composed, read the bind config and construct the server via the existing ``build_authenticate_server``
+    adapter, returning ``(server, base_url)``.
+
+    * ``SP2_AR_AUTHENTICATE_HOST`` — optional; unset/empty/whitespace → ``127.0.0.1`` (internal loopback,
+      IC-010 §R); otherwise passed through (an unbindable host surfaces as ``OSError`` from ``HTTPServer``
+      construction — deployment scope; no deep host validation here).
+    * ``SP2_AR_AUTHENTICATE_PORT`` — optional; unset/empty → ``0`` (ephemeral); otherwise an integer in
+      ``[0, 65535]``; non-integer / negative / out-of-range → ``ValueError`` raised BEFORE
+      ``build_authenticate_server`` so a bad port never binds a socket.
+
+    Side-effect boundary (LOAD-BEARING): this seam is DB-inert, network-read-inert, token-verify-inert, and
+    serve-inert — it opens no database, performs no network client read, verifies no token, and starts no
+    serve loop, thread, daemon, or service. But it is NOT socket-inert: when active, ``build_authenticate_server``
+    constructs an ``HTTPServer`` which binds + activates a local listening socket at construction (default
+    ``port=0`` → ephemeral). Callers/tests own the socket lifecycle and must close it.
+
+    No overclaim: it composes an authenticate server *object* from config; it does NOT serve requests, run a
+    production service, open a physical database, complete the Physical Multi-Database MVP, or make the
+    physical live-topology smoke runnable. It is one prerequisite among several.
+    """
+    authenticator = build_authenticator_from_env()
+    if authenticator is None:
+        return None
+    host = (os.environ.get(SP2_AR_AUTHENTICATE_HOST) or "").strip() or "127.0.0.1"
+    port = _authenticate_port_from_env()
+    # Lazy relative import keeps auth_router/main.py import-light (http.server is pulled in only when
+    # the seam is active); build_authenticate_server binds the ephemeral socket.
+    from .adapters.providers.http_authenticate_api import build_authenticate_server
+
+    return build_authenticate_server(authenticator, host=host, port=port)
 
 
 def liveness() -> Dict[str, str]:
