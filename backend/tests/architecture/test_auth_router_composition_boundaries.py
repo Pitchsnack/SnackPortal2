@@ -21,7 +21,12 @@ The composition root (``auth_router/main.py``) must:
   contract), NO top-level ``jwt``/``cryptography`` (the verifier is lazily imported inside the
   seam), NO ``urllib.request`` (only ``urllib.parse.urlsplit``), NO DB driver, NO concurrency;
 * perform no network I/O (``urlopen``) and carry no serve lifecycle (``serve_forever`` /
-  ``ThreadingHTTPServer``) or DSN literal at composition — a running service is deployment scope.
+  ``ThreadingHTTPServer``) or DSN literal at composition — a running service is deployment scope;
+* additionally expose the paired ``build_authenticate_server_from_env`` seam (Slice 2:
+  authenticator-gate-first via ``build_authenticator_from_env``, the ``SP2_AR_AUTHENTICATE_HOST`` /
+  ``SP2_AR_AUTHENTICATE_PORT`` bind knobs, and the ``build_authenticate_server`` adapter) WITHOUT
+  widening the module-top import surface or adding a serve lifecycle — it constructs a server object
+  (binding an ephemeral socket) but never serves.
 
 Pure stdlib; standalone-runnable:  python tests/architecture/test_auth_router_composition_boundaries.py
 """
@@ -40,6 +45,8 @@ _AR_MAIN = _scan.BACKEND_ROOT / "auth_router" / "main.py"
 
 _SELECTOR_ENV = "SP2_AR_CONTROL_PLANE_READ_BASE_URL"
 _ISSUERS_ENV = "SP2_AR_ISSUERS"
+_AUTH_HOST_ENV = "SP2_AR_AUTHENTICATE_HOST"
+_AUTH_PORT_ENV = "SP2_AR_AUTHENTICATE_PORT"
 _MAIN_IMPORT_TOPS_ALLOW = frozenset({"__future__", "os", "json", "typing", "urllib", "shared"})
 _BUILD_AUTHENTICATOR_KWONLY = ["verifier", "read", "issuers", "audit", "cache_ttl_seconds"]
 
@@ -233,10 +240,73 @@ def test_auth_router_composition_guard_nonvacuity() -> None:
     )
 
 
+# --- authenticate-server composition guard (build_authenticate_server_from_env, Slice 2) ----------
+def test_auth_router_authenticate_server_composition_boundary_guard() -> None:
+    assert _nonempty(_AR_MAIN), "the auth_router composition root must exist and be non-empty"
+    text = _AR_MAIN.read_text(encoding="utf-8")
+    tree = _tree(_AR_MAIN)
+    names = _names_used(tree)
+    defs = _top_level_defs(tree)
+
+    # The authenticate-server seam exists with BOTH bind selectors, is authenticator-gate-first, and
+    # composes the existing build_authenticate_server adapter (references only — construction binds a
+    # socket, not a DB; the adapter is lazily imported inside the seam).
+    assert "build_authenticate_server_from_env" in defs, "the authenticate-server composition seam must exist"
+    assert _AUTH_HOST_ENV in text, "composition root must pin the SP2_AR_AUTHENTICATE_HOST selector"
+    assert _AUTH_PORT_ENV in text, "composition root must pin the SP2_AR_AUTHENTICATE_PORT selector"
+    assert "build_authenticate_server" in names, "the seam must compose via the build_authenticate_server adapter"
+    assert "build_authenticator_from_env" in names, "the seam must be authenticator-gate-first (calls build_authenticator_from_env)"
+
+    # Additive + boundary-clean: the seam does NOT widen the module-top import surface (build_authenticate_server
+    # is lazily/relatively imported inside the seam -> skipped by _scan), imports no sibling service / vendor /
+    # HTTP-server / socket / concurrency top, and adds no serve lifecycle at composition.
+    tops = _import_tops(_AR_MAIN)
+    assert not (tops - _MAIN_IMPORT_TOPS_ALLOW), (
+        f"the authenticate-server seam must not widen the module-top import surface: {sorted(tops - _MAIN_IMPORT_TOPS_ALLOW)}"
+    )
+    assert not (tops & _FORBIDDEN_TOPS), (
+        "the authenticate-server seam must import no sibling service / vendor / HTTP-server / socket / concurrency at module top"
+    )
+    full = _abs_import_names(tree)
+    assert not any(m == "urllib.request" or m.startswith("urllib.request.") for m in full), "no urllib.request at module top"
+    assert not _urlopen_calls(tree), "the composition root must perform no network I/O at composition"
+    lowered = text.lower()
+    for needle in ("serve_forever", "threadinghttpserver", "threadingmixin"):
+        assert needle not in lowered, f"the authenticate-server seam must carry no serve lifecycle ({needle}) — it constructs only"
+    for needle in ("dsn", "database_url", "postgresql://", "postgres://"):
+        assert needle not in lowered, f"composition root must embed no {needle}"
+
+
+def test_auth_router_authenticate_server_guard_nonvacuity() -> None:
+    # A root missing the authenticate-server seam is detectable.
+    assert "build_authenticate_server_from_env" not in _top_level_defs(_parse("def other():\n    pass\n")), (
+        "authenticate-server guard must distinguish a root missing the seam"
+    )
+    # The serve-lifecycle needle catches a planted serve loop (the seam must construct, never serve).
+    assert "serve_forever" in "threading.Thread(target=server.serve_forever).start()".lower(), (
+        "authenticate-server guard must detect a planted serve loop"
+    )
+    # The ban-set intersection flags a planted HTTP-server / socket / concurrency / sibling-service top import.
+    assert _tops_of_source("from http.server import HTTPServer\n") & _FORBIDDEN_TOPS == {"http"}, (
+        "authenticate-server guard must flag a top-level http.server import"
+    )
+    assert _tops_of_source("import socket\n") & _FORBIDDEN_TOPS == {"socket"}, (
+        "authenticate-server guard must flag a top-level socket import"
+    )
+    assert _tops_of_source("import threading\n") & _FORBIDDEN_TOPS == {"threading"}, (
+        "authenticate-server guard must flag a top-level threading import"
+    )
+    assert _tops_of_source("from database_router.main import build_router\n") & _FORBIDDEN_TOPS == {"database_router"}, (
+        "authenticate-server guard must flag a sibling-service import"
+    )
+
+
 if __name__ == "__main__":
     _scan.run(
         [
             test_auth_router_composition_boundary_guard,
             test_auth_router_composition_guard_nonvacuity,
+            test_auth_router_authenticate_server_composition_boundary_guard,
+            test_auth_router_authenticate_server_guard_nonvacuity,
         ]
     )
