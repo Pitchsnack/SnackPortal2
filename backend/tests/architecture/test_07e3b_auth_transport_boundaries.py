@@ -27,7 +27,9 @@ module disappears or empties, and each carries a companion proving it flags a ba
   ``auth_router``/``database_router``/``jwt``/crypto/DB driver/threading); ``build_gateway``
   stays required-injection (authenticator + router have NO defaults — no runnable production
   composition); no DSN, no network I/O (``urlopen``) at composition, and no
-  ``serve_forever``/lifecycle launcher in the composition root OR the auth server module.
+  ``serve_forever``/lifecycle launcher in the composition root; the auth server module carries
+  exactly ONE blessed blocking entrypoint (``serve_authenticate_api``, B5-2 Guard Evolution)
+  holding the module's only serve loop.
 
 Pure stdlib; standalone-runnable:  python tests/architecture/test_07e3b_auth_transport_boundaries.py
 """
@@ -135,6 +137,7 @@ _SERVER_TOPLEVEL_ALLOW = frozenset(
         "_authenticate",
         "_make_handler",
         "build_authenticate_server",
+        "serve_authenticate_api",  # B5-2: the single blessed blocking entrypoint
     }
 )
 
@@ -235,6 +238,35 @@ def _forbidden_key_hits(groups: List[frozenset]) -> List[str]:
 
 def _nonempty(path: pathlib.Path) -> bool:
     return path.is_file() and bool(path.read_text(encoding="utf-8").strip())
+
+
+def _serve_forever_refs(tree: ast.AST) -> int:
+    """Count ``serve_forever`` CODE references (Name/Attribute), not docstring/comment prose."""
+    return sum(
+        1
+        for n in ast.walk(tree)
+        if (isinstance(n, ast.Attribute) and n.attr == "serve_forever") or (isinstance(n, ast.Name) and n.id == "serve_forever")
+    )
+
+
+def _single_blessed_serve_problems(tree: ast.AST, entrypoint: str) -> List[str]:
+    """B5-2 Guard Evolution Matrix: the server module must define EXACTLY ONE module-top def named
+    ``entrypoint`` whose body holds the module's ONLY ``serve_forever`` reference — the factory
+    surface stays serve-free and no second serve loop may appear anywhere else in the module."""
+    problems: List[str] = []
+    mod = tree
+    assert isinstance(mod, ast.Module)
+    defs = [n for n in mod.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == entrypoint]
+    if len(defs) != 1:
+        problems.append(f"expected exactly one top-level {entrypoint} def, found {len(defs)}")
+        return problems
+    inside = _serve_forever_refs(defs[0])
+    total = _serve_forever_refs(tree)
+    if inside != 1:
+        problems.append(f"{entrypoint} must contain exactly one serve_forever reference, found {inside}")
+    if total != inside:
+        problems.append(f"serve_forever referenced outside {entrypoint} ({total} total vs {inside} inside)")
+    return problems
 
 
 # --- client guard ---------------------------------------------------------------------------------
@@ -358,6 +390,15 @@ def test_server_guard_nonvacuity() -> None:
     assert _top_level_defs(business) - _SERVER_TOPLEVEL_ALLOW == {"deal_query"}, "server guard must flag a non-adapter business def"
     bad = _string_key_groups(_parse('x = {"status": 1, "dsn": 2}\n'))
     assert _forbidden_key_hits(bad) == ["dsn"], "server guard must flag a forbidden serialized response field"
+    # B5-2: the single-blessed-serve census is non-vacuous — it fails on a second serve loop, a
+    # serve loop outside the entrypoint, and a missing entrypoint; it passes the canonical shape.
+    doubled = _parse("def serve_authenticate_api():\n    s.serve_forever()\n\ndef rogue():\n    s.serve_forever()\n")
+    assert _single_blessed_serve_problems(doubled, "serve_authenticate_api"), "census must flag a second serve loop"
+    misplaced = _parse("def serve_authenticate_api():\n    pass\n\ndef rogue():\n    s.serve_forever()\n")
+    assert _single_blessed_serve_problems(misplaced, "serve_authenticate_api"), "census must flag a serve loop outside the entrypoint"
+    assert _single_blessed_serve_problems(_parse("x = 1\n"), "serve_authenticate_api"), "census must flag a missing entrypoint"
+    canonical = _parse("def serve_authenticate_api():\n    s.serve_forever()\n")
+    assert _single_blessed_serve_problems(canonical, "serve_authenticate_api") == [], "census must pass the canonical shape"
 
 
 # --- guard asymmetry: client forbids jwt/crypto, server permits jwt -------------------------------
@@ -404,7 +445,12 @@ def test_composition_boundary_guard() -> None:
         assert needle not in lowered, f"composition root must not reference {needle}"
     for needle in ("serve_forever", "threadinghttpserver"):
         assert needle not in lowered, f"composition root must not carry a serve lifecycle ({needle})"
-    assert "serve_forever" not in _SERVER_MOD.read_text(encoding="utf-8"), "the auth server module must stay factory-only (no serve loop)"
+    # B5-2 Guard Evolution (consciously supersedes the 07E-3c factory-only pin): the auth server
+    # module now carries EXACTLY ONE blessed blocking entrypoint (serve_authenticate_api) whose body
+    # holds the module's ONLY serve_forever reference — the factory surface stays serve-free, no
+    # second serve loop may appear, and the gateway composition root above remains lifecycle-free.
+    problems = _single_blessed_serve_problems(_tree(_SERVER_MOD), "serve_authenticate_api")
+    assert not problems, f"auth server serve-entrypoint census (B5-2): {problems}"
     # No token/authorization handling or logging in the composition root.
     assert "logging" not in tops, "composition root must not import logging"
     assert not _print_calls(tree), "composition root must not print"

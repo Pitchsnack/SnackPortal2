@@ -82,6 +82,17 @@ _THREADING_ALLOWED = {"database_router/pool.py"}
 # per-module exemption — never a directory/substring open, and it never blesses ``serve_forever``.
 _READ_EDGE_MAKE_SERVER_BLESSED = {"control_plane/main.py"}
 
+# The production serve-loop census (B5-2 Guard Evolution Matrix). ``http_read_api.py`` (the 07E-1
+# ``serve_read_api`` precedent) is the read adapter itself, skipped in the census by identity and
+# retained unchanged; B5-2 blesses exactly TWO more blocking entrypoints — each module may
+# reference ``serve_forever`` ONLY inside its single named entrypoint, exactly once. Narrow, named,
+# per-module (module -> sole approved entrypoint) — never a directory/substring open.
+# ``ThreadingHTTPServer`` is never blessed anywhere (AT-D15T1-10 single-threaded HARD-GATE).
+_SERVE_LOOP_BLESSED = {
+    "auth_router/adapters/providers/http_authenticate_api.py": "serve_authenticate_api",
+    "database_router/adapters/providers/http_dispatch_api.py": "serve_dispatch_api",
+}
+
 # The 5 production CAS callers frozen by the 07D-3 planning census (V-4).
 _EXPECTED_CAS_CALLERS = {
     ("registry.py", "_transition"),
@@ -121,25 +132,61 @@ def _function_def(tree: ast.AST, name: str) -> Optional[ast.AST]:
     return None
 
 
+def _serve_forever_refs(tree: ast.AST) -> int:
+    """Count ``serve_forever`` CODE references (Name/Attribute), not docstring/comment prose."""
+    return sum(
+        1
+        for n in ast.walk(tree)
+        if (isinstance(n, ast.Attribute) and n.attr == "serve_forever") or (isinstance(n, ast.Name) and n.id == "serve_forever")
+    )
+
+
+def _single_blessed_serve_problems(tree: ast.AST, entrypoint: str) -> List[str]:
+    """B5-2 Guard Evolution Matrix: a serve-blessed module must define EXACTLY ONE module-top
+    def named ``entrypoint`` whose body holds the module's ONLY ``serve_forever`` reference —
+    the factory surface stays serve-free and no second serve loop may appear anywhere else."""
+    problems: List[str] = []
+    mod = tree
+    assert isinstance(mod, ast.Module)
+    defs = [n for n in mod.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == entrypoint]
+    if len(defs) != 1:
+        problems.append(f"expected exactly one top-level {entrypoint} def, found {len(defs)}")
+        return problems
+    inside = _serve_forever_refs(defs[0])
+    total = _serve_forever_refs(tree)
+    if inside != 1:
+        problems.append(f"{entrypoint} must contain exactly one serve_forever reference, found {inside}")
+    if total != inside:
+        problems.append(f"serve_forever referenced outside {entrypoint} ({total} total vs {inside} inside)")
+    return problems
+
+
 def _read_edge_wiring_offense(relp: str, tree: ast.AST, imported: List[str]) -> List[str]:
-    """The read-edge single-wiring census predicate (07E-1, EVOLVED by the B5-1 Guard Evolution
-    Matrix). Given one production module (never the read adapter itself, which the caller skips by
-    identity), report its offenses:
+    """The read-edge single-wiring + serve-loop census predicate (07E-1, EVOLVED by the B5-1 and
+    B5-2 Guard Evolution Matrices). Given one production module (never the read adapter itself,
+    which the caller skips by identity), report its offenses:
 
     * imports ``http_read_api`` while not a blessed wirer → offense;
-    * references ``serve_forever`` → offense (the serve loop stays in the read adapter; NO module,
-      blessed or not, may reference it here);
+    * references ``ThreadingHTTPServer`` → offense — never blessed anywhere (AT-D15T1-10);
+    * references ``serve_forever`` → offense UNLESS the module is in ``_SERVE_LOOP_BLESSED`` AND
+      every reference sits inside its single named blocking entrypoint, exactly once (B5-2);
     * references ``make_server`` while not a blessed wirer → offense.
 
-    The blessed set is exactly ``_READ_EDGE_MAKE_SERVER_BLESSED`` — a narrow, named per-module
-    exemption for the B5-1 composition seam, never a directory/substring open."""
+    The blessed sets are exact per-module names (``_READ_EDGE_MAKE_SERVER_BLESSED`` /
+    ``_SERVE_LOOP_BLESSED``) — never a directory/substring open."""
     blessed = relp in _READ_EDGE_MAKE_SERVER_BLESSED
     if any(mod.endswith("http_read_api") for mod in imported) and not blessed:
         return [f"{relp} imports http_read_api"]
     used = _names_used(tree)
     offenses: List[str] = []
+    if "ThreadingHTTPServer" in used:
+        offenses.append(f"{relp} references ThreadingHTTPServer")
     if "serve_forever" in used:
-        offenses.append(f"{relp} references serve_forever")
+        serve_entrypoint = _SERVE_LOOP_BLESSED.get(relp)
+        if serve_entrypoint is None:
+            offenses.append(f"{relp} references serve_forever")
+        else:
+            offenses.extend(f"{relp}: {problem}" for problem in _single_blessed_serve_problems(tree, serve_entrypoint))
     if "make_server" in used and not blessed:
         offenses.append(f"{relp} references make_server")
     return offenses
@@ -331,9 +378,10 @@ def test_http_read_api_per_request_uow_get_only_single_threaded() -> None:
 
 
 def test_read_edge_wiring_census_is_non_vacuous() -> None:
-    # B5-1 Guard Evolution Matrix — non-vacuity companion: prove the EVOLVED single-wiring predicate
-    # still FAILS on an unauthorized make_server / serve_forever / http_read_api reference, and that
-    # the blessing is a real, narrow, per-module exemption (not a directory/substring open). Exercises
+    # B5-1 + B5-2 Guard Evolution Matrices — non-vacuity companion: prove the EVOLVED census
+    # predicate still FAILS on an unauthorized make_server / serve_forever / ThreadingHTTPServer /
+    # http_read_api reference, that the serve blessing is per-module AND per-entrypoint, and that
+    # every blessing is a real, narrow, named exemption (not a directory/substring open). Exercises
     # the REAL predicate (_read_edge_wiring_offense) over planted in-memory sources — no files written.
     def probe(relp: str, source: str, imported: Optional[List[str]] = None) -> List[str]:
         return _read_edge_wiring_offense(relp, ast.parse(source), imported or [])
@@ -344,11 +392,45 @@ def test_read_edge_wiring_census_is_non_vacuous() -> None:
     assert probe("some_service/evil.py", "", imported=["pkg.http_read_api"]) == ["some_service/evil.py imports http_read_api"]
     # The BLESSED seam module may reference make_server and import http_read_api...
     assert probe("control_plane/main.py", "make_server(create_app())\n", imported=["pkg.http_read_api"]) == []
-    # ...but serve_forever is banned EVEN THERE (the serve loop stays in the read adapter).
+    # ...but serve_forever is banned EVEN THERE (the composition root never serves).
     assert probe("control_plane/main.py", "srv.serve_forever()\n") == ["control_plane/main.py references serve_forever"]
-    # The exemption is narrow (exactly one named module) and REAL (main.py truly references make_server).
+    # The exemptions are narrow (exactly the named modules) and REAL (main.py truly references make_server).
     assert _READ_EDGE_MAKE_SERVER_BLESSED == {"control_plane/main.py"}, "the make_server blessing must stay one named module"
     assert "make_server" in _names_used(_tree(_MAIN)), "control_plane/main.py must really reference make_server (B5-1 seam)"
+    # --- B5-2 serve-loop census planted offenses (Guard Evolution Matrix §8.1) ---
+    auth_relp = "auth_router/adapters/providers/http_authenticate_api.py"
+    # The canonical blessed shape passes: one entrypoint, one serve_forever inside it.
+    assert probe(auth_relp, "def serve_authenticate_api():\n    s.serve_forever()\n") == []
+    # A blessed module with a SECOND unauthorized serve loop is flagged.
+    doubled = "def serve_authenticate_api():\n    s.serve_forever()\n\ndef rogue():\n    s.serve_forever()\n"
+    assert probe(auth_relp, doubled), "a second serve loop in a blessed module must be flagged"
+    # A blessed module whose serve loop sits OUTSIDE the named entrypoint is flagged.
+    misplaced = "def serve_authenticate_api():\n    pass\n\ndef rogue():\n    s.serve_forever()\n"
+    assert probe(auth_relp, misplaced), "a serve loop outside the blessed entrypoint must be flagged"
+    # ThreadingHTTPServer is flagged EVERYWHERE — even in a serve-blessed module (AT-D15T1-10).
+    assert probe(auth_relp, "srv = ThreadingHTTPServer(addr, handler)\n") == [f"{auth_relp} references ThreadingHTTPServer"]
+    assert probe("some_service/evil.py", "srv = ThreadingHTTPServer(addr, handler)\n"), "unblessed ThreadingHTTPServer must be flagged"
+    # The dispatch blessing is entrypoint-specific: the auth entrypoint name does not bless dispatch.
+    dbr_relp = "database_router/adapters/providers/http_dispatch_api.py"
+    assert probe(dbr_relp, "def serve_authenticate_api():\n    s.serve_forever()\n"), "the wrong entrypoint name must be flagged"
+    assert probe(dbr_relp, "def serve_dispatch_api():\n    s.serve_forever()\n") == []
+
+
+def test_serve_loop_census_blessed_entrypoints_are_real() -> None:
+    # B5-2 Guard Evolution Matrix — POSITIVE, non-vacuous census: each serve-blessed module REALLY
+    # defines its single blocking entrypoint with exactly one serve_forever inside it (the blessing
+    # never outlives the code it blesses); the blessed set stays exactly the two named adapter
+    # modules; and the retained 07E-1 precedent (serve_read_api in the read adapter) survives.
+    assert set(_SERVE_LOOP_BLESSED) == {
+        "auth_router/adapters/providers/http_authenticate_api.py",
+        "database_router/adapters/providers/http_dispatch_api.py",
+    }, "the serve-loop blessing must stay exactly the two named adapter modules"
+    for relp, entrypoint in _SERVE_LOOP_BLESSED.items():
+        path = _scan.BACKEND_ROOT / relp
+        assert path.is_file(), f"serve-blessed module missing: {relp}"
+        problems = _single_blessed_serve_problems(_tree(path), entrypoint)
+        assert not problems, f"{relp}: {problems}"
+    assert "def serve_read_api" in _READ_API.read_text(encoding="utf-8"), "the 07E-1 read-edge serve precedent must survive"
 
 
 def test_product_thread_import_census_is_frozen_to_benign_set() -> None:
@@ -411,6 +493,7 @@ if __name__ == "__main__":
             test_composition_root_wires_no_concurrent_transport,
             test_http_read_api_per_request_uow_get_only_single_threaded,
             test_read_edge_wiring_census_is_non_vacuous,
+            test_serve_loop_census_blessed_entrypoints_are_real,
             test_product_thread_import_census_is_frozen_to_benign_set,
             test_verify_yield_policy_constants_pinned,
             test_cas_caller_census_frozen_to_five_production_sites,
