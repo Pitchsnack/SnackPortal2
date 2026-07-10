@@ -35,7 +35,7 @@ from __future__ import annotations
 import ast
 import pathlib
 import sys
-from typing import List, Set, Tuple
+from typing import List, Optional, Set, Tuple
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import _scan  # noqa: E402
@@ -75,6 +75,13 @@ _TRANSPORT_DENYLIST = {
 # Product modules allowed to import `threading` (V-1 benign classification; frozen census).
 _THREADING_ALLOWED = {"database_router/pool.py"}
 
+# The read edge's blessed production make_server wirers (07E-1 + B5-1 Guard Evolution Matrix).
+# ``http_read_api.py`` is the read adapter itself (skipped in the census by identity);
+# ``control_plane/main.py`` is the B5-1 server-composition seam (``build_read_server_from_env``),
+# authorized to reference ``make_server`` while composing a server object. This is a narrow, named
+# per-module exemption — never a directory/substring open, and it never blesses ``serve_forever``.
+_READ_EDGE_MAKE_SERVER_BLESSED = {"control_plane/main.py"}
+
 # The 5 production CAS callers frozen by the 07D-3 planning census (V-4).
 _EXPECTED_CAS_CALLERS = {
     ("registry.py", "_transition"),
@@ -104,6 +111,38 @@ def _names_used(tree: ast.AST) -> Set[str]:
         elif isinstance(node, ast.Attribute):
             out.add(node.attr)
     return out
+
+
+def _function_def(tree: ast.AST, name: str) -> Optional[ast.AST]:
+    """The first def/async-def named ``name`` in ``tree`` (or None)."""
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            return node
+    return None
+
+
+def _read_edge_wiring_offense(relp: str, tree: ast.AST, imported: List[str]) -> List[str]:
+    """The read-edge single-wiring census predicate (07E-1, EVOLVED by the B5-1 Guard Evolution
+    Matrix). Given one production module (never the read adapter itself, which the caller skips by
+    identity), report its offenses:
+
+    * imports ``http_read_api`` while not a blessed wirer → offense;
+    * references ``serve_forever`` → offense (the serve loop stays in the read adapter; NO module,
+      blessed or not, may reference it here);
+    * references ``make_server`` while not a blessed wirer → offense.
+
+    The blessed set is exactly ``_READ_EDGE_MAKE_SERVER_BLESSED`` — a narrow, named per-module
+    exemption for the B5-1 composition seam, never a directory/substring open."""
+    blessed = relp in _READ_EDGE_MAKE_SERVER_BLESSED
+    if any(mod.endswith("http_read_api") for mod in imported) and not blessed:
+        return [f"{relp} imports http_read_api"]
+    used = _names_used(tree)
+    offenses: List[str] = []
+    if "serve_forever" in used:
+        offenses.append(f"{relp} references serve_forever")
+    if "make_server" in used and not blessed:
+        offenses.append(f"{relp} references make_server")
+    return offenses
 
 
 def test_lifecycle_service_not_wired_in_any_product_module() -> None:
@@ -192,15 +231,37 @@ def test_control_store_per_uow_scoping_and_tier2_marker() -> None:
 
 
 def test_composition_root_wires_no_concurrent_transport() -> None:
-    # AR-2 leg (b): the create_app() composition root must not construct a request transport
-    # or thread machinery — transports are 07E scope and must honour the 07D-3b per-UoW
-    # contract (fresh store per request via control_store_unit_of_work, never shared).
+    # AR-2 leg (b), EVOLVED by the B5-1 Guard Evolution Matrix: the create_app() composition root
+    # must not construct a request transport or thread machinery — a running serve lifecycle stays
+    # 07E/B5-2 scope and must honour the 07D-3b per-UoW contract (fresh store per request via
+    # control_store_unit_of_work, never shared). B5-1 adds ONE blessed exception: the socket-binding,
+    # serve-INERT read-edge server-composition seam ``build_read_server_from_env`` may reference
+    # ``make_server`` (it composes a server object; it never serves, threads, or opens a DB).
+    # ``serve_forever`` / ``HTTPServer`` / ``ThreadingHTTPServer`` STAY banned in main.py (the serve
+    # loop and the concrete server type live in the read adapter, not the composition root), and no
+    # transport module may be imported at module scope.
     imported = set(_scan.imported_modules(_MAIN))
     hits = sorted(m for m in imported if m in _TRANSPORT_DENYLIST or m.split(".")[0] in _TRANSPORT_DENYLIST)
     assert not hits, f"main.py must not wire a concurrent transport (07E scope; per-UoW contract): {hits}"
-    used = _names_used(_tree(_MAIN))
-    for name in ("make_server", "serve_forever", "HTTPServer", "ThreadingHTTPServer"):
-        assert name not in used, f"main.py must not reference {name} (transport wiring is 07E scope)"
+    main_tree = _tree(_MAIN)
+    used = _names_used(main_tree)
+    for name in ("serve_forever", "HTTPServer", "ThreadingHTTPServer"):
+        assert name not in used, f"main.py must not reference {name} (serve loop / server type is read-adapter scope)"
+    # Positive, NON-VACUOUS census of the one blessed make_server reference (B5-1): the seam exists,
+    # the two env literals exist, and EVERY make_server name reference in main.py is lexically inside
+    # the seam (referenced ONLY by the composition seam — never at module scope or any other function).
+    seam = _function_def(main_tree, "build_read_server_from_env")
+    assert seam is not None, "B5-1: control_plane/main.py must define build_read_server_from_env"
+    main_text = _MAIN.read_text(encoding="utf-8")
+    for literal in ('"SP2_CP_READ_HOST"', '"SP2_CP_READ_PORT"'):
+        assert literal in main_text, f"B5-1: the {literal} env literal must exist in main.py"
+    seam_refs = sum(1 for n in ast.walk(seam) if isinstance(n, ast.Name) and n.id == "make_server")
+    total_refs = sum(1 for n in ast.walk(main_tree) if isinstance(n, ast.Name) and n.id == "make_server")
+    assert seam_refs >= 1, "B5-1: build_read_server_from_env must reference make_server (the blessed seam)"
+    assert total_refs == seam_refs, (
+        "make_server may be referenced ONLY inside build_read_server_from_env "
+        f"(found {total_refs} total in main.py, {seam_refs} inside the seam)"
+    )
 
 
 def test_http_read_api_per_request_uow_get_only_single_threaded() -> None:
@@ -254,20 +315,40 @@ def test_http_read_api_per_request_uow_get_only_single_threaded() -> None:
     assert "def serve_read_api" in text, "the runnable entrypoint (serve_read_api) must live in http_read_api.py"
     assert "from control_plane.main import create_app" in text, "entrypoint composes via function-local create_app import"
     assert "503" in text, "the fail-closed 5xx (503, empty body) contract must survive in the transport"
-    # Single-wiring census: no OTHER production module imports the edge or its server
-    # symbols (main.py stays transport-free — see the composition-root guard).
+    # Single-wiring census, EVOLVED by the B5-1 Guard Evolution Matrix: the read edge has exactly
+    # TWO blessed production wirers — the read adapter itself (http_read_api.py, skipped by identity)
+    # and the B5-1 composition seam control_plane/main.py (build_read_server_from_env, authorized to
+    # reference make_server). Every OTHER production module must import neither the edge nor its
+    # server symbols; and NO module (blessed or not) may reference serve_forever here (the serve loop
+    # stays in the read adapter). See _read_edge_wiring_offense for the shared predicate.
     offenders: List[str] = []
     for pkg in _scan.SERVICE_PACKAGES + ["shared"]:
         for path in _product_files(_scan.BACKEND_ROOT / pkg):
             if path == _READ_API:
                 continue
-            if any(mod.endswith("http_read_api") for mod in _scan.imported_modules(path)):
-                offenders.append(f"{_scan.relposix(path)} imports http_read_api")
-                continue
-            used = _names_used(_tree(path))
-            if "make_server" in used or "serve_forever" in used:
-                offenders.append(f"{_scan.relposix(path)} references make_server/serve_forever")
-    assert not offenders, f"the read edge must have no OTHER production wiring (07E-1 single-entrypoint): {offenders}"
+            offenders.extend(_read_edge_wiring_offense(_scan.relposix(path), _tree(path), _scan.imported_modules(path)))
+    assert not offenders, f"the read edge must have no unblessed production wiring (07E-1 + B5-1): {offenders}"
+
+
+def test_read_edge_wiring_census_is_non_vacuous() -> None:
+    # B5-1 Guard Evolution Matrix — non-vacuity companion: prove the EVOLVED single-wiring predicate
+    # still FAILS on an unauthorized make_server / serve_forever / http_read_api reference, and that
+    # the blessing is a real, narrow, per-module exemption (not a directory/substring open). Exercises
+    # the REAL predicate (_read_edge_wiring_offense) over planted in-memory sources — no files written.
+    def probe(relp: str, source: str, imported: Optional[List[str]] = None) -> List[str]:
+        return _read_edge_wiring_offense(relp, ast.parse(source), imported or [])
+
+    # An UNBLESSED module referencing make_server / serve_forever / importing http_read_api is flagged.
+    assert probe("some_service/evil.py", "x = make_server(app)\n") == ["some_service/evil.py references make_server"]
+    assert probe("some_service/evil.py", "srv.serve_forever()\n") == ["some_service/evil.py references serve_forever"]
+    assert probe("some_service/evil.py", "", imported=["pkg.http_read_api"]) == ["some_service/evil.py imports http_read_api"]
+    # The BLESSED seam module may reference make_server and import http_read_api...
+    assert probe("control_plane/main.py", "make_server(create_app())\n", imported=["pkg.http_read_api"]) == []
+    # ...but serve_forever is banned EVEN THERE (the serve loop stays in the read adapter).
+    assert probe("control_plane/main.py", "srv.serve_forever()\n") == ["control_plane/main.py references serve_forever"]
+    # The exemption is narrow (exactly one named module) and REAL (main.py truly references make_server).
+    assert _READ_EDGE_MAKE_SERVER_BLESSED == {"control_plane/main.py"}, "the make_server blessing must stay one named module"
+    assert "make_server" in _names_used(_tree(_MAIN)), "control_plane/main.py must really reference make_server (B5-1 seam)"
 
 
 def test_product_thread_import_census_is_frozen_to_benign_set() -> None:
@@ -329,6 +410,7 @@ if __name__ == "__main__":
             test_control_store_per_uow_scoping_and_tier2_marker,
             test_composition_root_wires_no_concurrent_transport,
             test_http_read_api_per_request_uow_get_only_single_threaded,
+            test_read_edge_wiring_census_is_non_vacuous,
             test_product_thread_import_census_is_frozen_to_benign_set,
             test_verify_yield_policy_constants_pinned,
             test_cas_caller_census_frozen_to_five_production_sites,
