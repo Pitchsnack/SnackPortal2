@@ -23,7 +23,14 @@ Non-vacuously pins the safety boundaries of the B5-4 operator tool
   pinned; no B5-5/RS256/JWK or Smoke C content appears in any B5-4 file;
 * the disposable requires_pg proof is registered as a justified MANUAL_ONLY exception of the
   live-PG run-set completeness guard (enrollment in the workflow loop is a .github edit — out of
-  B5-4 scope; tracked follow-up).
+  B5-4 scope; tracked follow-up);
+* PM-R2-1 STRUCTURAL regression pins (fix round 2, AST-only — comments/docstrings/strings cannot
+  satisfy them): BOTH cleanup loops in ``cmd_teardown`` must begin with the fail-closed
+  ``cleanup_eligible.get(<tenant>, False)`` gate ending in ``continue`` (loop identification by
+  action call, exactly one deprovision + one unlink loop), and the disposable proof's pre-flight
+  ownership-refusal inventory ITSELF must carry the ``_RENAME_SCRATCH`` Name (with the same
+  constant pinned as the rename-leg and finally-cleanup identity) — each with planted-mutation
+  non-vacuity companions sharing the exact same predicates.
 
 Pure stdlib; standalone-runnable:
   python tests/architecture/test_b5_standing_topology_boundaries.py
@@ -38,7 +45,7 @@ import ast
 import pathlib
 import re
 import sys
-from typing import List, Set
+from typing import Dict, List, Optional, Set
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import _scan  # noqa: E402
@@ -185,15 +192,8 @@ def test_fixed_deterministic_identities_and_bounded_teardown() -> None:
     assert "operator.deprovision(target=target)" in teardown_src and "_tenant_target(tid)" in teardown_src, (
         "teardown targets must be recomputed from the fixed tenant ids, never caller-supplied"
     )
-    # PM-B54-1 pin (fix round 1): ONE shared per-tenant eligibility structure gates the
-    # reconciliation AND both cleanup loops — a refused tenant is skipped with resources preserved.
-    assert teardown_src.count("cleanup_eligible") >= 4, (
-        "teardown must share ONE per-tenant eligibility structure across reconciliation, database "
-        "drop, and secret removal (a refused tenant must be excluded from ALL later cleanup)"
-    )
-    assert "SKIPPED" in teardown_src and "PRESERVED" in teardown_src, (
-        "refused tenants must be reported as skipped with their resources preserved"
-    )
+    # PM-B54-1 regression protection is STRUCTURAL (fix round 2): see
+    # test_cleanup_loops_share_failclosed_eligibility_gate + its planted-mutation companions.
 
 
 def test_teardown_refuses_without_confirmation_behaviorally() -> None:
@@ -266,17 +266,302 @@ def test_no_b5_5_or_smoke_c_content() -> None:
             assert needle not in text, f"B5-5/Smoke-C content {needle!r} must not appear in {path.name} (out of B5-4 scope)"
 
 
+# ------------------------------------------------------------------------------------------------
+# PM-R2-1 structural predicates (fix round 2) — shared by the real pins AND the planted-mutation
+# non-vacuity companions below. Pure AST: comments, docstrings, and string literals cannot satisfy
+# any leg; a missing function/loop/gate fails closed with a deterministic diagnostic.
+# ------------------------------------------------------------------------------------------------
+_CLEANUP_ACTIONS = ("deprovision", "unlink")
+
+
+def _find_cleanup_loops(teardown: ast.FunctionDef) -> Dict[str, ast.For]:
+    """The two tenant cleanup loops in ``cmd_teardown``, identified by their ACTION call.
+
+    Fail-closed: exactly ONE loop performing ``.deprovision(`` and exactly ONE performing
+    ``.unlink(`` must exist — 0 or >1 of either fails loud (a renamed, deleted, or duplicated
+    cleanup loop can never pass silently)."""
+    found: Dict[str, List[ast.For]] = {action: [] for action in _CLEANUP_ACTIONS}
+    for node in ast.walk(teardown):
+        if isinstance(node, ast.For):
+            for inner in ast.walk(node):
+                if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Attribute) and inner.func.attr in _CLEANUP_ACTIONS:
+                    found[inner.func.attr].append(node)
+                    break
+    result: Dict[str, ast.For] = {}
+    for action, loops in found.items():
+        assert len(loops) == 1, f"cmd_teardown must contain exactly ONE {action} cleanup loop (found {len(loops)})"
+        result[action] = loops[0]
+    return result
+
+
+def _cleanup_gate_problem(loop: ast.For) -> Optional[str]:
+    """None iff the loop has the canonical fail-closed eligibility gate as its FIRST statement:
+
+    for tid in TENANT_IDS:
+        if not cleanup_eligible.get(tid, False):
+            ...
+            continue
+        <cleanup action only after the gate>
+    """
+    if not (isinstance(loop.iter, ast.Name) and loop.iter.id == "TENANT_IDS"):
+        return "does not iterate the deterministic TENANT_IDS collection"
+    if not loop.body or not isinstance(loop.body[0], ast.If):
+        return "first statement is not the eligibility gate"
+    gate = loop.body[0]
+    test = gate.test
+    if not (isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not) and isinstance(test.operand, ast.Call)):
+        return "gate is not an `if not cleanup_eligible.get(...)` refusal"
+    call = test.operand
+    if not (
+        isinstance(call.func, ast.Attribute)
+        and call.func.attr == "get"
+        and isinstance(call.func.value, ast.Name)
+        and call.func.value.id == "cleanup_eligible"
+    ):
+        return "gate does not consult cleanup_eligible.get"
+    if len(call.args) != 2 or call.keywords:
+        return "gate lookup must be cleanup_eligible.get(<tenant>, False)"
+    tenant_arg, default_arg = call.args
+    if not (isinstance(tenant_arg, ast.Name) and isinstance(loop.target, ast.Name) and tenant_arg.id == loop.target.id):
+        return "gate does not test the loop's tenant variable"
+    if not (isinstance(default_arg, ast.Constant) and default_arg.value is False):
+        return "gate default is not the fail-closed constant False"
+    if not gate.body or not isinstance(gate.body[-1], ast.Continue):
+        return "ineligible branch does not end in continue"
+    for inner in ast.walk(gate):
+        if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Attribute) and inner.func.attr in _CLEANUP_ACTIONS:
+            return "cleanup action reachable inside the gate"
+    return None
+
+
+def _preflight_inventory(proof_fn: ast.FunctionDef) -> ast.Tuple:
+    """The pre-flight ownership-refusal inventory: the For-over-Tuple whose body asserts
+    ``not _db_exists(...)``. Fail-closed if absent."""
+    for node in ast.walk(proof_fn):
+        if isinstance(node, ast.For) and isinstance(node.iter, ast.Tuple) and node.body and isinstance(node.body[0], ast.Assert):
+            test = node.body[0].test
+            if (
+                isinstance(test, ast.UnaryOp)
+                and isinstance(test.op, ast.Not)
+                and isinstance(test.operand, ast.Call)
+                and isinstance(test.operand.func, ast.Name)
+                and test.operand.func.id == "_db_exists"
+            ):
+                return node.iter
+    raise AssertionError("pre-flight ownership-refusal inventory not found (fail closed)")
+
+
+def _preflight_names(proof_fn: ast.FunctionDef) -> Set[str]:
+    return {e.id for e in _preflight_inventory(proof_fn).elts if isinstance(e, ast.Name)}
+
+
+def _proof_main_fn(tree: ast.Module) -> ast.FunctionDef:
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "test_b5_standing_topology_ops":
+            return node
+    raise AssertionError("test_b5_standing_topology_ops not found in the proof module (fail closed)")
+
+
+def test_cleanup_loops_share_failclosed_eligibility_gate() -> None:
+    # PM-B54-1 STRUCTURAL pin (PM-R2-1): both cleanup loops in cmd_teardown must begin with the
+    # canonical fail-closed cleanup_eligible gate — a refused tenant can never be reached by the
+    # database-drop or secret-removal steps. AST-only: comments cannot satisfy this.
+    tree = _tree(_OPS)
+    teardown = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "cmd_teardown")
+    loops = _find_cleanup_loops(teardown)
+    for kind in sorted(loops):
+        problem = _cleanup_gate_problem(loops[kind])
+        assert problem is None, f"cmd_teardown {kind} cleanup loop: {problem}"
+
+
+_SAMPLE_CANONICAL_TEARDOWN = """
+def cmd_teardown(args):
+    for tid in TENANT_IDS:
+        if not cleanup_eligible.get(tid, False):
+            print("skipped")
+            continue
+        operator.deprovision(target=target)
+    for tid in TENANT_IDS:
+        if not cleanup_eligible.get(tid, False):
+            continue
+        path.unlink(missing_ok=True)
+"""
+
+_PIN_A_MUTANTS = {
+    "db loop without gate": """
+def cmd_teardown(args):
+    for tid in TENANT_IDS:
+        operator.deprovision(target=target)
+    for tid in TENANT_IDS:
+        if not cleanup_eligible.get(tid, False):
+            continue
+        path.unlink(missing_ok=True)
+""",
+    "secret loop without gate": """
+def cmd_teardown(args):
+    for tid in TENANT_IDS:
+        if not cleanup_eligible.get(tid, False):
+            continue
+        operator.deprovision(target=target)
+    for tid in TENANT_IDS:
+        path.unlink(missing_ok=True)
+""",
+    "gate after the cleanup action": """
+def cmd_teardown(args):
+    for tid in TENANT_IDS:
+        operator.deprovision(target=target)
+        if not cleanup_eligible.get(tid, False):
+            continue
+    for tid in TENANT_IDS:
+        if not cleanup_eligible.get(tid, False):
+            continue
+        path.unlink(missing_ok=True)
+""",
+    "fail-open default True": """
+def cmd_teardown(args):
+    for tid in TENANT_IDS:
+        if not cleanup_eligible.get(tid, True):
+            continue
+        operator.deprovision(target=target)
+    for tid in TENANT_IDS:
+        if not cleanup_eligible.get(tid, False):
+            continue
+        path.unlink(missing_ok=True)
+""",
+    "gate without continue": """
+def cmd_teardown(args):
+    for tid in TENANT_IDS:
+        if not cleanup_eligible.get(tid, False):
+            print("skipped")
+        operator.deprovision(target=target)
+    for tid in TENANT_IDS:
+        if not cleanup_eligible.get(tid, False):
+            continue
+        path.unlink(missing_ok=True)
+""",
+    "gate on a different mapping": """
+def cmd_teardown(args):
+    for tid in TENANT_IDS:
+        if not other_mapping.get(tid, False):
+            continue
+        operator.deprovision(target=target)
+    for tid in TENANT_IDS:
+        if not cleanup_eligible.get(tid, False):
+            continue
+        path.unlink(missing_ok=True)
+""",
+    "gate on a different tenant variable": """
+def cmd_teardown(args):
+    for tid in TENANT_IDS:
+        if not cleanup_eligible.get(other, False):
+            continue
+        operator.deprovision(target=target)
+    for tid in TENANT_IDS:
+        if not cleanup_eligible.get(tid, False):
+            continue
+        path.unlink(missing_ok=True)
+""",
+}
+
+
+def test_cleanup_gate_pin_non_vacuity() -> None:
+    # The SAME predicates that guard the real module must accept the canonical shape and reject
+    # every planted regression mutant (incl. the exact PM-B54-1 reintroductions).
+    def gate_problems(source: str) -> List[Optional[str]]:
+        fn = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef))
+        loops = _find_cleanup_loops(fn)
+        return [_cleanup_gate_problem(loops[kind]) for kind in sorted(loops)]
+
+    assert gate_problems(_SAMPLE_CANONICAL_TEARDOWN) == [None, None], "the canonical repaired shape must PASS"
+    for label, sample in _PIN_A_MUTANTS.items():
+        assert any(problem is not None for problem in gate_problems(sample)), f"pin A must reject mutant: {label}"
+
+
 def test_preflight_inventory_complete() -> None:
-    # PM-B54-2 pin (fix round 1): the disposable proof's pre-flight refusal inventory includes
-    # EVERY database name its finally block may drop — including the rename-scratch name, held as
-    # a single named constant so pre-flight, the rename leg, and the finally can never diverge.
+    # PM-B54-2 STRUCTURAL pin (PM-R2-1): the pre-flight ownership-refusal inventory itself — not
+    # the module at large — must carry a Name reference to _RENAME_SCRATCH, and the same constant
+    # must remain the rename-leg identity and the bounded finally-cleanup identity.
+    proof_fn = _proof_main_fn(_tree(_PROOF))
+    names = _preflight_names(proof_fn)
+    assert "_RENAME_SCRATCH" in names, "pre-flight refusal inventory must include the rename-scratch constant (PM-B54-2)"
+    assert {"_SENTINEL_DB", "_CTL_DB"} <= names, "pre-flight inventory must keep the sentinel + scratch Control DB names"
+    renames = [
+        node
+        for node in ast.walk(proof_fn)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_admin_exec"
+        and any(
+            isinstance(value, ast.FormattedValue) and isinstance(value.value, ast.Name) and value.value.id == "_RENAME_SCRATCH"
+            for arg in node.args
+            if isinstance(arg, ast.JoinedStr)
+            for value in arg.values
+        )
+    ]
+    assert len(renames) >= 2, "the missing-DB leg must rename away AND back using the rename-scratch constant"
+    finally_drops: List[str] = []
+    for node in ast.walk(proof_fn):
+        if isinstance(node, ast.Try) and node.finalbody:
+            for stmt in node.finalbody:
+                for inner in ast.walk(stmt):
+                    if (
+                        isinstance(inner, ast.Call)
+                        and isinstance(inner.func, ast.Name)
+                        and inner.func.id == "_drop_db"
+                        and len(inner.args) == 3
+                        and isinstance(inner.args[2], ast.Name)
+                    ):
+                        finally_drops.append(inner.args[2].id)
+    assert "_RENAME_SCRATCH" in finally_drops, "the finally cleanup must cover the rename-scratch constant"
     src = _PROOF.read_text(encoding="utf-8")
     assert '_RENAME_SCRATCH = "sp2_b54_hidden"' in src, "the rename-scratch name must be a single named constant"
-    assert src.count("_RENAME_SCRATCH") >= 5, (
-        "the rename-scratch constant must be used in the pre-flight inventory, the rename leg, "
-        "the finally cleanup, and the PM-B54-2 refusal proof"
-    )
     assert src.count('"sp2_b54_hidden"') == 1, "the raw scratch name must appear ONLY in the constant definition"
+
+
+_SAMPLE_CANONICAL_PREFLIGHT = """
+def test_b5_standing_topology_ops(admin_dsn):
+    for name in (*targets.values(), _RENAME_SCRATCH, _SENTINEL_DB, _CTL_DB):
+        assert not _db_exists(psycopg, admin_dsn, name)
+"""
+
+_PIN_B_MUTANTS = {
+    "inventory missing _RENAME_SCRATCH": """
+def test_b5_standing_topology_ops(admin_dsn):
+    for name in (*targets.values(), _SENTINEL_DB, _CTL_DB):
+        assert not _db_exists(psycopg, admin_dsn, name)
+""",
+    "constant only in the finally": """
+def test_b5_standing_topology_ops(admin_dsn):
+    for name in (*targets.values(), _SENTINEL_DB, _CTL_DB):
+        assert not _db_exists(psycopg, admin_dsn, name)
+    try:
+        pass
+    finally:
+        _drop_db(psycopg, admin_dsn, _RENAME_SCRATCH)
+""",
+    "constant only in the rename leg": """
+def test_b5_standing_topology_ops(admin_dsn):
+    for name in (*targets.values(), _SENTINEL_DB, _CTL_DB):
+        assert not _db_exists(psycopg, admin_dsn, name)
+    _admin_exec(psycopg, admin_dsn, f'ALTER DATABASE "x" RENAME TO "{_RENAME_SCRATCH}"')
+""",
+    "raw string in the tuple instead of the Name": """
+def test_b5_standing_topology_ops(admin_dsn):
+    for name in (*targets.values(), "sp2_b54_hidden", _SENTINEL_DB, _CTL_DB):
+        assert not _db_exists(psycopg, admin_dsn, name)
+""",
+}
+
+
+def test_preflight_pin_non_vacuity() -> None:
+    # The SAME inventory predicate must accept the canonical pre-flight and reject every planted
+    # mutant — including the EXACT original PM-B54-2 defect (constant present elsewhere but absent
+    # from the refusal inventory) and a same-value raw string smuggled into the tuple.
+    canonical = _proof_main_fn(ast.parse(_SAMPLE_CANONICAL_PREFLIGHT))
+    assert "_RENAME_SCRATCH" in _preflight_names(canonical), "the canonical pre-flight must PASS"
+    for label, sample in _PIN_B_MUTANTS.items():
+        names = _preflight_names(_proof_main_fn(ast.parse(sample)))
+        assert "_RENAME_SCRATCH" not in names, f"pin B must reject mutant: {label}"
 
 
 def test_manual_only_exception_registered_with_justification() -> None:
@@ -308,7 +593,10 @@ if __name__ == "__main__":
             test_redaction_never_emits_credentials,
             test_no_production_import_of_ops_module,
             test_no_b5_5_or_smoke_c_content,
+            test_cleanup_loops_share_failclosed_eligibility_gate,
+            test_cleanup_gate_pin_non_vacuity,
             test_preflight_inventory_complete,
+            test_preflight_pin_non_vacuity,
             test_manual_only_exception_registered_with_justification,
         ]
     )
