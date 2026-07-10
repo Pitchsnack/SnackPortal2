@@ -46,6 +46,8 @@ import _scan  # noqa: E402
 
 _CLIENT_MOD = _scan.BACKEND_ROOT / "api_gateway" / "adapters" / "providers" / "http_authenticator.py"
 _SERVER_MOD = _scan.BACKEND_ROOT / "auth_router" / "adapters" / "providers" / "http_authenticate_api.py"
+# B5-3 (LW-1): the auth-router control-plane read client — its live-wire 404 mapping is guarded below.
+_CP_READ_MOD = _scan.BACKEND_ROOT / "auth_router" / "adapters" / "providers" / "http_control_plane_read.py"
 
 _REQUEST_KEYS = frozenset({"v", "authorization", "recognized_carriers", "correlation_id"})
 _SUCCESS_KEYS = frozenset({"correlation_id", "principal_ref", "active_tenant_id", "role"})
@@ -269,6 +271,43 @@ def _single_blessed_serve_problems(tree: ast.AST, entrypoint: str) -> List[str]:
     return problems
 
 
+def _cp_read_get_problems(tree: ast.AST) -> List[str]:
+    """B5-3 (LW-1) live-wire census: the read client's ``_get`` must handle ``HTTPError``
+    EXPLICITLY — exactly ONE except handler, typed ``urllib.error.HTTPError`` (never blanket or
+    bare), whose body maps ONLY 404 to ``None`` (a 404 comparison AND a ``return None``) and
+    re-raises everything else (a bare ``raise`` — fail closed); no retry loop in ``_get``; and
+    NO blanket/bare ``except`` anywhere in the module."""
+    problems: List[str] = []
+    get_fn = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_get":
+            get_fn = node
+    if get_fn is None:
+        return ["_get helper missing"]
+    handlers = [n for n in ast.walk(get_fn) if isinstance(n, ast.ExceptHandler)]
+    if len(handlers) != 1:
+        problems.append(f"_get must carry exactly one except handler, found {len(handlers)}")
+        return problems
+    handler = handlers[0]
+    if not (isinstance(handler.type, ast.Attribute) and handler.type.attr == "HTTPError"):
+        problems.append("_get's handler must be typed urllib.error.HTTPError (never blanket/bare)")
+    if not any(isinstance(n, ast.Constant) and n.value == 404 for n in ast.walk(handler)):
+        problems.append("the handler must compare against 404 — the ONLY status mapped to None")
+    if not any(
+        isinstance(n, ast.Return) and (n.value is None or (isinstance(n.value, ast.Constant) and n.value.value is None))
+        for n in ast.walk(handler)
+    ):
+        problems.append("the handler must return None for the mapped 404 (consistent denial)")
+    if not any(isinstance(n, ast.Raise) and n.exc is None for n in ast.walk(handler)):
+        problems.append("the handler must re-raise non-404 statuses unchanged (bare raise — fail closed)")
+    if _has_loop(get_fn):
+        problems.append("_get must contain no retry loop (single attempt)")
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ExceptHandler) and (node.type is None or (isinstance(node.type, ast.Name) and node.type.id == "Exception")):
+            problems.append("the module must contain no blanket/bare except (only the typed HTTPError handler)")
+    return problems
+
+
 # --- client guard ---------------------------------------------------------------------------------
 def test_client_boundary_guard() -> None:
     assert _nonempty(_CLIENT_MOD), "the gateway auth client module must exist and be non-empty"
@@ -401,6 +440,62 @@ def test_server_guard_nonvacuity() -> None:
     assert _single_blessed_serve_problems(canonical, "serve_authenticate_api") == [], "census must pass the canonical shape"
 
 
+# --- B5-3 (LW-1): the auth-router control-plane read client's live-wire denial mapping -------------
+def test_control_plane_read_client_live_wire_guard() -> None:
+    # The read client must map a LIVE 404 to None (consistent denial — parity with the doubles)
+    # and re-raise every other HTTPError (fail closed) — the exact HttpRoutingRead twin shape.
+    assert _nonempty(_CP_READ_MOD), "the auth-router control-plane read client must exist and be non-empty"
+    problems = _cp_read_get_problems(_tree(_CP_READ_MOD))
+    assert not problems, f"read-client live-wire census (B5-3): {problems}"
+    # Import surface: stdlib urllib/json + auth_router only — no concurrency, no sibling service,
+    # and critically NO in-process control_plane import (DAG rule: transport-only access).
+    tops = _import_tops(_CP_READ_MOD)
+    allow = frozenset({"__future__", "json", "urllib", "typing", "auth_router"})
+    assert not (tops - allow), f"read client imports outside the stdlib/auth_router surface: {sorted(tops - allow)}"
+    banned = tops & frozenset({"control_plane", "api_gateway", "database_router", "threading", "asyncio", "concurrent", "multiprocessing"})
+    assert not banned, f"read client must import no sibling service or concurrency machinery: {sorted(banned)}"
+    # /federation stays a CONTROL-PLANE read concern: the auth server module serves no such route.
+    assert "/federation" not in _SERVER_MOD.read_text(encoding="utf-8"), (
+        "the auth server module must serve no /federation route (it is a control-plane read)"
+    )
+
+
+def test_control_plane_read_client_guard_nonvacuity() -> None:
+    # The census passes the canonical twin shape and fails each planted regression.
+    canonical = _parse(
+        "def _get(self, path):\n"
+        "    try:\n"
+        "        with opener(path) as resp:\n"
+        "            payload = decode(resp)\n"
+        "    except urllib.error.HTTPError as exc:\n"
+        "        if exc.code == 404:\n"
+        "            return None\n"
+        "        raise\n"
+        "    return payload\n"
+    )
+    assert _cp_read_get_problems(canonical) == [], "census must pass the canonical 404-mapping shape"
+    blanket = _parse("def _get(self, path):\n    try:\n        return decode(path)\n    except Exception:\n        return None\n")
+    assert _cp_read_get_problems(blanket), "census must flag a blanket except (mutant: every failure -> None)"
+    all_to_none = _parse(
+        "def _get(self, path):\n    try:\n        return decode(path)\n    except urllib.error.HTTPError:\n        return None\n"
+    )
+    assert _cp_read_get_problems(all_to_none), "census must flag converting EVERY HTTPError to None (no 404 gate, no re-raise)"
+    no_catch = _parse("def _get(self, path):\n    return decode(path)\n")
+    assert _cp_read_get_problems(no_catch), "census must flag a missing HTTPError handler (mutant: 404 escapes to 503)"
+    retry = _parse(
+        "def _get(self, path):\n"
+        "    while True:\n"
+        "        try:\n"
+        "            return decode(path)\n"
+        "        except urllib.error.HTTPError as exc:\n"
+        "            if exc.code == 404:\n"
+        "                return None\n"
+        "            raise\n"
+    )
+    assert _cp_read_get_problems(retry), "census must flag a retry loop in _get"
+    assert _cp_read_get_problems(_parse("x = 1\n")) == ["_get helper missing"], "census must flag a missing _get"
+
+
 # --- guard asymmetry: client forbids jwt/crypto, server permits jwt -------------------------------
 def test_guard_asymmetry_client_forbids_jwt_server_permits() -> None:
     # (07E-3c polish: the dead "PyJWT" entry is gone — the PyPI package imports as `jwt`.)
@@ -522,6 +617,8 @@ if __name__ == "__main__":
             test_client_guard_nonvacuity,
             test_server_boundary_guard,
             test_server_guard_nonvacuity,
+            test_control_plane_read_client_live_wire_guard,
+            test_control_plane_read_client_guard_nonvacuity,
             test_guard_asymmetry_client_forbids_jwt_server_permits,
             test_composition_boundary_guard,
             test_composition_guard_nonvacuity,
