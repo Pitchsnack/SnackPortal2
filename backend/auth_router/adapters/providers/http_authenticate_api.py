@@ -213,9 +213,47 @@ def build_authenticate_server(authenticator: Authenticator, host: str = "127.0.0
     """Build the internal authenticate HTTP server bound to a composed ``Authenticator``.
 
     ``port=0`` binds an ephemeral port. This factory constructs the server only — it does NOT
-    start serving (no runnable ops entrypoint in this slice; the caller/test hosts the
-    single-threaded server). Returns ``(server, base_url)``.
+    start serving (the blocking runnable entrypoint is ``serve_authenticate_api``; tests may
+    also host the single-threaded server directly). Returns ``(server, base_url)``.
     """
     server = HTTPServer((host, port), _make_handler(authenticator))
     bound_host, bound_port = cast(str, server.server_address[0]), server.server_address[1]
     return server, f"http://{bound_host}:{bound_port}"
+
+
+def serve_authenticate_api() -> None:
+    """Blocking runnable entrypoint for the internal authenticate edge (B5-2).
+
+    Composes the server via the merged env seam ``build_authenticate_server_from_env``
+    (``auth_router/main.py``) and serves it on the CALLING thread:
+
+    * inactive composition (``SP2_AR_CONTROL_PLANE_READ_BASE_URL`` unset/empty) → deterministic
+      ``RuntimeError`` — fail closed; no socket was bound and nothing is served;
+    * malformed composition config → ``ValueError`` from the seam (inherited, fail closed);
+    * active → ``server.serve_forever()`` exactly once on a single-threaded plain ``HTTPServer``
+      (AT-D15T1-10: one server per operating-system process; no thread, daemon, subprocess,
+      supervisor, or retry loop here), and ``server.server_close()`` ALWAYS runs in ``finally`` —
+      ``KeyboardInterrupt`` and any serve-time exception propagate to the caller unswallowed.
+
+    Ops: docs/runbooks/b5_service_startup_order.md (the control-plane read edge starts first; its
+    URL feeds ``SP2_AR_CONTROL_PLANE_READ_BASE_URL``; this service's URL then feeds
+    ``SP2_GW_AUTH_ROUTER_BASE_URL``). No overclaim: this makes the service RUNNABLE — it does not
+    deploy or supervise it, prove a served-request live topology, provision a physical database,
+    or complete Smoke C / the Physical Multi-Database MVP (B5-BLK-4 stays OPEN).
+    """
+    # Function-local absolute import mirrors the 07E-1 serve_read_api precedent (composition root
+    # imported lazily at call time; the adapter module stays import-light and cycle-free).
+    from auth_router.main import build_authenticate_server_from_env
+
+    composed = build_authenticate_server_from_env()
+    if composed is None:
+        raise RuntimeError(
+            "serve_authenticate_api: authenticate-server composition is INACTIVE — "
+            "SP2_AR_CONTROL_PLANE_READ_BASE_URL is unset/empty (fail closed: no socket bound, nothing served)"
+        )
+    server_obj, _base_url = composed
+    server = cast(HTTPServer, server_obj)
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()

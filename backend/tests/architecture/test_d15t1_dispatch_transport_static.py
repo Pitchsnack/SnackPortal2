@@ -12,8 +12,9 @@ Every guard carries a non-vacuity companion proving it fails on a bad sample.
 * **G2** — dispatch-server edge guard: internal-only ``127.0.0.1`` bind + literal
   ``/internal/dispatch/route`` path; POST-only served handler; single-threaded plain
   ``HTTPServer`` (no ``ThreadingHTTPServer``/threading/asyncio/contextvars/concurrent.futures/
-  psycopg_pool); no ``make_server``/``serve_forever`` (07D-3 co-compliance); fixed-503/405/404
-  empty-body edges with no stdlib ``send_error`` HTML; ``log_message`` silenced; and an
+  psycopg_pool); no ``make_server`` (07D-3 co-compliance), and ``serve_forever`` only inside the
+  single blessed blocking entrypoint ``serve_dispatch_api`` (B5-2 Guard Evolution); fixed-503/405/
+  404 empty-body edges with no stdlib ``send_error`` HTML; ``log_message`` silenced; and an
   adapter-only top-level def + import census (the no-business-work leg, C-8).
 * **G3** — client allowlist / exact-shape guard: the ``public_code`` allowlist frozenset EQUALS
   the closed 12-code set; exact ``{status, public_code, dispatched}`` shape validation; the
@@ -92,7 +93,15 @@ _FORBIDDEN_KEYS = frozenset(
 )
 
 _ROUTER_TOPLEVEL_ALLOW = frozenset(
-    {"_EnvelopeError", "_optional_str", "_reconstruct_context", "_decide", "_make_handler", "build_dispatch_server"}
+    {
+        "_EnvelopeError",
+        "_optional_str",
+        "_reconstruct_context",
+        "_decide",
+        "_make_handler",
+        "build_dispatch_server",
+        "serve_dispatch_api",  # B5-2: the single blessed blocking entrypoint
+    }
 )
 _ROUTER_IMPORT_TOPS_ALLOW = frozenset({"__future__", "json", "http", "typing", "shared", "database_router"})
 _CLIENT_IMPORT_TOPS_ALLOW = frozenset({"__future__", "json", "urllib", "typing", "shared", "api_gateway"})
@@ -195,6 +204,35 @@ def _forbidden_key_hits(groups: List[frozenset]) -> List[str]:
     return hits
 
 
+def _serve_forever_refs(tree: ast.AST) -> int:
+    """Count ``serve_forever`` CODE references (Name/Attribute), not docstring/comment prose."""
+    return sum(
+        1
+        for n in ast.walk(tree)
+        if (isinstance(n, ast.Attribute) and n.attr == "serve_forever") or (isinstance(n, ast.Name) and n.id == "serve_forever")
+    )
+
+
+def _single_blessed_serve_problems(tree: ast.AST, entrypoint: str) -> List[str]:
+    """B5-2 Guard Evolution Matrix: the server module must define EXACTLY ONE module-top def named
+    ``entrypoint`` whose body holds the module's ONLY ``serve_forever`` reference — the factory
+    surface stays serve-free and no second serve loop may appear anywhere else in the module."""
+    problems: List[str] = []
+    mod = tree
+    assert isinstance(mod, ast.Module)
+    defs = [n for n in mod.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == entrypoint]
+    if len(defs) != 1:
+        problems.append(f"expected exactly one top-level {entrypoint} def, found {len(defs)}")
+        return problems
+    inside = _serve_forever_refs(defs[0])
+    total = _serve_forever_refs(tree)
+    if inside != 1:
+        problems.append(f"{entrypoint} must contain exactly one serve_forever reference, found {inside}")
+    if total != inside:
+        problems.append(f"serve_forever referenced outside {entrypoint} ({total} total vs {inside} inside)")
+    return problems
+
+
 # --- G1 -------------------------------------------------------------------------------------------
 def test_g1_wire_frame_references_only_census() -> None:
     assert _ROUTER_MOD.is_file() and _CLIENT_MOD.is_file(), "both transport modules must exist"
@@ -233,9 +271,13 @@ def test_g2_dispatch_server_edge_guard() -> None:
     banned_tops = {b.split(".")[0] for b in banned_imports}
     hits = {m for m in _scan.imported_modules(_ROUTER_MOD) if m in banned_imports or m.split(".")[0] in banned_tops}
     assert not hits, f"server must import no concurrency/pool machinery: {hits}"
-    # 07D-3 co-compliance: the module must not reference make_server/serve_forever (tests host it).
-    for name in ("make_server", "serve_forever"):
-        assert name not in used, f"server production module must not reference {name} (07D-3 single-wiring census)"
+    # 07D-3 co-compliance, EVOLVED by the B5-2 Guard Evolution Matrix: make_server stays banned
+    # (this adapter constructs its own HTTPServer); serve_forever is now allowed ONLY inside the
+    # single blessed blocking entrypoint serve_dispatch_api, exactly once — the factory surface
+    # stays serve-free and no second serve loop may appear.
+    assert "make_server" not in used, "server production module must not reference make_server (07D-3 single-wiring census)"
+    problems = _single_blessed_serve_problems(tree, "serve_dispatch_api")
+    assert not problems, f"dispatch serve-entrypoint census (B5-2): {problems}"
     # POST-only SERVED handler; the fail-closed empty-body edges; no stdlib send_error HTML.
     served = sorted(n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name.startswith("do_"))
     assert served == ["do_POST"], f"the dispatch edge must be POST-only (served do_* handlers: {served})"
@@ -258,6 +300,15 @@ def test_g2_nonvacuity_flags_threading_and_business() -> None:
     assert "threading" in mods and "ThreadingHTTPServer" in threaded, "G2 must detect threaded-server machinery"
     business_tree = _parse("def deal_query():\n    return 1\n")
     assert _top_level_defs(business_tree) - _ROUTER_TOPLEVEL_ALLOW == {"deal_query"}, "G2 must flag a non-adapter business def"
+    # B5-2: the single-blessed-serve census is non-vacuous — it fails on a second serve loop, a
+    # serve loop outside the entrypoint, and a missing entrypoint; it passes the canonical shape.
+    doubled = _parse("def serve_dispatch_api():\n    s.serve_forever()\n\ndef rogue():\n    s.serve_forever()\n")
+    assert _single_blessed_serve_problems(doubled, "serve_dispatch_api"), "census must flag a second serve loop"
+    misplaced = _parse("def serve_dispatch_api():\n    pass\n\ndef rogue():\n    s.serve_forever()\n")
+    assert _single_blessed_serve_problems(misplaced, "serve_dispatch_api"), "census must flag a serve loop outside the entrypoint"
+    assert _single_blessed_serve_problems(_parse("x = 1\n"), "serve_dispatch_api"), "census must flag a missing entrypoint"
+    canonical = _parse("def serve_dispatch_api():\n    s.serve_forever()\n")
+    assert _single_blessed_serve_problems(canonical, "serve_dispatch_api") == [], "census must pass the canonical shape"
 
 
 # --- G3 -------------------------------------------------------------------------------------------

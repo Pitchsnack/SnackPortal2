@@ -21,13 +21,19 @@ import json
 import os
 import pathlib
 import sys
-from typing import Iterator, List, Optional, Tuple
+import threading
+import time
+import urllib.error
+import urllib.request
+from typing import Callable, Iterator, List, Optional, Tuple
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import _auth_doubles as D  # noqa: E402,F401  (shared bootstrap; kept for parity with the auth_router test suite)
 import _h  # noqa: E402
 
+from auth_router import main as ARM  # noqa: E402
 from auth_router.adapters.providers import http_authenticate_api as HAA  # noqa: E402
+from auth_router.adapters.providers.http_authenticate_api import serve_authenticate_api  # noqa: E402
 from auth_router.adapters.providers.http_control_plane_read import HttpControlPlaneRead  # noqa: E402
 from auth_router.authenticator import Authenticator  # noqa: E402
 from auth_router.main import (  # noqa: E402
@@ -263,6 +269,180 @@ def test_real_bind_smoke_constructs_and_closes() -> None:
         server.server_close()  # release the ephemeral socket; the seam never called serve_forever
 
 
+# --- B5-2 serve-lifecycle entrypoint (serve_authenticate_api) ---------------------------------------
+class _ServeProbe:
+    """A fake server recording lifecycle calls in order; ``serve_effect`` raised from serve_forever."""
+
+    def __init__(self, serve_effect: Optional[BaseException] = None) -> None:
+        self.events: List[str] = []
+        self._serve_effect = serve_effect
+
+    def serve_forever(self) -> None:
+        self.events.append("serve_forever")
+        if self._serve_effect is not None:
+            raise self._serve_effect
+
+    def server_close(self) -> None:
+        self.events.append("server_close")
+
+
+@contextlib.contextmanager
+def _patched_serve_seam(seam: Callable[[], Optional[Tuple[object, str]]]) -> Iterator[List[int]]:
+    """Patch the COMPOSITION-ROOT attribute (auth_router.main.build_authenticate_server_from_env)
+    that serve_authenticate_api's call-time function-local import resolves; count invocations."""
+    calls: List[int] = []
+
+    def _counting() -> Optional[Tuple[object, str]]:
+        calls.append(1)
+        return seam()
+
+    orig = ARM.build_authenticate_server_from_env
+    ARM.build_authenticate_server_from_env = _counting  # type: ignore[assignment]
+    try:
+        yield calls
+    finally:
+        ARM.build_authenticate_server_from_env = orig  # type: ignore[assignment]
+
+
+class _ServeBoom(Exception):
+    """A distinct serve-time failure (never confused with the inactive RuntimeError)."""
+
+
+def test_serve_inactive_seam_raises_deterministic_runtimeerror() -> None:
+    # Inactive composition -> deterministic RuntimeError; the seam is consulted exactly once per
+    # invocation; and nothing serves (a global HTTPServer.serve_forever trap is armed throughout).
+    def _no_serve(self: object, poll_interval: float = 0.5) -> None:
+        raise AssertionError("nothing may serve when the composition is inactive")
+
+    orig_serve = HAA.HTTPServer.serve_forever
+    HAA.HTTPServer.serve_forever = _no_serve  # type: ignore[method-assign, assignment]
+    messages: List[str] = []
+    try:
+        with _patched_serve_seam(lambda: None) as calls:
+            for _ in range(2):
+                try:
+                    serve_authenticate_api()
+                except RuntimeError as exc:
+                    messages.append(str(exc))
+                else:
+                    raise AssertionError("inactive composition must raise RuntimeError (fail closed)")
+        assert calls == [1, 1], "the entrypoint must call the env seam exactly once per invocation"
+    finally:
+        HAA.HTTPServer.serve_forever = orig_serve  # type: ignore[method-assign]
+    assert len(messages) == 2 and messages[0] == messages[1], "the inactive RuntimeError must be deterministic"
+    assert SP2_AR_CONTROL_PLANE_READ_BASE_URL in messages[0], "the error must name the inactive selector"
+
+
+def test_serve_inactive_real_env_raises_runtimeerror() -> None:
+    # End-to-end with the REAL seam: selector unset -> the entrypoint fails closed (RuntimeError).
+    with _env(url=None, issuers=None, host=None, port=None):
+        try:
+            serve_authenticate_api()
+        except RuntimeError as exc:
+            assert SP2_AR_CONTROL_PLANE_READ_BASE_URL in str(exc), "the fail-closed error must name the selector"
+        else:
+            raise AssertionError("an unset selector must fail closed with RuntimeError")
+
+
+def test_serve_active_serves_once_then_closes_after_return() -> None:
+    probe = _ServeProbe()  # serve_forever returns normally (post-shutdown semantics)
+    with _patched_serve_seam(lambda: (probe, "http://127.0.0.1:0")) as calls:
+        serve_authenticate_api()
+    assert calls == [1], "an active entrypoint must call the env seam exactly once"
+    assert probe.events == ["serve_forever", "server_close"], f"must serve exactly once THEN close after normal return; got {probe.events}"
+
+
+def test_serve_exception_propagates_and_still_closes() -> None:
+    boom = _ServeBoom("serve loop failed")
+    probe = _ServeProbe(serve_effect=boom)
+    with _patched_serve_seam(lambda: (probe, "http://127.0.0.1:0")):
+        try:
+            serve_authenticate_api()
+        except _ServeBoom as exc:
+            assert exc is boom, "the ORIGINAL serve exception must propagate unswallowed"
+        else:
+            raise AssertionError("a serve-time exception must propagate (not be swallowed)")
+    assert probe.events == ["serve_forever", "server_close"], "server_close must still run when serve_forever raises"
+
+
+def test_serve_keyboard_interrupt_propagates_and_still_closes() -> None:
+    probe = _ServeProbe(serve_effect=KeyboardInterrupt())
+    with _patched_serve_seam(lambda: (probe, "http://127.0.0.1:0")):
+        try:
+            serve_authenticate_api()
+        except KeyboardInterrupt:
+            pass
+        else:
+            raise AssertionError("KeyboardInterrupt must propagate (orderly Ctrl+C shutdown)")
+    assert probe.events == ["serve_forever", "server_close"], "server_close must still run on KeyboardInterrupt"
+
+
+def test_serve_entrypoint_creates_no_thread() -> None:
+    # The entrypoint serves on the CALLING thread: constructing ANY thread during its run is trapped.
+    boom_calls: List[int] = []
+
+    class _BoomThread:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            boom_calls.append(1)
+            raise AssertionError("serve_authenticate_api must not create a thread")
+
+    probe = _ServeProbe()
+    orig_thread = threading.Thread
+    threading.Thread = _BoomThread  # type: ignore[misc, assignment]
+    try:
+        with _patched_serve_seam(lambda: (probe, "http://127.0.0.1:0")) as calls:
+            serve_authenticate_api()
+        assert probe.events == ["serve_forever", "server_close"] and calls == [1]
+        assert boom_calls == [], "no thread may be constructed by the entrypoint"
+        # Non-vacuity: the trap is actually armed.
+        tripped = False
+        try:
+            threading.Thread(target=lambda: None)
+        except AssertionError:
+            tripped = True
+        assert tripped, "the thread trap was not armed (the no-thread proof would be vacuous)"
+    finally:
+        threading.Thread = orig_thread  # type: ignore[misc]
+
+
+def test_serve_real_server_hosted_served_shutdown_joined_closed() -> None:
+    # Serve-then-shutdown lifecycle over the REAL server (test-only daemon thread; bounded waits):
+    # compose the genuine (server, base_url) via the REAL seam, pin the seam to return exactly that
+    # tuple, host the BLOCKING entrypoint in a daemon thread, observe SERVING via an actual HTTP
+    # response (GET -> 405 empty: the request was PROCESSED by the serve loop — a bare TCP connect
+    # would be vacuous, the socket listens from construction), then shutdown -> serve_forever
+    # returns -> the entrypoint's finally closes the socket -> bounded join -> no live thread.
+    with _env(url=_URL, issuers=_VALID_ISSUERS, host=None, port=None):
+        composed = build_authenticate_server_from_env()  # REAL seam: binds an ephemeral loopback port
+    assert composed is not None
+    server, base_url = composed
+    thread = threading.Thread(target=serve_authenticate_api, daemon=True)  # test-only hosting thread
+    served = False
+    try:
+        with _patched_serve_seam(lambda: composed) as calls:
+            thread.start()
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline:
+                try:
+                    urllib.request.urlopen(base_url + "/internal/auth/authenticate", timeout=2.0)
+                except urllib.error.HTTPError as exc:
+                    served = exc.code == 405  # GET refused by the running serve loop (request processed)
+                    exc.close()
+                    break
+                except (urllib.error.URLError, OSError):
+                    time.sleep(0.05)
+            assert served, "the hosted entrypoint must process a request (405 refusal) before the deadline"
+            assert calls == [1], "the hosted entrypoint must call the env seam exactly once"
+    finally:
+        try:
+            if thread.is_alive():
+                server.shutdown()  # serve_forever returns; the entrypoint's finally closes the socket
+                thread.join(timeout=10.0)
+        finally:
+            server.server_close()  # idempotent second close (safety net if the thread never served)
+    assert not thread.is_alive(), "the serve thread must terminate after shutdown (bounded join; no leak)"
+
+
 if __name__ == "__main__":
     _h.run(
         [
@@ -277,5 +457,12 @@ if __name__ == "__main__":
             test_construction_performs_no_network_read,
             test_seam_does_not_serve,
             test_real_bind_smoke_constructs_and_closes,
+            test_serve_inactive_seam_raises_deterministic_runtimeerror,
+            test_serve_inactive_real_env_raises_runtimeerror,
+            test_serve_active_serves_once_then_closes_after_return,
+            test_serve_exception_propagates_and_still_closes,
+            test_serve_keyboard_interrupt_propagates_and_still_closes,
+            test_serve_entrypoint_creates_no_thread,
+            test_serve_real_server_hosted_served_shutdown_joined_closed,
         ]
     )
