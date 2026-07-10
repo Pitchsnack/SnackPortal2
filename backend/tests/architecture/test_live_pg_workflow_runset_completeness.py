@@ -51,6 +51,12 @@ MANUAL_ONLY_EXCEPTIONS = {
         "cannot run on the single ephemeral CI service — the B-7C-2 exclusion, documented in the "
         "workflow header and the b7c2 runtime doc"
     ),
+    "tests/control_plane/requires_pg/test_pg_b5_standing_topology.py": (
+        "PRD B5-4 standing-topology disposable proof: single-cluster CI-capable, but loop enrollment "
+        "requires editing the live-pg workflow (plus the EXPECTED_HARNESS_COUNT/b7c2-doc lockstep), "
+        "which is out of the B5-4 slice's authorized surface (no .github changes); enrollment is a "
+        "tracked follow-up in the B5-4 execution report ATR"
+    ),
 }
 
 # SAME loop idiom as the AT-5 / ATR-4 guards (replicated for self-containment, not imported).
