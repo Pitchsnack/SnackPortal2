@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Any, Optional, Tuple
 from urllib.parse import parse_qs, urlsplit
 
+from .federation import FederationStore
 from .ports import ControlStore
 from .records import DirectoryKind, DirectoryRecord, TenantLifecycleState
 
@@ -27,6 +28,7 @@ _MAX_PAGE = 200
 class ControlPlaneReadService:
     def __init__(self, store: ControlStore) -> None:
         self._store = store
+        self._federation = FederationStore(store)
 
     def tenant_state(self, tenant_id: str) -> Optional[dict[str, Any]]:
         rec = self._store.get_tenant(tenant_id)
@@ -62,6 +64,31 @@ class ControlPlaneReadService:
         if not members:
             return None
         return {"role": members[0].role.value}
+
+    def federation_for_issuer(self, issuer: str) -> Optional[dict[str, Any]]:
+        """Resolve an OIDC issuer to its per-tenant federation config (B5-3 LW-2).
+
+        The federation read contract is keyed by tenant (``FederationStore.get(tenant_id)``),
+        so the issuer is resolved through the EXISTING port surface only: enumerate
+        ``list_tenant_ids()`` in sorted order (deterministic when two tenants share an
+        issuer — first match wins) and read each config through the existing
+        ``FederationStore`` (the ``directory_page`` enumeration precedent). The response
+        carries exactly the five ``FederationConfig`` fields — the shape the auth-router
+        client (``HttpControlPlaneRead.get_federation_for_issuer``) already decodes as
+        ``FederationView``. ``jwks_ref`` is a REFERENCE (public-key location, never key
+        material inline) — no credential crosses this read (Governance §I).
+        """
+        for tenant_id in sorted(self._store.list_tenant_ids()):
+            config = self._federation.get(tenant_id)
+            if config is not None and config.oidc_issuer == issuer:
+                return {
+                    "tenant_id": config.tenant_id,
+                    "oidc_issuer": config.oidc_issuer,
+                    "oidc_audience": config.oidc_audience,
+                    "jwks_ref": config.jwks_ref,
+                    "claim_to_tenant_rule": config.claim_to_tenant_rule,
+                }
+        return None
 
     # --- Global Discovery Platform reads (D-31; PRD-P5-R2 E) -----------------
     # Global reference data only; NEVER tenant-owned records.
@@ -146,6 +173,18 @@ class ControlPlaneReadDispatcher:
             limit_raw = (query.get("limit") or ["100"])[0]
             limit = int(limit_raw) if limit_raw.isdigit() else 100
             body = self._svc.directory_page(segments[1], cursor, limit)
+            return (200, body) if body is not None else _NOT_FOUND
+
+        # /federation?issuer=<urlencoded issuer> (B5-3 LW-2 — the read half of the existing
+        # HttpControlPlaneRead.get_federation_for_issuer client pair). Parsed with
+        # keep_blank_values so "missing", "empty", and "duplicate" are each visible and all
+        # rejected with a deterministic 400 (exactly ONE non-empty issuer value is required);
+        # parse_qs percent-decodes the client's urllib.parse.quote()d issuer.
+        if segments == ["federation"]:
+            issuers = parse_qs(parts.query, keep_blank_values=True).get("issuer")
+            if issuers is None or len(issuers) != 1 or not issuers[0]:
+                return (400, {"error": "invalid_issuer"})
+            body = self._svc.federation_for_issuer(issuers[0])
             return (200, body) if body is not None else _NOT_FOUND
 
         return _NOT_FOUND
