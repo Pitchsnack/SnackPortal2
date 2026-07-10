@@ -701,3 +701,84 @@ def liveness() -> Dict[str, str]:
 
 def create_app() -> ControlPlane:
     return ControlPlane()
+
+
+# --- B5-1: control-plane read-edge serve-composition seam -------------------------------------
+# A config-selectable, socket-binding, serve-INERT environment-composition seam for the existing
+# read-edge server factory (``make_server`` / ``create_app`` in
+# ``adapters/providers/http_read_api.py``), mirroring the merged Database Router
+# (``build_dispatch_server_from_env``) and Auth Router (``build_authenticate_server_from_env``)
+# server seams. It composes a read-edge server OBJECT from environment config; it does NOT serve
+# requests, start a thread or service, open a database, run runtime DDL, complete the Physical
+# Multi-Database MVP, or make the physical live-topology smoke runnable — one prerequisite among
+# several (B5-BLK-4 stays OPEN; the runnable/serve lifecycle is B5-2 scope).
+#
+# Intentional divergence from the router server seams: the read-edge server side has no upstream
+# client-URL selector, so the bind HOST itself is the activation selector. While inactive the seam
+# returns ``None`` WITHOUT consulting the port, composing ``create_app()``, importing/calling
+# ``make_server``, or binding a socket. ``create_app()``'s own SP2_CP_* selector-coherence rules
+# keep the composed app fail-closed.
+
+# The read-edge bind host — the ACTIVATION selector. Non-secret internal config (the loopback/
+# internal bind host, never a credential). Unset / empty / whitespace-only → the seam is inactive
+# (returns ``None``); a non-empty value (stripped) is the bind host.
+SP2_CP_READ_HOST = "SP2_CP_READ_HOST"
+
+# The read-edge bind port. Consulted ONLY when the host selector is active. Unset / empty /
+# whitespace → ``0`` (ephemeral); otherwise a base-10 integer in ``[0, 65535]``; anything else →
+# ``ValueError`` raised BEFORE ``create_app()`` / ``make_server`` / any socket bind (fail closed —
+# never a silent fallback).
+SP2_CP_READ_PORT = "SP2_CP_READ_PORT"
+
+
+def _read_port_from_env() -> int:
+    """Parse ``SP2_CP_READ_PORT`` fail-closed: unset/empty/whitespace → ``0`` (ephemeral);
+    otherwise a base-10 integer in ``[0, 65535]``, else ``ValueError`` — raised BEFORE any socket
+    bind so malformed config never opens a listener."""
+    raw = (os.environ.get(SP2_CP_READ_PORT) or "").strip()
+    if not raw:
+        return 0
+    try:
+        port = int(raw, 10)
+    except ValueError:
+        raise ValueError(f"invalid {SP2_CP_READ_PORT}={raw!r}; expected an integer in [0, 65535]") from None
+    if not (0 <= port <= 65535):
+        raise ValueError(f"invalid {SP2_CP_READ_PORT}={raw!r}; port out of range [0, 65535]")
+    return port
+
+
+def build_read_server_from_env() -> Optional[Tuple[object, str]]:
+    """The config-selectable control-plane read-edge server composition seam (B5-1).
+
+    Host-gate-first (the read-edge server side has no upstream client-URL selector, so the bind
+    HOST is the activation selector):
+
+    * ``SP2_CP_READ_HOST`` unset, or empty/whitespace after stripping → ``None``: the seam is
+      inactive; ``SP2_CP_READ_PORT`` is NOT consulted, ``create_app()`` is NOT composed,
+      ``make_server`` is NOT imported or called, and no socket binds.
+    * a non-empty ``SP2_CP_READ_HOST`` (stripped) → compose the production app via ``create_app()``
+      and construct the read-edge server via the existing ``make_server`` adapter, returning
+      ``(server, base_url)``. ``SP2_CP_READ_PORT`` unset/empty → ``0`` (ephemeral); otherwise an
+      integer in ``[0, 65535]``; non-integer / negative / out-of-range → ``ValueError`` raised
+      BEFORE ``create_app()`` / ``make_server`` so malformed config never binds a socket.
+
+    Side-effect boundary (LOAD-BEARING): this seam is DB-connection-inert, network-read-inert,
+    thread-inert, and serve-inert — ``create_app()`` construction opens no database (lazy-connect),
+    performs no network read, and the seam starts no serve loop, thread, daemon, or service. But it
+    is NOT socket-inert: when active, ``make_server`` constructs an ``HTTPServer`` which binds +
+    activates a local listening socket at construction (default ``port=0`` → ephemeral). Callers /
+    tests own the socket lifecycle and must close it.
+
+    No overclaim: it composes a read-edge server *object* from config; it does NOT serve requests,
+    run a production service, open a physical database, complete the Physical Multi-Database MVP,
+    or make the physical live-topology smoke runnable. It is one prerequisite among several.
+    """
+    host = (os.environ.get(SP2_CP_READ_HOST) or "").strip()
+    if not host:
+        return None
+    port = _read_port_from_env()
+    # Lazy relative import keeps control_plane/main.py transport-free at module import (http.server
+    # is pulled in via the read adapter only when the seam is active); make_server binds the socket.
+    from .adapters.providers.http_read_api import make_server
+
+    return make_server(create_app(), host, port)
