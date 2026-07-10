@@ -23,14 +23,22 @@ CHECKS (PRD B5-4 §11.1 + the §11.3 mutation legs):
          file, mismatched secret version (@1 -> @2), both refs resolving to ONE database
          [mutation 4/5], and a non-Ready tenant (supported suspend; feeds teardown).
   B54-7  teardown without the explicit flag is REFUSED (non-zero; rows/DBs/files intact). [mutation 9]
-  B54-8  teardown --confirm-b5-teardown: rows reconciled to Decommissioned via SUPPORTED
-         transitions and RETAINED; exactly the two B5-4 databases dropped; exactly the two
-         secret files removed; the sentinel database, sentinel registry row, and sentinel
-         secret file ALL SURVIVE.                                                      [mutation 8]
+  B54-8  teardown --confirm-b5-teardown (all tenants reconcilable): rows reconciled to
+         Decommissioned via SUPPORTED transitions and RETAINED; exactly the two B5-4
+         databases dropped; exactly the two secret files removed; the sentinel database,
+         sentinel registry row, and sentinel secret file ALL SURVIVE.                  [mutation 8]
   B54-9  teardown rerun is idempotent (exit 0, no-ops).
   B54-10 post-teardown apply fails closed (Decommissioned is terminal; no DB recreated) —
          the documented full-fixture-reset consequence.
   B54-11 secret hygiene: NO raw DSN/password appears in ANY captured command output.    [mutation 6]
+  B54-12 (PM-B54-1) a tenant RESTING at Verifying (real gate-written crash residue) makes the
+         confirmed teardown exit non-zero with the tenant's registry row, physical database,
+         AND secret file all PRESERVED and no unsupported transition written, while the
+         eligible companion is reconciled/cleaned per the bounded semantics; the refusal is
+         idempotent; the tenant is then recovered to Ready through the REAL gate only.
+  B54-13 (PM-B54-2) a PRE-EXISTING sp2_b54_hidden database causes pre-flight REFUSAL before
+         any mutation, and the pre-existing database survives (see
+         test_b54_preexisting_scratch_refusal — run FIRST by the standalone runner).
   (mutation 10 — DDL from import/runtime — is pinned structurally by
    tests/architecture/test_b5_standing_topology_boundaries.py and behaviorally by B54-1/B54-2.)
 
@@ -45,8 +53,10 @@ With SNACKPORTAL_TEST_DSN unset (or psycopg absent) it clean-skips (exit 0). NOT
 advisory live-PG workflow loop this slice (MANUAL_ONLY exception — enrollment is a .github edit,
 out of B5-4 scope; tracked follow-up).
 
-SAFETY. If any B5-4-named database already exists on the target cluster (a REAL standing fixture),
-this test REFUSES to run rather than dropping anything it does not own.
+SAFETY. If any database this run could ever drop already exists on the target cluster (the two
+deterministic tenant targets, the scratch Control DB, the sentinel, AND the missing-DB leg's
+rename-scratch name ``sp2_b54_hidden`` — the COMPLETE finally-cleanup inventory), this test
+REFUSES to run rather than dropping anything it does not own (PM-B54-2).
 
 SECRET HYGIENE (D-14). SNACKPORTAL_TEST_DSN is used by NAME only; its value (and every DSN derived
 from it) is never printed or persisted; the tmp secret dir is removed in ``finally``. B5-BLK-4
@@ -72,6 +82,7 @@ import b5_standing_topology as b5ops  # noqa: E402  (the operator module under t
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))  # backend on path
 
 _CTL_DB = "sp2_b54_ctl"  # scratch Control DB (dropped in finally)
+_RENAME_SCRATCH = "sp2_b54_hidden"  # the missing-DB leg's rename target (PM-B54-2: in the pre-flight AND the finally)
 _SENTINEL_DB = "sp2_tenant_b54_sentinel"  # unrelated database INSIDE the tenant namespace (must survive teardown)
 _SENTINEL_TENANT = "b5_sentinel_reg"  # unrelated registry row (must survive teardown)
 _CLUSTER_ROLES = ("sp2_provisioner", "lineage_writer", "lineage_reader")  # created by the tenant 003 templates
@@ -149,7 +160,9 @@ def test_b5_standing_topology_ops(admin_dsn: str) -> None:
 
     # SAFETY pre-flight: refuse to run over anything B5-4-shaped that already exists (never drop
     # a database this test did not create — a REAL standing fixture may live on this cluster).
-    for name in (*targets.values(), _SENTINEL_DB, _CTL_DB):
+    # PM-B54-2: the inventory is COMPLETE — it includes every name the finally block may drop,
+    # including the missing-DB leg's rename scratch name.
+    for name in (*targets.values(), _RENAME_SCRATCH, _SENTINEL_DB, _CTL_DB):
         assert not _db_exists(psycopg, admin_dsn, name), (
             f"database {name!r} already exists on this cluster — refusing to run the disposable proof over it "
             "(tear down / point SNACKPORTAL_TEST_DSN at a disposable cluster first)"
@@ -273,12 +286,12 @@ def test_b5_standing_topology_ops(admin_dsn: str) -> None:
         assert "STATUS OK" in out
 
         # (a) missing database — rename away and back (schema preserved).
-        _admin_exec(psycopg, admin_dsn, f'ALTER DATABASE "{targets[_ALPHA]}" RENAME TO "sp2_b54_hidden"')
+        _admin_exec(psycopg, admin_dsn, f'ALTER DATABASE "{targets[_ALPHA]}" RENAME TO "{_RENAME_SCRATCH}"')
         try:
             code, out = run_ops(["status"])
             assert code != 0 and "missing" in out.lower(), "status must fail for a missing physical database"
         finally:
-            _admin_exec(psycopg, admin_dsn, f'ALTER DATABASE "sp2_b54_hidden" RENAME TO "{targets[_ALPHA]}"')
+            _admin_exec(psycopg, admin_dsn, f'ALTER DATABASE "{_RENAME_SCRATCH}" RENAME TO "{targets[_ALPHA]}"')
         code, _ = run_ops(["status"])
         assert code == 0, "status must recover once the database is back"
 
@@ -346,8 +359,28 @@ def test_b5_standing_topology_ops(admin_dsn: str) -> None:
                 correlation_id="b5-sentinel-reg",
             )
             # --- non-Ready leg (supported suspend) — deliberately NOT restored: it feeds the
-            # teardown Suspended path below (beta still covers the Ready path).
+            # teardown Suspended path below (beta covers the Ready path after its recovery).
             plane.registry.suspend_tenant(_ALPHA, actor="b5_test_ops", correlation_id="b5-suspend-alpha")
+
+            # --- PM-B54-1 Verifying-leg setup: put BETA at rest in Verifying by simulating a
+            # mid-verify CRASH — the REAL gate CAS-writes Verifying (audited), then the probe
+            # "crashes" (raises) and the exception propagates out of verify(), so the row RESTS
+            # at Verifying: exactly the crash residue PM-B54-1 concerns. No direct lifecycle
+            # write, no registry SQL — the Verifying state is written by the gate itself.
+            class _CrashProbe:
+                def probe(self, ref: object) -> object:
+                    raise RuntimeError("simulated mid-verify crash (test-only)")
+
+            real_probe = plane.provisioning._probe
+            plane.provisioning._probe = _CrashProbe()
+            crashed = False
+            try:
+                plane.provisioning.verify(_BETA, actor="b5_test_ops", correlation_id="b5-verifying-crash")
+            except RuntimeError:
+                crashed = True
+            finally:
+                plane.provisioning._probe = real_probe
+            assert crashed, "the simulated mid-verify crash must propagate (leaving the row resting at Verifying)"
         finally:
             if plane is not None:
                 try:
@@ -359,12 +392,62 @@ def test_b5_standing_topology_ops(admin_dsn: str) -> None:
         sentinel_secret.parent.mkdir(parents=True, exist_ok=True)
         sentinel_secret.write_text("postgresql://placeholder.invalid/never_used\n", encoding="utf-8")
 
-        code, out = run_ops(["status"])
-        assert code != 0 and "not ready" in out.lower(), "status must fail for a non-Ready (Suspended) tenant"
+        beta_secret_path = pathlib.Path(secret_dir) / f"{tenant_dsn_ref(_BETA)}@1"
+        beta_state = _ctl_query(psycopg, admin_dsn, "SELECT lifecycle_state FROM control_tenants WHERE tenant_id = %s", (_BETA,))
+        assert beta_state == "Verifying", f"the crash residue must rest at Verifying (got {beta_state!r})"
+        assert _db_exists(psycopg, admin_dsn, targets[_BETA]) and beta_secret_path.is_file()
 
-        # --- B54-8: confirmed teardown — bounded, supported semantics, sentinels survive -----------
+        code, out = run_ops(["status"])
+        assert code != 0 and "not ready" in out.lower(), "status must fail for non-Ready (Suspended/Verifying) tenants"
+
+        # --- B54-12 (PM-B54-1): confirmed teardown with a REFUSED (Verifying) tenant ---------------
+        # The refused tenant keeps row+database+secret and the run exits non-zero, while the
+        # ELIGIBLE companion (alpha, Suspended) is reconciled and cleaned per the bounded semantics.
         code, out = run_ops(["teardown", "--confirm-b5-teardown"])
-        assert code == 0, f"confirmed teardown must succeed (got {code}):\n{out}"
+        assert code != 0, f"teardown with a Verifying tenant must exit non-zero (got {code}):\n{out}"
+        assert "PRESERVED" in out and "Verifying" in out, "the refusal must be reported, sanitized"
+        beta_state = _ctl_query(psycopg, admin_dsn, "SELECT lifecycle_state FROM control_tenants WHERE tenant_id = %s", (_BETA,))
+        assert beta_state == "Verifying", f"the refused tenant's row must remain Verifying (got {beta_state!r})"
+        assert _db_exists(psycopg, admin_dsn, targets[_BETA]), "the refused tenant's DATABASE must be preserved"
+        assert beta_secret_path.is_file(), "the refused tenant's SECRET FILE must be preserved"
+        unsupported = _ctl_query(
+            psycopg,
+            admin_dsn,
+            "SELECT count(*) FROM control_audit WHERE tenant_id = %s AND to_state IN ('Suspended', 'Decommissioned')",
+            (_BETA,),
+        )
+        assert unsupported == 0, "no unsupported lifecycle transition may be written for the refused tenant"
+        alpha_state = _ctl_query(psycopg, admin_dsn, "SELECT lifecycle_state FROM control_tenants WHERE tenant_id = %s", (_ALPHA,))
+        assert alpha_state == "Decommissioned", "the eligible companion must be reconciled per the bounded semantics"
+        assert not _db_exists(psycopg, admin_dsn, targets[_ALPHA]), "the eligible companion's database is cleaned"
+        assert not (pathlib.Path(secret_dir) / f"{tenant_dsn_ref(_ALPHA)}@1").is_file(), "companion secret removed"
+        assert _db_exists(psycopg, admin_dsn, _SENTINEL_DB), "sentinel DATABASE survives the refused run"
+        assert sentinel_secret.is_file(), "sentinel SECRET FILE survives the refused run"
+
+        # Refusal is idempotent: a rerun refuses the SAME way and still preserves everything.
+        code, out = run_ops(["teardown", "--confirm-b5-teardown"])
+        assert code != 0 and "PRESERVED" in out, "the rerun must refuse identically (resources still preserved)"
+        assert _db_exists(psycopg, admin_dsn, targets[_BETA]) and beta_secret_path.is_file()
+
+        # --- recover BETA out of Verifying through the REAL gate (supported; gate-written Ready) ---
+        from control_plane.distinctness import DistinctnessResult
+
+        plane2 = cp_main.create_app()
+        try:
+            out_rec = plane2.provisioning.verify(_BETA, actor="b5_test_ops", correlation_id="b5-verifying-recover")
+            assert out_rec.result is DistinctnessResult.VERIFIED, f"gate recovery must verify: {out_rec.reason}"
+        finally:
+            try:
+                if plane2.store._conn_cache is not None:
+                    plane2.store._conn_cache.close()
+            except Exception:
+                pass
+        beta_state = _ctl_query(psycopg, admin_dsn, "SELECT lifecycle_state FROM control_tenants WHERE tenant_id = %s", (_BETA,))
+        assert beta_state == "Ready", "the recovered tenant must be gate-written back to Ready"
+
+        # --- B54-8: full confirmed teardown — bounded, supported semantics, sentinels survive ------
+        code, out = run_ops(["teardown", "--confirm-b5-teardown"])
+        assert code == 0, f"confirmed teardown must succeed once every tenant is reconcilable (got {code}):\n{out}"
         for tid, target in targets.items():
             state = _ctl_query(psycopg, admin_dsn, "SELECT lifecycle_state FROM control_tenants WHERE tenant_id = %s", (tid,))
             assert state == "Decommissioned", f"{tid} must be reconciled to Decommissioned and RETAINED (got {state!r})"
@@ -399,11 +482,11 @@ def test_b5_standing_topology_ops(admin_dsn: str) -> None:
         password = urlsplit(admin_dsn).password
         if password:
             assert password not in joined, "no password may appear in any command output (D-14)"
-        print("PASS-DETAIL: B54-1..B54-11 all held (plan/apply/status/teardown lifecycle proven on disposable resources)")
+        print("PASS-DETAIL: B54-1..B54-12 all held (plan/apply/status/teardown lifecycle incl. the Verifying refusal leg)")
     finally:
         for target in targets.values():
             _drop_db(psycopg, admin_dsn, target)
-        _drop_db(psycopg, admin_dsn, "sp2_b54_hidden")
+        _drop_db(psycopg, admin_dsn, _RENAME_SCRATCH)
         _drop_db(psycopg, admin_dsn, _SENTINEL_DB)
         _drop_db(psycopg, admin_dsn, _CTL_DB)
         for role in _CLUSTER_ROLES:
@@ -416,5 +499,31 @@ def test_b5_standing_topology_ops(admin_dsn: str) -> None:
                 os.environ[k] = v
 
 
+def test_b54_preexisting_scratch_refusal(admin_dsn: str) -> None:
+    """PM-B54-2 proof (B54-13): a PRE-EXISTING database named ``sp2_b54_hidden`` makes the disposable
+    proof REFUSE at pre-flight — before ANY mutation — and the pre-existing database SURVIVES
+    (the aborted run never reaches its finally cleanup; nothing run-owned is created)."""
+    psycopg = _psycopg()
+    from control_plane.provisioning import tenant_database_name
+
+    assert not _db_exists(psycopg, admin_dsn, _RENAME_SCRATCH), (
+        f"{_RENAME_SCRATCH!r} already exists on this cluster — cannot run the refusal proof over it"
+    )
+    _admin_exec(psycopg, admin_dsn, f'CREATE DATABASE "{_RENAME_SCRATCH}"')  # the VERIFIER-owned sentinel
+    try:
+        refused = False
+        try:
+            test_b5_standing_topology_ops(admin_dsn)
+        except AssertionError as exc:
+            refused = "refusing to run" in str(exc) and _RENAME_SCRATCH in str(exc)
+        assert refused, "the harness must refuse pre-mutation when sp2_b54_hidden pre-exists"
+        assert _db_exists(psycopg, admin_dsn, _RENAME_SCRATCH), "the pre-existing database must SURVIVE the refusal"
+        for name in (*(tenant_database_name(t) for t in b5ops.TENANT_IDS), _SENTINEL_DB, _CTL_DB):
+            assert not _db_exists(psycopg, admin_dsn, name), f"the refusal must be pre-mutation ({name} must not exist)"
+    finally:
+        # The verifier's OWN bounded cleanup of the sentinel IT created (outside the harness).
+        _drop_db(psycopg, admin_dsn, _RENAME_SCRATCH)
+
+
 if __name__ == "__main__":
-    _pg.run([test_b5_standing_topology_ops])
+    _pg.run([test_b54_preexisting_scratch_refusal, test_b5_standing_topology_ops])

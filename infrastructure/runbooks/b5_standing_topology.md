@@ -93,11 +93,17 @@ Semantics (SUPPORTED lifecycle reconciliation only — nothing is invented):
   `Ready → Suspended` (`suspend_tenant`) then `→ Decommissioned` (`decommission_tenant`), with the
   `disable_routing` companion (drops routing evidence, invalidates) — and are **RETAINED** as terminal,
   audited rows. There is deliberately NO registry-row deletion (the ControlStore port has none).
-- exactly the two recomputed B5-4 tenant databases are dropped through the existing identifier-guarded
-  `PostgresProvisioningOperator.deprovision` (drop-if-exists — rerunning is a no-op). No inventory is
-  listed; no other database can be touched.
-- exactly the two secret files are removed (missing files are a no-op).
-- a tenant caught mid-flight (`Verifying`) fails the run closed — retry later.
+- database drop and secret-file removal are gated PER TENANT on that tenant's reconciliation result:
+  they run only for a tenant whose registry row is absent or whose supported reconciliation completed
+  to `Decommissioned`. Drops go through the existing identifier-guarded
+  `PostgresProvisioningOperator.deprovision` (drop-if-exists — rerunning is a no-op); no inventory is
+  listed and no other database can be touched. Secret files are removed only for reconciled tenants
+  (missing files are a no-op).
+- a tenant caught mid-flight (`Verifying`) is REFUSED: its registry row, physical database, and
+  secret file are all PRESERVED, and teardown exits non-zero. `Verifying` has no supported lifecycle
+  egress — retrying teardown alone will NOT resolve it; resolution requires the documented
+  full-fixture reset (§5) or a separately governed recovery path (teardown does not invent one).
+  Eligible tenants in the same run are still reconciled and cleaned per the bounded semantics above.
 - **NOT removed** (shared / out of the harness's ownership): the Control DB and its DDL, the durable
   audit trail, and the cluster roles created by the tenant DDL templates (`sp2_provisioner`,
   `lineage_writer`, `lineage_reader`).

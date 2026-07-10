@@ -24,12 +24,16 @@ Commands (stdlib argparse; work happens ONLY after an explicit subcommand — im
     teardown  explicit (requires ``--confirm-b5-teardown``), bounded, idempotent: supported registry
               lifecycle reconciliation ONLY (Ready -> Suspended -> Decommissioned via
               suspend_tenant/decommission_tenant + the disable_routing companion; rows are RETAINED
-              — the ControlStore has no row deletion and none is invented), then drops EXACTLY the
-              two recomputed B5-4 tenant databases through the existing identifier-guarded
-              ``PostgresProvisioningOperator.deprovision`` (DROP IF EXISTS; no SQL literal here),
-              then removes exactly the two canonical secret files. Never touches the Control DB,
-              its DDL, cluster roles, or any other database/row/secret. DECOMMISSIONED is terminal:
-              re-establishing the fixture afterwards requires the runbook's full-fixture reset.
+              — the ControlStore has no row deletion and none is invented), then drops the
+              recomputed databases and removes the canonical secret files of RECONCILED (or
+              row-absent) B5-4 tenants ONLY, through the existing identifier-guarded
+              ``PostgresProvisioningOperator.deprovision`` (DROP IF EXISTS; no SQL literal here).
+              A tenant refused during reconciliation (e.g. resting mid-flight at Verifying, which
+              has no supported lifecycle egress) keeps its row, database, AND secret file, and the
+              command exits non-zero — resolution is the runbook's full-fixture reset, never an
+              invented transition. Never touches the Control DB, its DDL, cluster roles, or any
+              other database/row/secret. DECOMMISSIONED is terminal: re-establishing the fixture
+              afterwards requires the runbook's full-fixture reset.
 
 Configuration (EXISTING conventions only — this tool introduces NO new environment variable):
 control-store DSN by reference ``control/control-store-dsn`` and provisioning-admin DSN by reference
@@ -59,7 +63,7 @@ import importlib
 import os
 import pathlib
 import sys
-from typing import Any, Callable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import urlsplit, urlunsplit
 
 _THIS = pathlib.Path(__file__).resolve()
@@ -524,16 +528,29 @@ def cmd_teardown(args: argparse.Namespace) -> int:
     print("B5-4 standing topology — TEARDOWN (bounded to the two B5-4 tenants; idempotent)")
     cp = _compose_all_postgres_plane()
     failures: List[str] = []
+    # PM-B54-1 (fix round 1): ONE explicit per-tenant eligibility/result structure, shared by the
+    # registry reconciliation AND the later database-drop and secret-removal steps. Cleanup for a
+    # tenant is permitted ONLY when its registry row is ABSENT or its SUPPORTED reconciliation
+    # completed to the terminal state; a refused tenant (e.g. mid-flight Verifying) keeps its row,
+    # its physical database, AND its secret file — the command reports a sanitized refusal and
+    # exits non-zero. No unsupported transition and no lifecycle bypass is ever attempted.
+    cleanup_eligible: Dict[str, bool] = {}
     try:
         for tid in TENANT_IDS:
             rec = cp.store.get_tenant(tid)
             if rec is None:
-                print(f"  {tid}: no registry row (no-op)")
+                cleanup_eligible[tid] = True  # nothing to reconcile; leftover resources may be cleaned
+                print(f"  {tid}: no registry row (cleanup of any leftover B5-4 resources permitted)")
                 continue
             state = rec.lifecycle_state
             try:
                 if state is TenantLifecycleState.VERIFYING:
-                    failures.append(f"{tid}: mid-flight (Verifying) — no supported egress; retry teardown later")
+                    cleanup_eligible[tid] = False
+                    failures.append(
+                        f"{tid}: mid-flight (Verifying) — row, database, and secret file PRESERVED; "
+                        "Verifying has no supported lifecycle egress; resolution requires the documented "
+                        "full-fixture reset (teardown does not invent one)"
+                    )
                     continue
                 if state is TenantLifecycleState.READY:
                     cp.registry.suspend_tenant(tid, actor=_ACTOR, correlation_id=f"b5-teardown-{tid}")
@@ -541,15 +558,18 @@ def cmd_teardown(args: argparse.Namespace) -> int:
                 if state is not TenantLifecycleState.DECOMMISSIONED:
                     cp.onboarding.disable_routing(tid, actor=_ACTOR, correlation_id=f"b5-teardown-{tid}")
                     cp.registry.decommission_tenant(tid, actor=_ACTOR, correlation_id=f"b5-teardown-{tid}")
+                cleanup_eligible[tid] = True
                 print(f"  {tid}: registry reconciled -> Decommissioned (row RETAINED — supported lifecycle semantics; audited)")
             except RegistryError as exc:
-                failures.append(f"{tid}: registry reconciliation failed ({exc})")
+                cleanup_eligible[tid] = False
+                failures.append(f"{tid}: registry reconciliation failed ({exc}) — database and secret file PRESERVED")
     finally:
         _close_plane(cp)
 
-    # Physical drops: EXACTLY the two recomputed targets, through the existing identifier-guarded
-    # operator (drop-if-exists semantics — idempotent; no SQL literal in this module; never a list,
-    # wildcard, or caller-supplied name). The Control DB and every other database are untouched.
+    # Physical drops: EXACTLY the recomputed targets of RECONCILED (or row-absent) B5-4 tenants,
+    # through the existing identifier-guarded operator (drop-if-exists semantics — idempotent; no
+    # SQL literal in this module; never a list, wildcard, or caller-supplied name). A tenant refused
+    # above is SKIPPED here and below (PM-B54-1). The Control DB and every other database are untouched.
     from shared.adapters.providers.env_reference_secret_store import DEFAULT_ALLOWED, EnvReferenceSecretStore
     from shared.secrets import SecretRef
 
@@ -559,6 +579,9 @@ def cmd_teardown(args: argparse.Namespace) -> int:
     admin_secrets = EnvReferenceSecretStore(allowed=frozenset({*DEFAULT_ALLOWED, cp_main.PROVISIONING_ADMIN_DSN_REF}))
     operator = PostgresProvisioningOperator(secrets=admin_secrets, ref=SecretRef(store_ref=cp_main.PROVISIONING_ADMIN_DSN_REF, version="1"))
     for tid in TENANT_IDS:
+        if not cleanup_eligible.get(tid, False):
+            print(f"  {tid}: database drop SKIPPED (reconciliation refused — resources preserved)")
+            continue
         target = _tenant_target(tid)
         try:
             operator.deprovision(target=target)
@@ -567,6 +590,9 @@ def cmd_teardown(args: argparse.Namespace) -> int:
             failures.append(f"{tid}: database drop failed ({type(exc).__name__})")
 
     for tid in TENANT_IDS:
+        if not cleanup_eligible.get(tid, False):
+            print(f"  {tid}: secret-file removal SKIPPED (reconciliation refused — resources preserved)")
+            continue
         path = _secret_file(secret_dir, tid)
         path.unlink(missing_ok=True)
         try:
@@ -578,7 +604,7 @@ def cmd_teardown(args: argparse.Namespace) -> int:
     if failures:
         for line in failures:
             print(f"  FAIL: {line}")
-        print("TEARDOWN INCOMPLETE (rerun is safe; every step is idempotent by outcome)")
+        print("TEARDOWN INCOMPLETE (refused tenants keep row+database+secret; rerun after resolution is safe)")
         return 1
     print("TEARDOWN OK — rows Decommissioned (retained), databases dropped, secret files removed.")
     print("NOTE: Decommissioned is terminal; re-establishing the fixture requires the runbook's full-fixture reset.")

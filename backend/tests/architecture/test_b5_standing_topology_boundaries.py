@@ -185,6 +185,15 @@ def test_fixed_deterministic_identities_and_bounded_teardown() -> None:
     assert "operator.deprovision(target=target)" in teardown_src and "_tenant_target(tid)" in teardown_src, (
         "teardown targets must be recomputed from the fixed tenant ids, never caller-supplied"
     )
+    # PM-B54-1 pin (fix round 1): ONE shared per-tenant eligibility structure gates the
+    # reconciliation AND both cleanup loops — a refused tenant is skipped with resources preserved.
+    assert teardown_src.count("cleanup_eligible") >= 4, (
+        "teardown must share ONE per-tenant eligibility structure across reconciliation, database "
+        "drop, and secret removal (a refused tenant must be excluded from ALL later cleanup)"
+    )
+    assert "SKIPPED" in teardown_src and "PRESERVED" in teardown_src, (
+        "refused tenants must be reported as skipped with their resources preserved"
+    )
 
 
 def test_teardown_refuses_without_confirmation_behaviorally() -> None:
@@ -257,6 +266,19 @@ def test_no_b5_5_or_smoke_c_content() -> None:
             assert needle not in text, f"B5-5/Smoke-C content {needle!r} must not appear in {path.name} (out of B5-4 scope)"
 
 
+def test_preflight_inventory_complete() -> None:
+    # PM-B54-2 pin (fix round 1): the disposable proof's pre-flight refusal inventory includes
+    # EVERY database name its finally block may drop — including the rename-scratch name, held as
+    # a single named constant so pre-flight, the rename leg, and the finally can never diverge.
+    src = _PROOF.read_text(encoding="utf-8")
+    assert '_RENAME_SCRATCH = "sp2_b54_hidden"' in src, "the rename-scratch name must be a single named constant"
+    assert src.count("_RENAME_SCRATCH") >= 5, (
+        "the rename-scratch constant must be used in the pre-flight inventory, the rename leg, "
+        "the finally cleanup, and the PM-B54-2 refusal proof"
+    )
+    assert src.count('"sp2_b54_hidden"') == 1, "the raw scratch name must appear ONLY in the constant definition"
+
+
 def test_manual_only_exception_registered_with_justification() -> None:
     # The disposable proof is consciously OUT of the advisory live-PG loop this slice (workflow
     # edits are out of B5-4 scope); the completeness guard must carry the justified exception.
@@ -286,6 +308,7 @@ if __name__ == "__main__":
             test_redaction_never_emits_credentials,
             test_no_production_import_of_ops_module,
             test_no_b5_5_or_smoke_c_content,
+            test_preflight_inventory_complete,
             test_manual_only_exception_registered_with_justification,
         ]
     )
