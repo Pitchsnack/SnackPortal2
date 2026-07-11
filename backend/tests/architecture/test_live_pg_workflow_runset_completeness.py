@@ -65,6 +65,13 @@ MANUAL_ONLY_EXCEPTIONS = {
         "outside the B5-4A V2 authorized five-file surface; tracked follow-up in the B5-4A V2 execution "
         "report ATR"
     ),
+    "tests/control_plane/requires_pg/test_pg_smoke_c_integrated_live_proof.py": (
+        "PRD Smoke C V2 integrated live proof: bound to the ESTABLISHED B5-4 standing topology, the "
+        "B5-4A standing auth fixture, the local Docker fixture, and the external secret root — not "
+        "runnable on the single ephemeral CI service; loop enrollment would additionally require the "
+        ".github workflow edit plus the EXPECTED_HARNESS_COUNT/b7c2-doc lockstep, which is outside the "
+        "Smoke C V2 authorized five-file surface; tracked follow-up in the Smoke C V2 execution report ATR"
+    ),
 }
 
 # SAME loop idiom as the AT-5 / ATR-4 guards (replicated for self-containment, not imported).
