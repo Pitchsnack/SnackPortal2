@@ -10,14 +10,18 @@ database:
   proof may not import subprocess at all (only the operator holds the one sanctioned subprocess seam);
 * NEITHER new file imports the original B5-4 harness (``b5_standing_topology``) — the operator reaches it
   ONLY through one pinned subprocess call whose argv is token-closed to the status subcommand (no apply /
-  no removal token is constructible), preserving the B5-5 no-new-invocation census;
+  no removal token is constructible) AND whose run site is AST-bound to exactly ``_b5_4_status_argv()``:
+  inline argv (even with the status token), aliases, and alternate builders are rejected, preserving the
+  B5-5 no-new-invocation census;
 * the operator's own command surface is EXACTLY ``plan`` / ``apply`` / ``status`` — structurally (the
   ``add_parser`` census) and behaviorally (an unknown subcommand exits non-zero); the removal-command
   token and the temporary smoke-row prefix appear NOWHERE in either new file (text-level, dynamic
   needles);
-* no direct SQL mutation anywhere: the operator's ONLY ``execute`` call site is the single read-only
-  ``pg_database`` absence probe, the proof's ``execute`` arguments are read-only ``SELECT``s, and no
-  string constant in either file carries an uppercase mutating-SQL keyword;
+* no direct SQL mutation anywhere: the FULL cursor sink surface (``execute`` / ``executemany`` /
+  ``executescript`` / ``copy_expert`` / ``copy_from`` / ``copy_to``) is censused — the operator's ONLY
+  sink is the single read-only ``pg_database`` execute probe, the proof's sinks are read-only ``SELECT``
+  executes, and no string constant in either file carries a mutating-SQL keyword (case-insensitive,
+  word-boundary; two pinned benign whole-constant literals exempt);
 * supported write APIs only: exactly one ``register_tenant`` call (dormant tenant id, pinned actor) and
   exactly one ``add_membership`` call site (fixture principal, ``Role.TENANT_AGENT``); the full mutating
   ban-list (store puts / CAS / audit append / lifecycle transitions / onboarding / recovery /
@@ -33,7 +37,9 @@ database:
   must reject its mutant facts (membership omitted/drifted, tenant Ready, reference drift, secret
   material, physical database, duplicate/missing audit provenance, smoke residue, unrelated fifth row) —
   and the source-shaped matrix runs as planted-source companions (SQL delete/truncate, removal command,
-  B5-4 apply argv, omitted B5-4 delegation, widened/computed manual-only entry);
+  B5-4 apply argv, omitted B5-4 delegation, widened/computed manual-only entry) plus the Fix R1 variant
+  companions (lowercase ``executemany``/``executescript``/``copy_expert`` mutations and inline run-site
+  argv — apply and status);
 * the proof is a registered, justified MANUAL_ONLY exception of the live-PG run-set completeness guard
   (plain-literal entry; the original B5-4 entry is preserved) and production code never imports the
   operator;
@@ -78,9 +84,21 @@ _OPS_TOP_IMPORT_ALLOW = {"__future__", "argparse", "importlib", "os", "pathlib",
 _FORBIDDEN_IMPORTS = ("psycopg", "psycopg2", "asyncpg", "sqlalchemy", "jwt", "cryptography", "threading", "socket", "http")
 _FORBIDDEN_NAMES = ("serve_forever", "ThreadingHTTPServer", "ThreadingMixIn")
 
-# Uppercase mutating-SQL keyword census over STRING CONSTANTS (prose stays lowercase; SELECT is the only
-# sanctioned SQL verb on this surface).
-_MUTATING_SQL_RE = re.compile(r"\b(INSERT|UPDATE|DELETE|TRUNCATE|DROP|CREATE|ALTER|GRANT|REVOKE)\b")
+# Case-insensitive, word-boundary mutating-SQL keyword census over STRING CONSTANTS (SELECT is the only
+# sanctioned SQL verb on this surface; lowercase/mixed-case near-misses are banned equally).
+_MUTATING_SQL_RE = re.compile(
+    r"\b(INSERT|UPDATE|DELETE|TRUNCATE|ALTER|DROP|CREATE|MERGE|REPLACE|GRANT|REVOKE|COPY)\b",
+    re.IGNORECASE,
+)
+# EVERY SQL-execution-capable cursor method is a sink — the batch/script/copy near-neighbors count
+# exactly like ``execute`` itself (F1: a lowercase executemany DELETE must be as loud as execute DELETE).
+_SQL_SINK_METHODS = frozenset({"execute", "executemany", "executescript", "copy_expert", "copy_from", "copy_to"})
+# The case-insensitive census would otherwise flag two benign committed literals (word-boundary keyword
+# hits that are not SQL): the codec error-handler value at the operator's one subprocess seam
+# (errors="replace") and the cmd_plan intent-line prose fragment. EXACT whole-constant matches only —
+# neither parses as a mutating statement, and every sink argument is independently pinned to the
+# read-only probe/SELECT surface below. Do not widen this set.
+_SQL_CENSUS_EXEMPT_EXACT = frozenset({"replace", " absent row(s) to create)"})
 _OPS_ALLOWED_SQL_PREFIX = "SELECT 1 FROM pg_database"
 
 # The operator's mutating-call ban-list (attribute-call names). The two supported write APIs are pinned
@@ -120,6 +138,11 @@ _OPS_BANNED_CALLS = frozenset(
         "write_bytes",
         "rename",
         "remove",
+        "executemany",
+        "executescript",
+        "copy_expert",
+        "copy_from",
+        "copy_to",
     }
 )
 # The proof drives everything through the operator CLI: it may touch the (outside-repo) secret-root file
@@ -146,6 +169,11 @@ _PROOF_BANNED_CALLS = frozenset(
         "provision",
         "apply_schema",
         "disable_routing",
+        "executemany",
+        "executescript",
+        "copy_expert",
+        "copy_from",
+        "copy_to",
     }
 )
 
@@ -230,45 +258,66 @@ def _first_call_lineno(root: ast.AST, name: str) -> Optional[int]:
 # ------------------------------------------------------------------------------------------------
 # shared predicates (used by the real pins AND the planted-mutant companions)
 # ------------------------------------------------------------------------------------------------
-def _execute_sql_args(tree: ast.AST) -> List[object]:
-    """The first argument of every ``.execute(...)`` call (the raw-SQL census subject)."""
-    out: List[object] = []
+def _sql_sink_calls(tree: ast.AST) -> List[Tuple[str, Optional[ast.expr]]]:
+    """Every SQL-execution-capable cursor call: ``(method name, first positional argument or None)``.
+
+    The census subject is the FULL sink surface (``_SQL_SINK_METHODS``) — counting only ``execute``
+    is exactly the F1 evasion (a lowercase ``executemany`` DELETE slipping through). A sink call
+    without a positional first argument still counts (fail closed: its SQL cannot be inspected)."""
+    out: List[Tuple[str, Optional[ast.expr]]] = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "execute" and node.args:
-            out.append(node.args[0])
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in _SQL_SINK_METHODS:
+            out.append((node.func.attr, node.args[0] if node.args else None))
     return out
 
 
+def _mutating_sql_census(tree: ast.AST) -> List[str]:
+    """Case-insensitive, word-boundary mutating-SQL keyword sweep over every string constant,
+    skipping ONLY the two pinned benign whole-constant literals (``_SQL_CENSUS_EXEMPT_EXACT``)."""
+    problems: List[str] = []
+    for value in _string_constants(tree):
+        if value in _SQL_CENSUS_EXEMPT_EXACT:
+            continue
+        match = _MUTATING_SQL_RE.search(value)
+        if match:
+            problems.append(f"mutating-SQL keyword {match.group(0)!r} in a string constant: {value[:60]!r}")
+    return problems
+
+
 def _ops_sql_problems(tree: ast.AST) -> List[str]:
-    """The operator's raw-SQL rules: exactly ONE execute site, read-only, the pg_database probe.
+    """The operator's raw-SQL rules: exactly ONE SQL sink, an ``execute``, read-only, the pg_database
+    probe. Every other sink method (``executemany`` / ``executescript`` / ``copy_*``) is forbidden.
 
     The sanctioned site passes the module constant ``_PG_DATABASE_SQL`` (whose VALUE is pinned by the
     loaded-module check in the real test and swept by the mutating-SQL census below); an inline constant
     is accepted only if it IS the probe text — anything else fails."""
     problems: List[str] = []
-    args = _execute_sql_args(tree)
-    if len(args) != 1:
-        problems.append(f"expected exactly one execute call site, found {len(args)}")
-    for arg in args:
+    sinks = _sql_sink_calls(tree)
+    if len(sinks) != 1:
+        problems.append(f"expected exactly one SQL execution sink, found {len(sinks)}")
+    for method, arg in sinks:
+        if method != "execute":
+            problems.append(f"forbidden SQL execution sink method {method!r} (only the single read-only execute probe is sanctioned)")
+            continue
         named_probe = isinstance(arg, ast.Name) and arg.id == "_PG_DATABASE_SQL"
         inline_probe = isinstance(arg, ast.Constant) and isinstance(arg.value, str) and arg.value.startswith(_OPS_ALLOWED_SQL_PREFIX)
         if not (named_probe or inline_probe):
             problems.append("an execute argument is not the single sanctioned read-only pg_database probe")
-    for value in _string_constants(tree):
-        if _MUTATING_SQL_RE.search(value):
-            problems.append(f"mutating-SQL keyword in a string constant: {value[:60]!r}")
+    problems.extend(_mutating_sql_census(tree))
     return problems
 
 
 def _proof_sql_problems(tree: ast.AST) -> List[str]:
-    """The proof's raw-SQL rules: every execute argument is a read-only SELECT constant."""
+    """The proof's raw-SQL rules: every SQL sink is an ``execute`` whose argument is a read-only
+    SELECT constant; the batch/script/copy sink methods are forbidden outright."""
     problems: List[str] = []
-    for arg in _execute_sql_args(tree):
+    for method, arg in _sql_sink_calls(tree):
+        if method != "execute":
+            problems.append(f"forbidden SQL execution sink method {method!r} in the proof (read-only SELECT executes only)")
+            continue
         if not (isinstance(arg, ast.Constant) and isinstance(arg.value, str) and arg.value.lstrip().startswith("SELECT")):
             problems.append("a proof execute argument is not a read-only SELECT constant")
-    for value in _string_constants(tree):
-        if _MUTATING_SQL_RE.search(value):
-            problems.append(f"mutating-SQL keyword in a string constant: {value[:60]!r}")
+    problems.extend(_mutating_sql_census(tree))
     return problems
 
 
@@ -326,6 +375,24 @@ def _subprocess_run_calls(tree: ast.AST) -> List[ast.Call]:
         and isinstance(node.func.value, ast.Name)
         and node.func.value.id == "subprocess"
     ]
+
+
+def _run_site_argv_problems(call: ast.Call) -> List[str]:
+    """The sanctioned ``subprocess.run`` call must receive EXACTLY ``_b5_4_status_argv()`` as its argv:
+    an ``ast.Call`` whose func is the ``ast.Name`` ``_b5_4_status_argv`` with no positional and no
+    keyword arguments (F2: pinning the builder alone proves nothing if the run site never uses it).
+    Inline argv is rejected even when it carries the status token — the run site must be bound to the
+    single reviewed builder; aliases and alternate builders fail the exact-name requirement."""
+    if not call.args:
+        return ["the subprocess.run call carries no positional argv argument"]
+    argv = call.args[0]
+    if not isinstance(argv, ast.Call):
+        return ["the subprocess.run argv is not a call to the reviewed builder (inline argv is banned, even status)"]
+    if not (isinstance(argv.func, ast.Name) and argv.func.id == "_b5_4_status_argv"):
+        return ["the subprocess.run argv is not _b5_4_status_argv() (aliases and alternate builders are banned)"]
+    if argv.args or argv.keywords:
+        return ["_b5_4_status_argv must be called with no positional and no keyword arguments"]
+    return []
 
 
 def _manual_only_mapping(guard_tree: ast.Module) -> Dict[str, str]:
@@ -468,6 +535,45 @@ def test_sql_pin_non_vacuity() -> None:
     assert not _ops_sql_problems(canonical), "the canonical single probe must PASS"
 
 
+def test_sql_sink_census_non_vacuity() -> None:
+    # [Fix R1 — variants V1..V4 of matrix 1/2] the batch/script/copy sinks with LOWERCASE mutating SQL
+    # are rejected by the SAME production predicates that pin the committed files (F1 closure).
+    variant_mutants = {
+        "V1 lowercase executemany DELETE": (
+            'def f(cur):\n    cur.executemany("delete from control_memberships where tenant_id = %s", rows)\n'
+        ),
+        "V2 lowercase executemany TRUNCATE": 'def f(cur):\n    cur.executemany("truncate control_audit", rows)\n',
+        "V3 lowercase executescript DELETE": 'def f(cur):\n    cur.executescript("delete from control_memberships;")\n',
+        "V4 copy_expert COPY": 'def f(cur):\n    cur.copy_expert("copy control_memberships from stdin", stream)\n',
+        "copy_from sink": 'def f(cur):\n    cur.copy_from(stream, "control_memberships")\n',
+        "copy_to sink": 'def f(cur):\n    cur.copy_to(stream, "control_memberships")\n',
+        "mixed-case execute Delete": 'def f(cur):\n    cur.execute("Delete From control_memberships Where tenant_id = %s", (t,))\n',
+        "argument-less sink": "def f(cur):\n    cur.executescript()\n",
+        "sink beside the sanctioned probe": (
+            'def f(cur):\n    cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (t,))\n'
+            '    cur.executemany("delete from control_memberships where tenant_id = %s", rows)\n'
+        ),
+    }
+    for label, source in variant_mutants.items():
+        mutant = ast.parse(source)
+        assert _ops_sql_problems(mutant), f"ops SQL pin must reject variant mutant: {label}"
+        assert _proof_sql_problems(mutant), f"proof SQL pin must reject variant mutant: {label}"
+    # The keyword census stays case-insensitive and word-boundary based for EVERY banned verb …
+    for keyword in ("insert", "update", "delete", "truncate", "alter", "drop", "create", "merge", "replace", "grant", "revoke", "copy"):
+        planted = ast.parse(f'sql = "{keyword} something control_audit"\n')
+        assert _mutating_sql_census(planted), f"census must flag the lowercase {keyword!r} keyword"
+        assert _mutating_sql_census(ast.parse(f'sql = "{keyword.upper()} something control_audit"\n')), (
+            f"census must flag the uppercase {keyword!r} keyword"
+        )
+    # … while benign prose near-misses (word-boundary) and the two pinned exempt literals stay clean,
+    # and the exemptions are WHOLE-CONSTANT only: a real statement embedding an exempt word is flagged.
+    assert not _mutating_sql_census(ast.parse('msg = "created deletion removes drops creates"\n')), "prose near-misses must stay clean"
+    assert not _mutating_sql_census(ast.parse('proc = subprocess.run(argv, errors="replace")\n')), "the codec literal is exempt"
+    assert not _mutating_sql_census(ast.parse('msg = f"intent ({n} absent row(s) to create)"\n')), "the intent fragment is exempt"
+    assert _mutating_sql_census(ast.parse('sql = "replace into control_memberships values (1)"\n')), "a REPLACE statement is flagged"
+    assert _mutating_sql_census(ast.parse('sql = "we will create) the row"\n')), "a drifted exempt-like fragment is flagged"
+
+
 def test_command_surface_is_exactly_plan_apply_status() -> None:
     # [matrix 3] a removal command cannot exist: structural census + behavioral refusal.
     names = _subparser_names(_tree(_OPS))
@@ -491,12 +597,15 @@ def test_command_surface_is_exactly_plan_apply_status() -> None:
 
 
 def test_b5_4_subprocess_is_status_only() -> None:
-    # [matrix 4] a B5-4 apply/removal subprocess is unconstructible: one run site, token-closed argv.
+    # [matrix 4] a B5-4 apply/removal subprocess is unconstructible: one run site, token-closed argv,
+    # and the run site AST-BOUND to the reviewed builder (a pinned-but-unused builder proves nothing).
     tree = _tree(_OPS)
     runs = _subprocess_run_calls(tree)
     assert len(runs) == 1, f"exactly ONE subprocess.run call site is allowed, found {len(runs)}"
     status_fn = _function(tree, "_b5_4_status")
     assert len(_subprocess_run_calls(status_fn)) == 1, "the subprocess.run call site must live inside _b5_4_status"
+    binding = _run_site_argv_problems(runs[0])
+    assert not binding, f"B5-4 run-site argv binding failed: {binding}"
     problems = _argv_builder_problems(_function(tree, "_b5_4_status_argv"))
     assert not problems, f"B5-4 argv builder pins failed: {problems}"
     module = _load_ops_module()
@@ -519,6 +628,35 @@ def test_b5_4_argv_pin_non_vacuity() -> None:
         mutant_fn = ast.parse(source).body[0]
         assert isinstance(mutant_fn, ast.FunctionDef)
         assert _argv_builder_problems(mutant_fn), f"argv pin must reject mutant: {label}"
+
+
+def test_b5_4_run_site_binding_non_vacuity() -> None:
+    # [Fix R1 — variants V5/V6 of matrix 4] the run site must be BOUND to the reviewed builder: an
+    # inline argv leaves every builder pin green (the builder stays pristine, unused) yet must be
+    # rejected — even when the inline token is "status" (F2 closure).
+    def _single_run(source: str) -> ast.Call:
+        calls = _subprocess_run_calls(ast.parse(source))
+        assert len(calls) == 1, "companion source must contain exactly one subprocess.run call"
+        return calls[0]
+
+    canonical = _single_run("def f():\n    proc = subprocess.run(_b5_4_status_argv(), cwd=str(_BACKEND_ROOT), capture_output=True)\n")
+    assert not _run_site_argv_problems(canonical), "the canonical builder-bound run site must PASS"
+    run_mutants = {
+        "V5 inline apply argv": 'def f():\n    proc = subprocess.run([sys.executable, str(_B5_4_OPS), "apply"], cwd=c)\n',
+        "V6 inline status argv": 'def f():\n    proc = subprocess.run([sys.executable, str(_B5_4_OPS), "status"], cwd=c)\n',
+        "inline removal-token argv": f'def f():\n    proc = subprocess.run([sys.executable, str(_B5_4_OPS), "{_REMOVAL_TOKEN}"], cwd=c)\n',
+        "alternate builder": "def f():\n    proc = subprocess.run(_b5_4_apply_argv(), cwd=c)\n",
+        "aliased builder through an attribute": "def f():\n    proc = subprocess.run(mod._b5_4_status_argv(), cwd=c)\n",
+        "builder called with a positional argument": 'def f():\n    proc = subprocess.run(_b5_4_status_argv("apply"), cwd=c)\n',
+        "builder called with a keyword argument": "def f():\n    proc = subprocess.run(_b5_4_status_argv(command=cmd), cwd=c)\n",
+        "no positional argv at all": "def f():\n    proc = subprocess.run(args=_b5_4_status_argv(), cwd=c)\n",
+        "argv smuggled through a name": "def f():\n    argv = _b5_4_status_argv()\n    proc = subprocess.run(argv, cwd=c)\n",
+    }
+    for label, source in run_mutants.items():
+        assert _run_site_argv_problems(_single_run(source)), f"run-site binding must reject mutant: {label}"
+    # A SECOND subprocess.run call site anywhere breaks the ==1 census (the other half of the pin).
+    doubled = _subprocess_run_calls(ast.parse("def f():\n    subprocess.run(_b5_4_status_argv())\n    subprocess.run(other())\n"))
+    assert len(doubled) == 2, "second-run-site census went vacuous"
 
 
 def test_supported_write_apis_only() -> None:
@@ -782,9 +920,11 @@ if __name__ == "__main__":
             test_ops_sql_surface_is_single_readonly_probe,
             test_proof_sql_surface_is_readonly,
             test_sql_pin_non_vacuity,
+            test_sql_sink_census_non_vacuity,
             test_command_surface_is_exactly_plan_apply_status,
             test_b5_4_subprocess_is_status_only,
             test_b5_4_argv_pin_non_vacuity,
+            test_b5_4_run_site_binding_non_vacuity,
             test_supported_write_apis_only,
             test_env_writes_pinned_to_standalone_posture,
             test_effectful_commands_consult_b5_4_first,
