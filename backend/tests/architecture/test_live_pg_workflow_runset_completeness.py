@@ -57,6 +57,14 @@ MANUAL_ONLY_EXCEPTIONS = {
         "which is out of the B5-4 slice's authorized surface (no .github changes); enrollment is a "
         "tracked follow-up in the B5-4 execution report ATR"
     ),
+    "tests/control_plane/requires_pg/test_pg_b5_standing_auth_fixture.py": (
+        "PRD B5-4A V2 standing-authentication-fixture proof: bound to the ESTABLISHED B5-4 standing "
+        "Control DB, the local Docker fixture, and the external secret root (control-store-standalone "
+        "posture) — not runnable on the single ephemeral CI service; loop enrollment would additionally "
+        "require the .github workflow edit plus the EXPECTED_HARNESS_COUNT/b7c2-doc lockstep, which is "
+        "outside the B5-4A V2 authorized five-file surface; tracked follow-up in the B5-4A V2 execution "
+        "report ATR"
+    ),
 }
 
 # SAME loop idiom as the AT-5 / ATR-4 guards (replicated for self-containment, not imported).
