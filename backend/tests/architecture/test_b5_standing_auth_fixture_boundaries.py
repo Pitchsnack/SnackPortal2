@@ -18,10 +18,20 @@ database:
   token and the temporary smoke-row prefix appear NOWHERE in either new file (text-level, dynamic
   needles);
 * no direct SQL mutation anywhere: the FULL cursor sink surface (``execute`` / ``executemany`` /
-  ``executescript`` / ``copy_expert`` / ``copy_from`` / ``copy_to``) is censused — the operator's ONLY
-  sink is the single read-only ``pg_database`` execute probe, the proof's sinks are read-only ``SELECT``
-  executes, and no string constant in either file carries a mutating-SQL keyword (case-insensitive,
-  word-boundary; two pinned benign whole-constant literals exempt);
+  ``executescript`` / psycopg3 ``copy`` / psycopg2 ``copy_expert`` / ``copy_from`` / ``copy_to``) is
+  censused — the operator's ONLY sink is the single read-only ``pg_database`` execute probe (its argument
+  the pinned ``_PG_DATABASE_SQL`` name, value pinned verbatim), the proof's sinks are read-only ``SELECT``
+  executes whose argument must STATICALLY RESOLVE, and no string constant in either file carries a
+  mutating-SQL keyword (case-insensitive, word-boundary; two pinned benign whole-constant literals
+  exempt). A strict static-string evaluator FOLDS ``ast.BinOp(Add)`` concatenations before the census so a
+  split verb (``"COP" + "Y ..."``) is caught as ``COPY``; a non-static / f-string / computed sink argument
+  is blocking (F3-B);
+* no raw/private Control-DB connection reachability: the raw ``._conn`` property, ``getattr(..., "_conn")``,
+  any cursor/copy/commit/rollback/write/write_row path rooted at ``cp.store``, and any bare
+  ``commit`` / ``rollback`` / ``write`` / ``write_row`` call are all forbidden; the ONLY sanctioned private
+  handle is the ``_conn_cache`` close in ``_close_plane`` — pinned to its exact reviewed shape and exact
+  count (one attribute + one getattr string, both rooted at ``cp.store``, both inside ``_close_plane``);
+  raw cursor use is confined to a LOCAL short-lived connection (never ``cp.store``) (F3-A/F3-C);
 * supported write APIs only: exactly one ``register_tenant`` call (dormant tenant id, pinned actor) and
   exactly one ``add_membership`` call site (fixture principal, ``Role.TENANT_AGENT``); the full mutating
   ban-list (store puts / CAS / audit append / lifecycle transitions / onboarding / recovery /
@@ -39,7 +49,9 @@ database:
   and the source-shaped matrix runs as planted-source companions (SQL delete/truncate, removal command,
   B5-4 apply argv, omitted B5-4 delegation, widened/computed manual-only entry) plus the Fix R1 variant
   companions (lowercase ``executemany``/``executescript``/``copy_expert`` mutations and inline run-site
-  argv — apply and status);
+  argv — apply and status) and the Fix R2 F3 companions (psycopg3 ``cursor.copy``, split-string / f-string
+  COPY, ``copier.write``/``write_row``, ``cp.store._conn`` cursor/commit/rollback, ``getattr(..., "_conn")``,
+  raw-connection aliases, extra ``_conn_cache`` occurrences, and the exact reproduced F3 proof of concept);
 * the proof is a registered, justified MANUAL_ONLY exception of the live-PG run-set completeness guard
   (plain-literal entry; the original B5-4 entry is preserved) and production code never imports the
   operator;
@@ -91,8 +103,20 @@ _MUTATING_SQL_RE = re.compile(
     re.IGNORECASE,
 )
 # EVERY SQL-execution-capable cursor method is a sink — the batch/script/copy near-neighbors count
-# exactly like ``execute`` itself (F1: a lowercase executemany DELETE must be as loud as execute DELETE).
-_SQL_SINK_METHODS = frozenset({"execute", "executemany", "executescript", "copy_expert", "copy_from", "copy_to"})
+# exactly like ``execute`` itself (F1: a lowercase executemany DELETE must be as loud as execute DELETE;
+# F3: psycopg3's bare ``cursor.copy`` bulk-write primitive is a sink too — COPY regardless of the
+# psycopg2 ``copy_expert``/``copy_from``/``copy_to`` vs psycopg3 ``copy`` naming).
+_SQL_SINK_METHODS = frozenset({"execute", "executemany", "executescript", "copy", "copy_expert", "copy_from", "copy_to"})
+
+# F3 raw-connection reachability. The durable ControlStore caches a real psycopg connection behind the
+# ``_conn`` property (``PostgresControlStore._conn``); ``cp.store._conn`` therefore reaches the live
+# Control DB with cursor/copy/commit/rollback/write primitives that bypass the supported write APIs. The
+# ONLY sanctioned private-handle use on this surface is the ``_conn_cache`` close in ``_close_plane`` (the
+# 07D finally idiom); the raw ``_conn`` property and every write/transaction primitive are forbidden.
+_RAW_CONN_ATTR = "_conn"  # the raw cached connection property (DISTINCT from the sanctioned _conn_cache)
+_CONN_CACHE_ATTR = "_conn_cache"  # the sanctioned cleanup handle — exact reviewed shape + exact count only
+_RAW_STORE_OP_METHODS = frozenset({"cursor", "copy", "commit", "rollback", "write", "write_row"})
+_FORBIDDEN_CONN_CALLS = frozenset({"commit", "rollback", "write", "write_row"})  # banned outright, any root
 # The case-insensitive census would otherwise flag two benign committed literals (word-boundary keyword
 # hits that are not SQL): the codec error-handler value at the operator's one subprocess seam
 # (errors="replace") and the cmd_plan intent-line prose fragment. EXACT whole-constant matches only —
@@ -140,9 +164,14 @@ _OPS_BANNED_CALLS = frozenset(
         "remove",
         "executemany",
         "executescript",
+        "copy",
         "copy_expert",
         "copy_from",
         "copy_to",
+        "write",
+        "write_row",
+        "commit",
+        "rollback",
     }
 )
 # The proof drives everything through the operator CLI: it may touch the (outside-repo) secret-root file
@@ -171,9 +200,14 @@ _PROOF_BANNED_CALLS = frozenset(
         "disable_routing",
         "executemany",
         "executescript",
+        "copy",
         "copy_expert",
         "copy_from",
         "copy_to",
+        "write",
+        "write_row",
+        "commit",
+        "rollback",
     }
 )
 
@@ -271,9 +305,44 @@ def _sql_sink_calls(tree: ast.AST) -> List[Tuple[str, Optional[ast.expr]]]:
     return out
 
 
+def _static_sql_string(node: Optional[ast.expr]) -> Optional[str]:
+    """Strict guard-only SQL-expression evaluator (F3-B). Resolves ONLY:
+
+    * ``ast.Constant(str)``;
+    * ``ast.BinOp(Add)`` whose BOTH operands recursively resolve to strings (folding ``"COP" + "Y ..."``
+      into ``"COPY ..."``).
+
+    Everything else — ``Name`` / ``Attribute`` / f-string (``JoinedStr``) / ``Call`` / ``Subscript`` /
+    conditional expression / ``.format``/``.join``/``.replace`` construction / any unsupported node —
+    is non-static and returns ``None`` (fail closed: a computed SQL argument cannot be inspected)."""
+    if isinstance(node, ast.Constant):
+        return node.value if isinstance(node.value, str) else None
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _static_sql_string(node.left)
+        right = _static_sql_string(node.right)
+        if left is not None and right is not None:
+            return left + right
+    return None
+
+
+def _folded_sql_strings(tree: ast.AST) -> List[str]:
+    """Every ``ast.BinOp(Add)`` chain in the tree that statically folds to a string — the split-verb
+    evasion surface (``"COP" + "Y ..."``). Folded strings are censused with NO exemption: there is no
+    legitimate reason to split a benign literal across ``+`` on this surface."""
+    out: List[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            folded = _static_sql_string(node)
+            if folded is not None:
+                out.append(folded)
+    return out
+
+
 def _mutating_sql_census(tree: ast.AST) -> List[str]:
-    """Case-insensitive, word-boundary mutating-SQL keyword sweep over every string constant,
-    skipping ONLY the two pinned benign whole-constant literals (``_SQL_CENSUS_EXEMPT_EXACT``)."""
+    """Case-insensitive, word-boundary mutating-SQL keyword sweep. Runs over every whole string constant
+    (skipping ONLY the two pinned benign whole-constant literals ``_SQL_CENSUS_EXEMPT_EXACT``) AND — after
+    static folding — over every ``+``-concatenated string expression (F3: ``"COP" + "Y ..."`` folds to
+    ``COPY`` and is caught; folded expressions get no exemption)."""
     problems: List[str] = []
     for value in _string_constants(tree):
         if value in _SQL_CENSUS_EXEMPT_EXACT:
@@ -281,7 +350,63 @@ def _mutating_sql_census(tree: ast.AST) -> List[str]:
         match = _MUTATING_SQL_RE.search(value)
         if match:
             problems.append(f"mutating-SQL keyword {match.group(0)!r} in a string constant: {value[:60]!r}")
+    for folded in _folded_sql_strings(tree):
+        match = _MUTATING_SQL_RE.search(folded)
+        if match:
+            problems.append(f"mutating-SQL keyword {match.group(0)!r} in a folded string expression: {folded[:60]!r}")
     return problems
+
+
+def _receiver_is_cp_store_rooted(node: Optional[ast.expr]) -> bool:
+    """True iff the attribute/value chain bottoms out at ``cp.store`` (``Name('cp') -> Attribute('store')``).
+
+    Reconstructs the chain so a raw path like ``cp.store._conn.cursor`` is recognized regardless of depth
+    (F3-C: the guard must inspect attribute chains, not just the leaf method name)."""
+    current = node
+    while isinstance(current, ast.Attribute):
+        if current.attr == "store" and isinstance(current.value, ast.Name) and current.value.id == "cp":
+            return True
+        current = current.value
+    return False
+
+
+def _raw_conn_problems(tree: ast.AST) -> List[str]:
+    """F3-C raw-connection reachability. Reject unreviewed private/raw Control-DB connection access:
+
+    * any ``._conn`` attribute access (the raw cached-connection property — NOT the sanctioned
+      ``_conn_cache``);
+    * any ``getattr(..., "_conn")`` dynamic access;
+    * any cursor/copy/commit/rollback/write/write_row path ROOTED at ``cp.store``;
+    * any bare ``commit`` / ``rollback`` / ``write`` / ``write_row`` call, regardless of receiver."""
+    problems: List[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr == _RAW_CONN_ATTR:
+            problems.append("raw private-connection attribute access '._conn' is forbidden (use the supported store APIs)")
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value == _RAW_CONN_ATTR
+        ):
+            problems.append("getattr(..., '_conn') dynamic raw-connection access is forbidden")
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            method = node.func.attr
+            if method in _RAW_STORE_OP_METHODS and _receiver_is_cp_store_rooted(node.func.value):
+                problems.append(f"raw '{method}' path rooted at cp.store is forbidden (bypasses the supported write APIs)")
+            if method in _FORBIDDEN_CONN_CALLS:
+                problems.append(f"forbidden connection call '{method}' is banned outright (no write/transaction primitive on this surface)")
+    return problems
+
+
+def _conn_cache_occurrences(tree: ast.AST) -> Tuple[List[ast.Attribute], List[ast.Constant]]:
+    """Every textual ``_conn_cache`` use: attribute accesses (``cp.store._conn_cache``) and getattr string
+    args (``getattr(..., "_conn_cache")``). The reviewed shape has exactly one of each, both in
+    ``_close_plane`` — any additional occurrence is blocking (F3-C)."""
+    attrs = [n for n in ast.walk(tree) if isinstance(n, ast.Attribute) and n.attr == _CONN_CACHE_ATTR]
+    strings = [n for n in ast.walk(tree) if isinstance(n, ast.Constant) and n.value == _CONN_CACHE_ATTR]
+    return attrs, strings
 
 
 def _ops_sql_problems(tree: ast.AST) -> List[str]:
@@ -299,24 +424,33 @@ def _ops_sql_problems(tree: ast.AST) -> List[str]:
         if method != "execute":
             problems.append(f"forbidden SQL execution sink method {method!r} (only the single read-only execute probe is sanctioned)")
             continue
+        # The sole sanctioned non-static sink argument is the pinned ``_PG_DATABASE_SQL`` Name (its VALUE
+        # is pinned verbatim by the loaded-module assertion in the real test); every other argument must
+        # STATICALLY RESOLVE to the read-only probe text (F3-B fail-closed).
         named_probe = isinstance(arg, ast.Name) and arg.id == "_PG_DATABASE_SQL"
-        inline_probe = isinstance(arg, ast.Constant) and isinstance(arg.value, str) and arg.value.startswith(_OPS_ALLOWED_SQL_PREFIX)
+        folded = _static_sql_string(arg)
+        inline_probe = folded is not None and folded.startswith(_OPS_ALLOWED_SQL_PREFIX)
         if not (named_probe or inline_probe):
-            problems.append("an execute argument is not the single sanctioned read-only pg_database probe")
+            problems.append("an execute argument is not the single sanctioned read-only pg_database probe (static resolution required)")
     problems.extend(_mutating_sql_census(tree))
     return problems
 
 
 def _proof_sql_problems(tree: ast.AST) -> List[str]:
-    """The proof's raw-SQL rules: every SQL sink is an ``execute`` whose argument is a read-only
-    SELECT constant; the batch/script/copy sink methods are forbidden outright."""
+    """The proof's raw-SQL rules: every SQL sink is an ``execute`` whose argument STATICALLY RESOLVES to a
+    read-only SELECT statement (F3-B fail-closed: a non-static / missing / f-string / computed argument is
+    blocking); the batch/script/copy sink methods are forbidden outright."""
     problems: List[str] = []
     for method, arg in _sql_sink_calls(tree):
         if method != "execute":
             problems.append(f"forbidden SQL execution sink method {method!r} in the proof (read-only SELECT executes only)")
             continue
-        if not (isinstance(arg, ast.Constant) and isinstance(arg.value, str) and arg.value.lstrip().startswith("SELECT")):
-            problems.append("a proof execute argument is not a read-only SELECT constant")
+        folded = _static_sql_string(arg)
+        if folded is None:
+            problems.append("a proof execute argument is not a statically-resolvable string (fail closed)")
+            continue
+        if not folded.lstrip().startswith("SELECT"):
+            problems.append("a proof execute argument does not resolve to a read-only SELECT statement")
     problems.extend(_mutating_sql_census(tree))
     return problems
 
@@ -572,6 +706,125 @@ def test_sql_sink_census_non_vacuity() -> None:
     assert not _mutating_sql_census(ast.parse('msg = f"intent ({n} absent row(s) to create)"\n')), "the intent fragment is exempt"
     assert _mutating_sql_census(ast.parse('sql = "replace into control_memberships values (1)"\n')), "a REPLACE statement is flagged"
     assert _mutating_sql_census(ast.parse('sql = "we will create) the row"\n')), "a drifted exempt-like fragment is flagged"
+
+
+def test_raw_connection_paths_are_forbidden() -> None:
+    # F3-C — neither new file may reach a raw/private Control-DB connection or call a write/transaction
+    # primitive; every write must go through the two supported store APIs.
+    for path in _NEW_PY_FILES:
+        problems = _raw_conn_problems(_tree(path))
+        assert not problems, f"{path.name} reaches a raw/private Control-DB connection: {problems}"
+
+
+def test_conn_cache_is_exact_reviewed_shape() -> None:
+    # F3-C — the sole sanctioned private handle is the ``_conn_cache`` close in ``_close_plane`` (the 07D
+    # finally idiom): exactly one attribute + one getattr string, both inside ``_close_plane``, rooted at
+    # cp.store. Any additional occurrence (a new alias, a raw handle grab) is blocking.
+    ops_tree = _tree(_OPS)
+    attrs, strings = _conn_cache_occurrences(ops_tree)
+    assert len(attrs) == 1, f"exactly one cp.store._conn_cache attribute is reviewed, found {len(attrs)}"
+    assert len(strings) == 1, f"exactly one '_conn_cache' getattr string is reviewed, found {len(strings)}"
+    close_fn = _function(ops_tree, "_close_plane")
+    span = {n.lineno for n in ast.walk(close_fn) if hasattr(n, "lineno")}
+    assert attrs[0].lineno in span, "the _conn_cache attribute must live inside _close_plane"
+    assert strings[0].lineno in span, "the _conn_cache getattr string must live inside _close_plane"
+    assert _receiver_is_cp_store_rooted(attrs[0]), "the _conn_cache attribute must be rooted at cp.store"
+    getattrs = [
+        node
+        for node in ast.walk(close_fn)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "getattr"
+        and len(node.args) >= 2
+        and isinstance(node.args[1], ast.Constant)
+        and node.args[1].value == _CONN_CACHE_ATTR
+    ]
+    assert len(getattrs) == 1 and _receiver_is_cp_store_rooted(getattrs[0].args[0]), (
+        "the sole _conn_cache getattr must be getattr(cp.store, '_conn_cache', ...)"
+    )
+    close_calls = [
+        node
+        for node in ast.walk(close_fn)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "close"
+        and isinstance(node.func.value, ast.Attribute)
+        and node.func.value.attr == _CONN_CACHE_ATTR
+    ]
+    assert len(close_calls) == 1, "the sole _conn_cache use must be a .close() on cp.store._conn_cache"
+    proof_attrs, proof_strings = _conn_cache_occurrences(_tree(_PROOF))
+    assert not proof_attrs and not proof_strings, "_conn_cache must not appear in the proof"
+
+
+def test_copy_and_raw_conn_non_vacuity() -> None:
+    # [Fix R2 — F3 variants] psycopg3 COPY sinks, split-string verbs, and raw cp.store._conn reachability
+    # are rejected by the SAME production predicates that pin the committed files (F3 closure).
+
+    # F3-A/F3-B — the psycopg3 ``copy`` sink + static-argument + fold census (variants 1–4, 11).
+    sql_mutants = {
+        "V1 bare cursor.copy COPY": 'def f(cur):\n    cur.copy("COPY control_federation FROM STDIN")\n',
+        "V2 split-string cursor.copy": 'def f(cur):\n    cur.copy("COP" + "Y control_federation FROM STDIN")\n',
+        "V3 dynamic cursor.copy": "def f(cur, dynamic_sql):\n    cur.copy(dynamic_sql)\n",
+        "V4 f-string cursor.copy": 'def f(cur, table):\n    cur.copy(f"COPY {table} FROM STDIN")\n',
+        "V11 copy targeting control_federation": 'def f(cur):\n    cur.copy("copy control_federation (tenant_id) from stdin")\n',
+    }
+    for label, source in sql_mutants.items():
+        mutant = ast.parse(source)
+        assert _ops_sql_problems(mutant), f"ops SQL pin must reject F3 mutant: {label}"
+        assert _proof_sql_problems(mutant), f"proof SQL pin must reject F3 mutant: {label}"
+
+    # V12 — split-string mutating verbs (lowercase / mixed-case) are caught by the FOLD census directly.
+    fold_mutants = {
+        "split lowercase delete": 'sql = "dele" + "te from control_memberships"\n',
+        "split mixed-case copy": 'sql = "Co" + "PY control_federation from stdin"\n',
+        "split truncate": 'sql = "trun" + "cate control_audit"\n',
+        "three-way split insert": 'sql = "in" + "se" + "rt into control_audit values (1)"\n',
+    }
+    for label, source in fold_mutants.items():
+        assert _mutating_sql_census(ast.parse(source)), f"fold census must flag split verb: {label}"
+
+    # F3-C — raw cp.store._conn reachability + forbidden write/transaction primitives (variants 5–9).
+    raw_mutants = {
+        "V5 copier.write_row": "def f(copier, x):\n    copier.write_row((x,))\n",
+        "V6 copier.write": "def f(copier):\n    copier.write(b'row')\n",
+        "V7 cp.store._conn.commit": "def f(cp):\n    cp.store._conn.commit()\n",
+        "V8 getattr _conn then cursor": 'def f(cp):\n    getattr(cp.store, "_conn").cursor()\n',
+        "V9 alias raw = cp.store._conn": "def f(cp):\n    raw = cp.store._conn\n",
+        "raw cursor rooted at cp.store": "def f(cp):\n    cp.store._conn.cursor()\n",
+        "raw copy rooted at cp.store": 'def f(cp):\n    cp.store._conn.copy("COPY x FROM STDIN")\n',
+        "raw rollback rooted at cp.store": "def f(cp):\n    cp.store._conn.rollback()\n",
+        "deep alias then commit": "def f(cp):\n    raw = cp.store._conn\n    raw.commit()\n",
+    }
+    for label, source in raw_mutants.items():
+        assert _raw_conn_problems(ast.parse(source)), f"raw-conn pin must reject F3 mutant: {label}"
+
+    # V10 — an EXTRA ``_conn_cache`` occurrence outside the reviewed shape is detected (count-based pin).
+    extra = ast.parse("def g(cp):\n    raw = cp.store._conn_cache\n    other = cp.store._conn_cache\n")
+    extra_attrs, _extra_strings = _conn_cache_occurrences(extra)
+    assert len(extra_attrs) == 2, "_conn_cache occurrence detector went vacuous"
+
+    # The EXACT independently reproduced F3 proof of concept is rejected on BOTH axes.
+    f3_poc = (
+        "def cmd_apply(cp, x):\n"
+        "    with cp.store._conn.cursor() as cur:\n"
+        '        with cur.copy("COP" + "Y control_federation (tenant_id) FROM STDIN") as copier:\n'
+        "            copier.write_row((x,))\n"
+        "    cp.store._conn.commit()\n"
+    )
+    poc_tree = ast.parse(f3_poc)
+    assert _raw_conn_problems(poc_tree), "the exact F3 PoC must be rejected by the raw-connection pin"
+    assert _ops_sql_problems(poc_tree), "the exact F3 PoC must be rejected by the operator SQL pin"
+
+    # Positive controls — the exact sanctioned shapes stay ACCEPTED (the pins are not blanket bans).
+    ok_close = ast.parse(
+        'def _close_plane(cp):\n    if getattr(cp.store, "_conn_cache", None) is not None:\n        cp.store._conn_cache.close()\n'
+    )
+    assert not _raw_conn_problems(ok_close), "the sanctioned _conn_cache close must PASS the raw-conn pin"
+    ok_probe = ast.parse(
+        'def g(conn, t):\n    with conn.cursor() as cur:\n        cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (t,))\n'
+    )
+    assert not _raw_conn_problems(ok_probe), "the sanctioned local-connection read-only probe must PASS the raw-conn pin"
+    assert not _proof_sql_problems(ok_probe), "the sanctioned SELECT probe must PASS the proof SQL pin"
 
 
 def test_command_surface_is_exactly_plan_apply_status() -> None:
@@ -921,6 +1174,9 @@ if __name__ == "__main__":
             test_proof_sql_surface_is_readonly,
             test_sql_pin_non_vacuity,
             test_sql_sink_census_non_vacuity,
+            test_raw_connection_paths_are_forbidden,
+            test_conn_cache_is_exact_reviewed_shape,
+            test_copy_and_raw_conn_non_vacuity,
             test_command_surface_is_exactly_plan_apply_status,
             test_b5_4_subprocess_is_status_only,
             test_b5_4_argv_pin_non_vacuity,
