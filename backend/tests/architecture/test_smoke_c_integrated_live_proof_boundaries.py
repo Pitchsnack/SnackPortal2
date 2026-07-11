@@ -37,9 +37,22 @@ without touching a database or opening a socket:
   denial dispatch/pool acquisition, skipped scenarios, leftover listeners, unrestored environment,
   before != after);
 * structural run pins: bounded readiness (``READINESS_TIMEOUT_SECONDS``), ``finally`` shutdown +
-  environment restoration, two state snapshots with an explicit before == after comparison, and a status
-  command whose proof claim is gated on ``proof_complete`` (prerequisite health alone can never claim
-  Smoke C);
+  environment restoration, and an AST-pinned zero-mutation verdict (Fix R3 — a source substring can
+  never satisfy it): ``before``/``after`` each bound exactly once from ``_snapshot_state()`` and exactly
+  one top-level ``evidence["before_equals_after"] = before == after`` — a direct single-``ast.Eq``
+  ``ast.Compare`` over exactly those two names in capture -> try/finally -> capture -> verdict order;
+  forged constants, ``is``/``!=``/chains, self- or wrong-name comparisons, ``bool()``/helper wrappers,
+  value aliases, dead branches, duplicate assignments, and side-channel writes of the verdict —
+  keyword, ``**{…}`` splat, computed/folded keys on ``Assign``/``AnnAssign``/``AugAssign``, evidence
+  aliasing, mutator-method or delete — as well as comparison text living only in strings/f-strings all
+  fail; the two snapshots may not be tampered with after capture (no ``clear``/``update``/``pop`` or
+  subscript-store into ``before``/``after``) and the ``_snapshot_state`` witness source is pinned as a
+  single, real-reading, top-level def that cmd_run may not shadow/rebind, returning a freshly-built
+  mapping carrying EXACTLY the twelve pinned witness dimensions with none hard-coded; the verdict is
+  consumed by
+  ``evaluate_run`` -> ``proof_complete`` (statically pinned AND dynamically proven: a false or absent
+  verdict blocks the claim; an empty record can never claim), and the status command's proof claim is
+  gated on ``proof_complete`` (prerequisite health alone can never claim Smoke C);
 * the live proof is a registered, justified plain-literal MANUAL_ONLY exception of the run-set
   completeness guard; the hosted live-PG workflow is untouched and does NOT enroll the new harness;
 * the runbook carries the required needles and can never claim Smoke C success, B5-BLK-4 closure, or MVP
@@ -76,6 +89,38 @@ _TESTS_DIR = _scan.BACKEND_ROOT / "tests"
 _NEW_PY_FILES = (_OPS, _PROOF)
 _FAMILY_NAME = "smoke_c_integrated_live_proof"
 _MANUAL_ONLY_KEY = "tests/control_plane/requires_pg/test_pg_smoke_c_integrated_live_proof.py"
+
+# The zero-mutation verdict contract (Fix R3): the exact evidence key and the two independently
+# captured snapshot names the committed comparison must — semantically, per AST — be built from.
+_VERDICT_KEY = "before_equals_after"
+_SNAPSHOT_BEFORE = "before"
+_SNAPSHOT_AFTER = "after"
+# The honest snapshot source and the mutators that would forge "independently captured" operands:
+# a snapshot the run clobbers/pops after capture, or one drawn from a shadowed source, is not a
+# genuine witness — so ``before``/``after`` may never be reassigned into or method-mutated, and the
+# ``_snapshot_state`` name may never be shadowed/rebound/redefined. (``.get`` etc. stay read-only.)
+_SNAPSHOT_FN = "_snapshot_state"
+_SNAPSHOT_MUTATORS = frozenset({"clear", "update", "pop", "popitem", "setdefault", "__setitem__", "__delitem__"})
+# The pinned witness census: the snapshot must carry EXACTLY these dimensions (in this order) and no
+# dimension may be a hard-coded literal — a fresh-but-content-hollow mapping (real execute, constant
+# return) would otherwise forge before == after under real mutation. Static analysis cannot prove the
+# VALUES faithful (that residual belongs to the live proof's cross-checks and the fully external
+# pre/post-merge verification witnesses); this census makes a hollow snapshot a wholesale, incoherent
+# fabrication instead of a one-line drift.
+_SNAPSHOT_WITNESS_KEYS = (
+    "tenant_ids",
+    "tenants",
+    "memberships",
+    "audit_total",
+    "dormant_register_audit",
+    "residue",
+    "federation",
+    "pg_tenant_databases",
+    "dormant_database_present",
+    "tenant_db_invariants",
+    "secret_root_files",
+    "env",
+)
 
 # Dynamic needles — built so THIS guard never satisfies its own bans.
 _TOKEN_NEEDLE = "e" + "yJ"
@@ -548,18 +593,315 @@ def _function(tree: ast.Module, name: str) -> Optional[ast.FunctionDef]:
     return None
 
 
-def _run_structure_problems(tree: ast.Module) -> List[str]:
-    """cmd_run must snapshot twice, compare before == after, evaluate, and clean up in ``finally``."""
+def _before_after_verdict_problems(cmd_run: ast.FunctionDef) -> List[str]:
+    """AST-semantic pin of the zero-mutation verdict (Fix R3) — source text can never satisfy it.
+
+    Inside ``cmd_run``: ``before``/``after`` each bound exactly once, top-level, directly from
+    ``_snapshot_state()``; exactly ONE top-level ``evidence["before_equals_after"] = before == after``
+    whose value is a direct single-``ast.Eq`` ``ast.Compare`` over exactly those two names, in
+    capture -> try/finally -> capture -> verdict statement order; and no side-channel touch of the
+    verdict key (keyword/update writes, computed evidence keys, evidence aliasing, deletes). Forged
+    constants, ``is``/``!=``/chains, self- or wrong-name comparisons, ``bool()``/helper wrappers, value
+    aliases, dead branches, duplicates, and string-/f-string-only comparison text all fail."""
     problems: List[str] = []
+    body = cmd_run.body
+
+    def _is_verdict_target(target: ast.expr) -> bool:
+        return (
+            isinstance(target, ast.Subscript)
+            and isinstance(target.value, ast.Name)
+            and target.value.id == "evidence"
+            and isinstance(target.slice, ast.Constant)
+            and target.slice.value == _VERDICT_KEY
+        )
+
+    # -- the two snapshot operands: bound exactly once each, top-level, directly from _snapshot_state()
+    capture_sites: Dict[str, Optional[ast.Assign]] = {}
+    for name in (_SNAPSHOT_BEFORE, _SNAPSHOT_AFTER):
+        stores = [n for n in ast.walk(cmd_run) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store) and n.id == name]
+        site: Optional[ast.Assign] = None
+        if len(stores) == 1:
+            site = next((s for s in body if isinstance(s, ast.Assign) and len(s.targets) == 1 and s.targets[0] is stores[0]), None)
+        if site is not None and not (
+            isinstance(site.value, ast.Call)
+            and _call_name(site.value) == "_snapshot_state"
+            and not site.value.args
+            and not site.value.keywords
+        ):
+            site = None
+        if site is None:
+            problems.append(
+                f"cmd_run must bind {name!r} exactly once, top-level, by a direct '{name} = _snapshot_state()' snapshot capture"
+            )
+        capture_sites[name] = site
+
+    # -- exactly one verdict assignment: top-level, plain, a direct before == after Compare(Eq) --------
+    verdict_assignments = [
+        node
+        for node in ast.walk(cmd_run)
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign))
+        and any(_is_verdict_target(t) for t in (node.targets if isinstance(node, ast.Assign) else [node.target]))
+    ]
+    verdict: Optional[ast.Assign] = None
+    if len(verdict_assignments) != 1:
+        problems.append(
+            'cmd_run must assign the zero-mutation verdict exactly once as evidence["before_equals_after"] = before == after '
+            f"(found {len(verdict_assignments)} assignment(s) to the verdict key)"
+        )
+    else:
+        node = verdict_assignments[0]
+        if node not in body:
+            problems.append("the verdict assignment must be a direct top-level statement of cmd_run (dead/nested placement is banned)")
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            problems.append("the verdict must be one plain single-target assignment")
+        else:
+            verdict = node
+            value = node.value
+            if not isinstance(value, ast.Compare):
+                problems.append(
+                    "the verdict value must be a direct comparison — never a constant, call, bool(), helper, or alias: "
+                    f"{ast.unparse(value)!r}"
+                )
+            else:
+                if len(value.ops) != 1 or not isinstance(value.ops[0], ast.Eq):
+                    problems.append(f"the verdict comparison must use exactly one == operator: {ast.unparse(value)!r}")
+                operand_names = [n.id if isinstance(n, ast.Name) else None for n in (value.left, *value.comparators)]
+                if operand_names != [_SNAPSHOT_BEFORE, _SNAPSHOT_AFTER]:
+                    problems.append(
+                        "the verdict operands must be exactly the two independently captured snapshot names "
+                        f"'{_SNAPSHOT_BEFORE} == {_SNAPSHOT_AFTER}': {ast.unparse(value)!r}"
+                    )
+
+    # -- statement order: capture before -> try/finally (the run) -> capture after -> assign verdict --
+    tries = [s for s in body if isinstance(s, ast.Try)]
+    if len(tries) != 1:
+        problems.append(f"cmd_run must hold exactly one top-level try/finally (found {len(tries)})")
+    elif (
+        capture_sites[_SNAPSHOT_BEFORE] is not None
+        and capture_sites[_SNAPSHOT_AFTER] is not None
+        and verdict is not None
+        and verdict in body
+    ):
+        order = [
+            body.index(capture_sites[_SNAPSHOT_BEFORE]),
+            body.index(tries[0]),
+            body.index(capture_sites[_SNAPSHOT_AFTER]),
+            body.index(verdict),
+        ]
+        if order != sorted(order):
+            problems.append("cmd_run statement order drifted from: capture before -> try/finally -> capture after -> assign the verdict")
+
+    # -- snapshot-source integrity: cmd_run may never shadow/rebind the honest snapshot source -------
+    for node in ast.walk(cmd_run):
+        if isinstance(node, (ast.Global, ast.Nonlocal)) and _SNAPSHOT_FN in node.names:
+            problems.append(f"cmd_run may never rebind the snapshot source {_SNAPSHOT_FN!r} via global/nonlocal")
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == _SNAPSHOT_FN for t in node.targets):
+            problems.append(f"cmd_run may never shadow the snapshot source {_SNAPSHOT_FN!r} with a local binding")
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node is not cmd_run and node.name == _SNAPSHOT_FN:
+            problems.append(f"cmd_run may never redefine the snapshot source {_SNAPSHOT_FN!r}")
+
+    # -- no post-capture tampering: the two snapshots must be compared exactly as captured -----------
+    for node in ast.walk(cmd_run):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id in (_SNAPSHOT_BEFORE, _SNAPSHOT_AFTER)
+            and node.func.attr in _SNAPSHOT_MUTATORS
+        ):
+            problems.append(f"cmd_run may never mutate a captured snapshot: {node.func.value.id}.{node.func.attr}()")
+        if (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.value, ast.Name)
+            and node.value.id in (_SNAPSHOT_BEFORE, _SNAPSHOT_AFTER)
+            and isinstance(node.ctx, (ast.Store, ast.Del))
+        ):
+            problems.append(f"cmd_run may never assign into or delete from a captured snapshot: {node.value.id}[...]")
+
+    # -- no side channel: the single pinned assignment is the ONLY writer of the verdict key, and
+    #    every evidence write is a constant-string-keyed subscript store — no computed/folded key on
+    #    Assign / AnnAssign / AugAssign, no mutator method (update/**{…} splat), no aliasing, no
+    #    deletion — so an overwrite through an annotated/augmented/folded side door cannot forge it.
+    evidence_slice_ids = {
+        id(n.slice)
+        for n in ast.walk(cmd_run)
+        if isinstance(n, ast.Subscript) and isinstance(n.value, ast.Name) and n.value.id == "evidence"
+    }
+
+    def _assign_targets(node: ast.AST) -> List[ast.expr]:
+        if isinstance(node, ast.Assign):
+            return list(node.targets)
+        if isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            return [node.target]
+        return []
+
+    for node in ast.walk(cmd_run):
+        if isinstance(node, ast.Constant) and node.value == _VERDICT_KEY and id(node) not in evidence_slice_ids:
+            problems.append(
+                "the verdict key may only ever appear as an evidence[...] subscript key (side-channel/computed access is banned)"
+            )
+        if isinstance(node, ast.keyword) and node.arg == _VERDICT_KEY:
+            problems.append("the verdict key may never be written through a keyword argument (update()/dict side channels are banned)")
+        if (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.ctx, ast.Del)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "evidence"
+        ):
+            problems.append("cmd_run may never delete an evidence key")
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Name) and node.value.id == "evidence":
+            problems.append("cmd_run may never alias the evidence mapping")
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "evidence"
+            and node.func.attr in _SNAPSHOT_MUTATORS
+        ):
+            problems.append(f"cmd_run may never mutate the evidence mapping through a method call: evidence.{node.func.attr}()")
+        for target in _assign_targets(node):
+            if (
+                isinstance(target, ast.Subscript)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == "evidence"
+                and not (isinstance(target.slice, ast.Constant) and isinstance(target.slice.value, str))
+            ):
+                problems.append("cmd_run may never store to evidence through a computed key (Assign/AnnAssign/AugAssign)")
+    return problems
+
+
+def _verdict_consumption_problems(tree: ast.Module) -> List[str]:
+    """The verdict must be CONSUMED by the claim path (Fix R3 §7): ``evaluate_run`` fail-closes on the
+    exact key, ``proof_complete`` consumes ``evaluate_run``, and ``cmd_run`` evaluates the collected
+    evidence record — so a false verdict can never survive into a Smoke C success claim."""
+    problems: List[str] = []
+    evaluate = _function(tree, "evaluate_run")
+    if evaluate is None:
+        problems.append("evaluate_run is missing")
+    else:
+        checks = [
+            node
+            for node in ast.walk(evaluate)
+            if isinstance(node, ast.Compare)
+            and len(node.ops) == 1
+            and isinstance(node.ops[0], ast.IsNot)
+            and len(node.comparators) == 1
+            and isinstance(node.comparators[0], ast.Constant)
+            and node.comparators[0].value is True
+            and isinstance(node.left, ast.Call)
+            and isinstance(node.left.func, ast.Attribute)
+            and node.left.func.attr == "get"
+            and isinstance(node.left.func.value, ast.Name)
+            and node.left.func.value.id == "evidence"
+            and len(node.left.args) == 1
+            and not node.left.keywords
+            and isinstance(node.left.args[0], ast.Constant)
+            and node.left.args[0].value == _VERDICT_KEY
+        ]
+        if len(checks) != 1:
+            problems.append(
+                f"evaluate_run must fail-close on exactly one evidence.get(<verdict key>) is not True check (found {len(checks)})"
+            )
+    complete = _function(tree, "proof_complete")
+    if complete is None:
+        problems.append("proof_complete is missing")
+    elif not any(isinstance(node, ast.Call) and _call_name(node) == "evaluate_run" for node in ast.walk(complete)):
+        problems.append("proof_complete does not consume evaluate_run — the verdict would be uncoupled from the claim")
+    cmd_run = _function(tree, "cmd_run")
+    if cmd_run is None:
+        problems.append("cmd_run is missing")
+    elif not any(
+        isinstance(node, ast.Call)
+        and _call_name(node) == "evaluate_run"
+        and len(node.args) == 1
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id == "evidence"
+        for node in ast.walk(cmd_run)
+    ):
+        problems.append("cmd_run does not evaluate the collected evidence record (evaluate_run(evidence))")
+    return problems
+
+
+def _own_returns(fn: ast.FunctionDef) -> List[ast.Return]:
+    """``return`` statements owned by ``fn`` itself — not those belonging to a nested def/lambda."""
+    returns: List[ast.Return] = []
+
+    def _walk(node: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                continue  # a nested scope's returns belong to it
+            if isinstance(child, ast.Return):
+                returns.append(child)
+            _walk(child)
+
+    _walk(fn)
+    return returns
+
+
+def _snapshot_source_integrity_problems(tree: ast.Module) -> List[str]:
+    """Module-scope guarantee that ``_snapshot_state`` is a single honest witness source (Fix R3):
+    defined exactly once at top level, never reassigned at module scope, genuinely reading state (at
+    least one ``execute`` — the SQL census pins every such call to a read-only SELECT), and returning a
+    FRESHLY-CONSTRUCTED mapping (``ast.Dict``/``ast.DictComp``) on every value-bearing return. A hollow
+    ``return {}`` snapshot, a module-level rebind, a duplicate definition, or a cached/shared return
+    object (which would make ``before is after`` and forge equality even under real mutation) all fail."""
+    problems: List[str] = []
+    defs = [n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == _SNAPSHOT_FN]
+    if len(defs) != 1:
+        problems.append(f"the module must define the snapshot source {_SNAPSHOT_FN!r} exactly once, top-level (found {len(defs)})")
+    if any(isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == _SNAPSHOT_FN for t in n.targets) for n in tree.body):
+        problems.append(f"the snapshot source {_SNAPSHOT_FN!r} may never be reassigned at module scope")
+    if len(defs) == 1:
+        reads = [
+            node
+            for node in ast.walk(defs[0])
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "execute"
+        ]
+        if not reads:
+            problems.append(f"{_SNAPSHOT_FN!r} performs no real read (no execute) — a hollow snapshot cannot witness state")
+        value_returns = [ret for ret in _own_returns(defs[0]) if ret.value is not None]
+        if not value_returns:
+            problems.append(f"{_SNAPSHOT_FN!r} returns no witness snapshot value")
+        for ret in value_returns:
+            if not isinstance(ret.value, (ast.Dict, ast.DictComp)):
+                problems.append(
+                    f"{_SNAPSHOT_FN!r} must return a freshly-constructed mapping so before/after are distinct objects "
+                    f"(a cached/shared return forges equality): {ast.unparse(ret.value)[:40]!r}"
+                )
+    return problems
+
+
+def _snapshot_witness_census_problems(tree: ast.Module) -> List[str]:
+    """The operator's witness snapshot must carry EXACTLY the pinned dimensions and none hard-coded:
+    a fresh-but-content-hollow mapping (real execute, constant return) would forge ``before == after``
+    even under real mutation. Pins the committed explicit ``ast.Dict`` return of ``_snapshot_state``."""
+    defs = [n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == _SNAPSHOT_FN]
+    if len(defs) != 1:
+        return [f"the module must define the snapshot source {_SNAPSHOT_FN!r} exactly once, top-level (found {len(defs)})"]
+    problems: List[str] = []
+    dict_returns = [ret.value for ret in _own_returns(defs[0]) if isinstance(ret.value, ast.Dict)]
+    if len(dict_returns) != 1:
+        problems.append(f"{_SNAPSHOT_FN!r} must return exactly one explicit witness mapping (found {len(dict_returns)})")
+        return problems
+    witness = dict_returns[0]
+    keys = [key.value if isinstance(key, ast.Constant) else None for key in witness.keys]
+    if keys != list(_SNAPSHOT_WITNESS_KEYS):
+        problems.append(f"the witness snapshot census drifted from the pinned dimensions: {keys}")
+    for key, value in zip(witness.keys, witness.values):
+        if isinstance(value, ast.Constant):
+            label = key.value if isinstance(key, ast.Constant) else ast.unparse(key)
+            problems.append(f"witness dimension {label!r} is hard-coded to a literal (a constant witness cannot observe state)")
+    return problems
+
+
+def _run_structure_problems(tree: ast.Module) -> List[str]:
+    """cmd_run must carry the AST-pinned zero-mutation verdict, evaluate, and clean up in ``finally``,
+    over a single honest ``_snapshot_state`` witness source."""
     cmd_run = _function(tree, "cmd_run")
     if cmd_run is None:
         return ["cmd_run is missing"]
-    source = ast.unparse(cmd_run)
-    snapshots = sum(1 for node in ast.walk(cmd_run) if isinstance(node, ast.Call) and _call_name(node) == "_snapshot_state")
-    if snapshots < 2:
-        problems.append(f"cmd_run captures {snapshots} state snapshot(s), expected before AND after")
-    if "before == after" not in source:
-        problems.append("cmd_run carries no explicit before == after comparison")
+    problems: List[str] = _before_after_verdict_problems(cmd_run)
+    problems.extend(_snapshot_source_integrity_problems(tree))
     if not any(isinstance(node, ast.Call) and _call_name(node) == "evaluate_run" for node in ast.walk(cmd_run)):
         problems.append("cmd_run does not evaluate the run-level obligations")
     finally_calls: Set[str] = set()
@@ -869,22 +1211,180 @@ def test_run_structure_finally_cleanup_and_before_after() -> None:
     assert not problems, f"cmd_run structural pins failed: {problems}"
 
 
+# The canonical run shape: the minimal MODULE (honest snapshot source + cmd_run) that PASSES the full
+# structural predicate. Every planted Fix R3 mutant below swaps exactly the verdict line (or a nearby
+# line) so its rejection is attributable to that mutation alone.
+_CANONICAL_RUN_SHAPE = (
+    "def _snapshot_state():\n"
+    "    cur.execute(_SQL)\n"
+    "    return {}\n"
+    "def cmd_run(a):\n"
+    "    before = _snapshot_state()\n"
+    "    evidence = {}\n"
+    "    try:\n"
+    "        pass\n"
+    "    finally:\n"
+    "        problems = _stop_all()\n"
+    "        patch.restore()\n"
+    "    after = _snapshot_state()\n"
+    '    evidence["before_equals_after"] = before == after\n'
+    "    evaluate_run(evidence)\n"
+)
+_VERDICT_LINE = '    evidence["before_equals_after"] = before == after\n'
+
+
+def _mutated_run(replacement: str) -> ast.Module:
+    assert _CANONICAL_RUN_SHAPE.count(_VERDICT_LINE) == 1, "the canonical run template drifted"
+    return ast.parse(_CANONICAL_RUN_SHAPE.replace(_VERDICT_LINE, replacement))
+
+
 def test_run_structure_non_vacuity() -> None:
+    # The canonical shape passes the FULL structural predicate — so every rejection is attributable.
+    assert _run_structure_problems(ast.parse(_CANONICAL_RUN_SHAPE)) == [], "the canonical cmd_run shape must PASS"
     # [matrix 17] omitted finally shutdown and [matrix 24] omitted before/after comparison.
-    no_finally = ast.parse(
-        "def cmd_run(a):\n    before = _snapshot_state()\n    after = _snapshot_state()\n    x = before == after\n    evaluate_run({})\n"
-    )
+    no_finally = ast.parse(_CANONICAL_RUN_SHAPE.replace("        problems = _stop_all()\n        patch.restore()\n", "        pass\n"))
     assert any("finally" in p for p in _run_structure_problems(no_finally)), "a missing finally cleanup must be rejected"
-    no_compare = ast.parse(
-        "def cmd_run(a):\n    before = _snapshot_state()\n    after = _snapshot_state()\n    evaluate_run({})\n"
-        "    try:\n        pass\n    finally:\n        _stop_all()\n        patch.restore()\n"
+    assert any("before == after" in p for p in _run_structure_problems(_mutated_run(""))), (
+        "a missing before/after comparison must be rejected"
     )
-    assert any("before == after" in p for p in _run_structure_problems(no_compare)), "a missing before/after comparison must be rejected"
-    one_snapshot = ast.parse(
-        "def cmd_run(a):\n    before = _snapshot_state()\n    x = before == after\n    evaluate_run({})\n"
-        "    try:\n        pass\n    finally:\n        _stop_all()\n        patch.restore()\n"
+    one_snapshot = ast.parse(_CANONICAL_RUN_SHAPE.replace("    after = _snapshot_state()\n", ""))
+    assert any("_snapshot_state" in p for p in _run_structure_problems(one_snapshot)), "a single-snapshot run must be rejected"
+
+
+def test_before_after_verdict_semantic_pin_non_vacuity() -> None:
+    # Fix R3: every forged-comparison variant must be rejected by the SAME predicate that passes the
+    # committed operator — including the forged constant that defeated the retired substring pin (VF-3).
+    rejected: Tuple[Tuple[str, str], ...] = (
+        ('    evidence["before_equals_after"] = True\n', "direct comparison"),
+        ('    evidence["before_equals_after"] = False\n', "direct comparison"),
+        ('    evidence["before_equals_after"] = 1 == 1\n', "snapshot names"),
+        ('    evidence["before_equals_after"] = before is after\n', "== operator"),
+        ('    evidence["before_equals_after"] = before != after\n', "== operator"),
+        ('    evidence["before_equals_after"] = before == before\n', "snapshot names"),
+        ('    evidence["before_equals_after"] = after == after\n', "snapshot names"),
+        ('    evidence["before_equals_after"] = after == before\n', "snapshot names"),
+        ('    evidence["before_equals_after"] = before == after == after\n', "== operator"),
+        ('    evidence["before_equals_after"] = bool(before == after)\n', "direct comparison"),
+        ('    evidence["before_equals_after"] = helper(before, after)\n', "direct comparison"),
+        ('    verdict = before == after\n    evidence["before_equals_after"] = verdict\n', "direct comparison"),
+        ('    evidence["before_equals_after"] = env_before == env_after\n', "snapshot names"),
+        ("", "exactly once"),
+        ('    if False:\n        evidence["before_equals_after"] = before == after\n', "top-level"),
+        ('    x = "before == after"\n', "exactly once"),
+        ('    print(f"before == after -> {before == after}")\n', "exactly once"),
+        ('    evidence["unrelated_key"] = before == after\n', "exactly once"),
+        (_VERDICT_LINE + _VERDICT_LINE, "exactly once"),
+        (_VERDICT_LINE + '    evidence["before_equals_after"] = True\n', "exactly once"),
+        (_VERDICT_LINE + "    evidence.update(before_equals_after=True)\n", "keyword argument"),
+        (_VERDICT_LINE + '    del evidence["before_equals_after"]\n', "delete an evidence key"),
+        (_VERDICT_LINE + "    e = evidence\n", "alias"),
+        ('    key = "before_equals_after"\n    evidence[key] = True\n', "computed"),
+        (_VERDICT_LINE + "    after = before\n", "_snapshot_state"),
+        # Finding A — folded/annotated/augmented computed-key overwrite of the honest verdict.
+        (_VERDICT_LINE + "    k = 'before_equals_' + 'after'\n    evidence[k]: bool = True\n", "computed key"),
+        (_VERDICT_LINE + "    k = 'before_equals_' + 'after'\n    evidence[k] |= True\n", "computed key"),
+        (_VERDICT_LINE + "    evidence['before_equals_' + 'after']: bool = True\n", "computed key"),
+        (_VERDICT_LINE + "    evidence['before_equals_' + 'after'] |= True\n", "computed key"),
+        (_VERDICT_LINE + "    evidence.update(**{'before_equals_' + 'after': True})\n", "method call"),
+        (_VERDICT_LINE + "    evidence.setdefault('x', True)\n", "method call"),
+        # post-capture tampering with the two captured snapshots.
+        (_VERDICT_LINE + "    after.clear()\n", "mutate a captured snapshot"),
+        ("    after.update(before)\n" + _VERDICT_LINE, "mutate a captured snapshot"),
+        ("    before.pop('audit_total', None)\n" + _VERDICT_LINE, "mutate a captured snapshot"),
+        ("    after['audit_total'] = before['audit_total']\n" + _VERDICT_LINE, "assign into or delete from a captured snapshot"),
+        # shadowing / rebinding the honest snapshot source inside cmd_run.
+        (_VERDICT_LINE + "    _snapshot_state = dict\n", "shadow the snapshot source"),
+        (_VERDICT_LINE + "    global _snapshot_state\n", "global/nonlocal"),
     )
-    assert any("snapshot" in p for p in _run_structure_problems(one_snapshot)), "a single-snapshot run must be rejected"
+    for replacement, needle in rejected:
+        problems = _run_structure_problems(_mutated_run(replacement))
+        assert any(needle in p for p in problems), (
+            f"a forged verdict variant must be rejected via {needle!r}: {replacement!r} -> {problems}"
+        )
+    # Hoisting the verdict above the run (comparing before with itself in time) must be rejected.
+    hoisted = _CANONICAL_RUN_SHAPE.replace(_VERDICT_LINE, "").replace(
+        "    before = _snapshot_state()\n", "    before = _snapshot_state()\n" + _VERDICT_LINE
+    )
+    assert any("order drifted" in p for p in _run_structure_problems(ast.parse(hoisted))), "a hoisted verdict must be rejected"
+
+
+def test_snapshot_source_integrity_non_vacuity() -> None:
+    # The honest witness source must be a single, real-reading, top-level def — hollow/duplicate/
+    # rebound snapshot sources are rejected by the SAME module-scope predicate that passes the operator.
+    assert _snapshot_source_integrity_problems(_tree(_OPS)) == [], "the real operator's snapshot source must PASS"
+    hollow = ast.parse("def _snapshot_state():\n    return {}\n")
+    assert any("no real read" in p for p in _snapshot_source_integrity_problems(hollow)), "a hollow snapshot source must be rejected"
+    duplicate = ast.parse("def _snapshot_state():\n    cur.execute(_SQL)\n    return {}\ndef _snapshot_state():\n    return {}\n")
+    assert any("exactly once" in p for p in _snapshot_source_integrity_problems(duplicate)), "a duplicate snapshot def must be rejected"
+    rebound = ast.parse("def _snapshot_state():\n    cur.execute(_SQL)\n    return {}\n_snapshot_state = dict\n")
+    assert any("reassigned at module scope" in p for p in _snapshot_source_integrity_problems(rebound)), (
+        "a module-scope rebind of the snapshot source must be rejected"
+    )
+    # A cached/shared return object (real execute, but the SAME object every call → before IS after).
+    singleton = ast.parse("_CACHE = {}\ndef _snapshot_state():\n    cur.execute(_SQL)\n    return _CACHE\n")
+    assert any("freshly-constructed mapping" in p for p in _snapshot_source_integrity_problems(singleton)), (
+        "a cached/shared snapshot return must be rejected"
+    )
+    # A freshly-built dict comprehension is a genuine distinct object and must PASS.
+    comp = ast.parse("def _snapshot_state():\n    cur.execute(_SQL)\n    return {k: v for k, v in rows}\n")
+    assert _snapshot_source_integrity_problems(comp) == [], "a freshly-constructed snapshot mapping must PASS"
+
+
+def test_snapshot_witness_census_is_pinned() -> None:
+    # A fresh-but-content-hollow snapshot (real execute, constant mapping) would forge before == after
+    # under real mutation. The witness census pins the twelve committed dimensions, none hard-coded.
+    problems = _snapshot_witness_census_problems(_tree(_OPS))
+    assert not problems, f"witness census pins failed: {problems}"
+    real = _OPS.read_text(encoding="utf-8")
+    hollow = ast.parse('def _snapshot_state():\n    cur.execute(_SQL)\n    return {"residue": 0}\n')
+    hollow_problems = _snapshot_witness_census_problems(hollow)
+    assert any("census drifted" in p for p in hollow_problems), "a content-hollow witness snapshot must be rejected"
+    assert any("hard-coded" in p for p in hollow_problems), "a hard-coded witness dimension must be rejected"
+    dropped_needle = '        "audit_total": len(audit_rows),\n'
+    assert real.count(dropped_needle) == 1, "the committed witness mapping drifted"
+    dropped = _snapshot_witness_census_problems(ast.parse(real.replace(dropped_needle, "")))
+    assert any("census drifted" in p for p in dropped), "a dropped witness dimension must be rejected"
+    hardcoded_needle = '        "residue": residue,\n'
+    assert real.count(hardcoded_needle) == 1, "the committed witness mapping drifted"
+    hardcoded = _snapshot_witness_census_problems(ast.parse(real.replace(hardcoded_needle, '        "residue": 0,\n')))
+    assert any("hard-coded" in p for p in hardcoded), "a hard-coded witness dimension must be rejected"
+
+
+def test_before_after_verdict_is_consumed_by_the_claim_path() -> None:
+    # Fix R3 §7 — static pins over the committed tree, then DYNAMIC proof against the live module.
+    problems = _verdict_consumption_problems(_tree(_OPS))
+    assert not problems, f"verdict consumption pins failed: {problems}"
+    module = _load_ops_module()
+    forged_false = _good_evidence(module)
+    forged_false["before_equals_after"] = False
+    assert module.proof_complete(forged_false) is False, "a false before/after verdict must block the Smoke C success claim"
+    absent = _good_evidence(module)
+    del absent["before_equals_after"]
+    assert module.proof_complete(absent) is False, "an absent before/after verdict must block the Smoke C success claim"
+    assert module.proof_complete({}) is False, "prerequisite health alone can never claim proof completion"
+
+
+def test_verdict_consumption_non_vacuity() -> None:
+    # Removing the verdict from the completion predicate (or hollowing the predicate) must be rejected.
+    real = _OPS.read_text(encoding="utf-8")
+    check_needle = 'evidence.get("before_equals_after") is not True'
+    assert real.count(check_needle) == 1, "the committed evaluate_run verdict check drifted"
+    unchecked = real.replace(check_needle, "False")
+    assert any("evaluate_run" in p for p in _verdict_consumption_problems(ast.parse(unchecked))), (
+        "an evaluate_run that no longer checks the verdict must be rejected"
+    )
+    complete_needle = "all(problem is None for _name, problem in evaluate_run(evidence))"
+    assert real.count(complete_needle) == 1, "the committed proof_complete predicate drifted"
+    hollow = real.replace(complete_needle, "True")
+    assert any("proof_complete" in p for p in _verdict_consumption_problems(ast.parse(hollow))), (
+        "a proof_complete that no longer consumes evaluate_run must be rejected"
+    )
+    run_needle = "for name, problem in evaluate_run(evidence):"
+    assert real.count(run_needle) == 1, "the committed cmd_run evaluation loop drifted"
+    unevaluated = real.replace(run_needle, "for name, problem in []:")
+    assert any("evaluate_run(evidence)" in p for p in _verdict_consumption_problems(ast.parse(unevaluated))), (
+        "a cmd_run that no longer evaluates the evidence record must be rejected"
+    )
 
 
 def test_readiness_is_bounded() -> None:
@@ -1094,6 +1594,11 @@ if __name__ == "__main__":
             test_env_census_non_vacuity,
             test_run_structure_finally_cleanup_and_before_after,
             test_run_structure_non_vacuity,
+            test_before_after_verdict_semantic_pin_non_vacuity,
+            test_snapshot_source_integrity_non_vacuity,
+            test_snapshot_witness_census_is_pinned,
+            test_before_after_verdict_is_consumed_by_the_claim_path,
+            test_verdict_consumption_non_vacuity,
             test_readiness_is_bounded,
             test_status_claim_is_evidence_gated,
             test_scenario_matrix_is_pinned_exactly,
