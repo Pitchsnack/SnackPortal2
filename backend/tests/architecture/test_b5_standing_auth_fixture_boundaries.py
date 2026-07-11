@@ -1,0 +1,800 @@
+"""PRD B5-4A V2 — standing-auth-fixture operator boundary pins (default suite; no DB).
+
+Non-vacuously pins the safety boundaries of the B5-4A V2 operator tool
+(``tests/control_plane/requires_pg/b5_standing_auth_fixture.py``) and its proof/runbook without touching a
+database:
+
+* import-inert module structure (top-level = docstring/imports/constants/defs/main-guard only) with a
+  STDLIB-ONLY top import surface; every backend/provider import is lazy, inside commands;
+* no static database-driver / JWT / crypto / threading / socket / http import in either new file; the
+  proof may not import subprocess at all (only the operator holds the one sanctioned subprocess seam);
+* NEITHER new file imports the original B5-4 harness (``b5_standing_topology``) — the operator reaches it
+  ONLY through one pinned subprocess call whose argv is token-closed to the status subcommand (no apply /
+  no removal token is constructible), preserving the B5-5 no-new-invocation census;
+* the operator's own command surface is EXACTLY ``plan`` / ``apply`` / ``status`` — structurally (the
+  ``add_parser`` census) and behaviorally (an unknown subcommand exits non-zero); the removal-command
+  token and the temporary smoke-row prefix appear NOWHERE in either new file (text-level, dynamic
+  needles);
+* no direct SQL mutation anywhere: the operator's ONLY ``execute`` call site is the single read-only
+  ``pg_database`` absence probe, the proof's ``execute`` arguments are read-only ``SELECT``s, and no
+  string constant in either file carries an uppercase mutating-SQL keyword;
+* supported write APIs only: exactly one ``register_tenant`` call (dormant tenant id, pinned actor) and
+  exactly one ``add_membership`` call site (fixture principal, ``Role.TENANT_AGENT``); the full mutating
+  ban-list (store puts / CAS / audit append / lifecycle transitions / onboarding / recovery /
+  deprovision / file writes) is enforced on the operator, and the proof performs NO direct store write;
+* the composition posture is pinned: the operator's only env writes set the control store to postgres and
+  FORCE the three live-side selectors to in_memory, and the compose helper must assert both the durable
+  store and the mixed-posture onboarding deny-guard (defense in depth against a provisioning-capable
+  plane);
+* both effectful commands consult the ORIGINAL B5-4 status FIRST (structural order pins), and the exact
+  four intended rows (three memberships + one dormant tenant; no fifth row) are pinned via the module's
+  own constants and pure classification/evaluation predicates;
+* the state-shaped mutation matrix runs here as planted-snapshot companions: every named status check
+  must reject its mutant facts (membership omitted/drifted, tenant Ready, reference drift, secret
+  material, physical database, duplicate/missing audit provenance, smoke residue, unrelated fifth row) —
+  and the source-shaped matrix runs as planted-source companions (SQL delete/truncate, removal command,
+  B5-4 apply argv, omitted B5-4 delegation, widened/computed manual-only entry);
+* the proof is a registered, justified MANUAL_ONLY exception of the live-PG run-set completeness guard
+  (plain-literal entry; the original B5-4 entry is preserved) and production code never imports the
+  operator;
+* the runbook carries the required documentation needles (four rows, membership-before-readiness
+  rationale, no-removal statement, resumable partial apply, standing-status block) and can never claim
+  Smoke C success or B5-BLK-4 closure (dynamic banned needles).
+
+Pure stdlib; standalone-runnable:
+  python tests/architecture/test_b5_standing_auth_fixture_boundaries.py
+
+B5-BLK-4 remains OPEN; the Physical Multi-Database MVP remains mandatory and is NOT completed by this
+guard or the fixture it pins. Smoke C is NOT executed here.
+"""
+
+from __future__ import annotations
+
+import ast
+import pathlib
+import re
+import sys
+from typing import Dict, List, Optional, Set, Tuple
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import _scan  # noqa: E402
+
+_OPS = _scan.BACKEND_ROOT / "tests" / "control_plane" / "requires_pg" / "b5_standing_auth_fixture.py"
+_PROOF = _scan.BACKEND_ROOT / "tests" / "control_plane" / "requires_pg" / "test_pg_b5_standing_auth_fixture.py"
+_RUNBOOK = _scan.REPO_ROOT / "infrastructure" / "runbooks" / "b5_standing_auth_fixture.md"
+_COMPLETENESS_GUARD = _scan.BACKEND_ROOT / "tests" / "architecture" / "test_live_pg_workflow_runset_completeness.py"
+_TESTS_DIR = _scan.BACKEND_ROOT / "tests"
+
+_NEW_PY_FILES = (_OPS, _PROOF)
+
+# Dynamic needles — built so THIS guard never satisfies its own bans.
+_REMOVAL_TOKEN = "tear" + "down"
+_SMOKE_NEEDLE = "smoke" + "_c_"
+_CLOSURE_NEEDLE = "B5-BLK-4 CLO" + "SED"
+_MVP_DONE_NEEDLE = "MVP COMPL" + "ETE"
+_SMOKE_PASSED_NEEDLES = ("smoke c pass" + "ed", "smoke c succe" + "eded", "smoke c has been exec" + "uted")
+
+_OPS_TOP_IMPORT_ALLOW = {"__future__", "argparse", "importlib", "os", "pathlib", "subprocess", "sys", "typing", "urllib.parse"}
+_FORBIDDEN_IMPORTS = ("psycopg", "psycopg2", "asyncpg", "sqlalchemy", "jwt", "cryptography", "threading", "socket", "http")
+_FORBIDDEN_NAMES = ("serve_forever", "ThreadingHTTPServer", "ThreadingMixIn")
+
+# Uppercase mutating-SQL keyword census over STRING CONSTANTS (prose stays lowercase; SELECT is the only
+# sanctioned SQL verb on this surface).
+_MUTATING_SQL_RE = re.compile(r"\b(INSERT|UPDATE|DELETE|TRUNCATE|DROP|CREATE|ALTER|GRANT|REVOKE)\b")
+_OPS_ALLOWED_SQL_PREFIX = "SELECT 1 FROM pg_database"
+
+# The operator's mutating-call ban-list (attribute-call names). The two supported write APIs are pinned
+# separately; everything else that could mutate the Control DB, the lifecycle, files, or the environment
+# of another tenant is banned outright in the operator.
+_OPS_BANNED_CALLS = frozenset(
+    {
+        "put_tenant",
+        "put_membership",
+        "put_federation",
+        "put_directory_record",
+        "compare_and_swap_tenant",
+        "append_audit",
+        "record",
+        "suspend_tenant",
+        "decommission_tenant",
+        "quarantine_tenant",
+        "mark_provisioning",
+        "verify",
+        "onboard",
+        "reassociate",
+        "recover",
+        "deprovision",
+        "provision",
+        "apply_schema",
+        "disable_routing",
+        "scan_for_orphans",
+        "deprovision_tenant_database",
+        "unlink",
+        "rmdir",
+        "removedirs",
+        "rmtree",
+        "chmod",
+        "mkdir",
+        "makedirs",
+        "write_text",
+        "write_bytes",
+        "rename",
+        "remove",
+    }
+)
+# The proof drives everything through the operator CLI: it may touch the (outside-repo) secret-root file
+# for its restored negative leg, but it may never write to the Control DB directly.
+_PROOF_BANNED_CALLS = frozenset(
+    {
+        "put_tenant",
+        "put_membership",
+        "put_federation",
+        "put_directory_record",
+        "compare_and_swap_tenant",
+        "append_audit",
+        "add_membership",
+        "register_tenant",
+        "record",
+        "suspend_tenant",
+        "decommission_tenant",
+        "quarantine_tenant",
+        "mark_provisioning",
+        "onboard",
+        "reassociate",
+        "recover",
+        "deprovision",
+        "provision",
+        "apply_schema",
+        "disable_routing",
+    }
+)
+
+_EXPECTED_SUBCOMMANDS = {"plan", "apply", "status"}
+_EXPECTED_INTENDED_ROWS = (
+    "membership:b5_standing_alpha",
+    "membership:b5_standing_beta",
+    "membership:b5_standing_dormant",
+    "tenant:b5_standing_dormant",
+)
+_MANUAL_ONLY_KEY = "tests/control_plane/requires_pg/test_pg_b5_standing_auth_fixture.py"
+_B5_4_MANUAL_ONLY_KEY = "tests/control_plane/requires_pg/test_pg_b5_standing_topology.py"
+
+_RUNBOOK_REQUIRED_NEEDLES = (
+    "b5_standing_member",
+    "b5_standing_alpha",
+    "b5_standing_beta",
+    "b5_standing_dormant",
+    "TENANT_AGENT",
+    "Registered",
+    "tenant/b5_standing_dormant/dsn@1",
+    "membership BEFORE readiness",
+    "tenant_access_denied",
+    "tenant_not_ready",
+    "control-store-standalone",
+    "physically incapable",
+    "no teardown command and no delete path",
+    "safely resumable",
+    "fails closed",
+    "6/6",
+    "Smoke C V2",
+    "Smoke C has not yet run",
+    "Smoke C not executed.",
+    "B5-BLK-4 OPEN.",
+    "Physical Multi-Database MVP mandatory and NOT complete.",
+)
+
+
+def _tree(path: pathlib.Path) -> ast.Module:
+    return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+
+def _load_ops_module():  # noqa: ANN202  (test helper)
+    """Load the operator by path (behavioral probes + the pure mutation-matrix predicates). Loading in
+    the default suite itself proves import-inertness: no configuration, database, or network exists here."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("b5_standing_auth_fixture_under_pin", _OPS)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _string_constants(tree: ast.AST) -> List[str]:
+    return [node.value for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, str)]
+
+
+def _attr_call_names(tree: ast.AST) -> Set[str]:
+    return {node.func.attr for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)}
+
+
+def _function(tree: ast.Module, name: str) -> ast.FunctionDef:
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return node
+    raise AssertionError(f"required function {name!r} not found (fail closed)")
+
+
+def _first_call_lineno(root: ast.AST, name: str) -> Optional[int]:
+    linenos = [
+        node.lineno
+        for node in ast.walk(root)
+        if isinstance(node, ast.Call)
+        and (
+            (isinstance(node.func, ast.Name) and node.func.id == name) or (isinstance(node.func, ast.Attribute) and node.func.attr == name)
+        )
+    ]
+    return min(linenos) if linenos else None
+
+
+# ------------------------------------------------------------------------------------------------
+# shared predicates (used by the real pins AND the planted-mutant companions)
+# ------------------------------------------------------------------------------------------------
+def _execute_sql_args(tree: ast.AST) -> List[object]:
+    """The first argument of every ``.execute(...)`` call (the raw-SQL census subject)."""
+    out: List[object] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "execute" and node.args:
+            out.append(node.args[0])
+    return out
+
+
+def _ops_sql_problems(tree: ast.AST) -> List[str]:
+    """The operator's raw-SQL rules: exactly ONE execute site, read-only, the pg_database probe.
+
+    The sanctioned site passes the module constant ``_PG_DATABASE_SQL`` (whose VALUE is pinned by the
+    loaded-module check in the real test and swept by the mutating-SQL census below); an inline constant
+    is accepted only if it IS the probe text — anything else fails."""
+    problems: List[str] = []
+    args = _execute_sql_args(tree)
+    if len(args) != 1:
+        problems.append(f"expected exactly one execute call site, found {len(args)}")
+    for arg in args:
+        named_probe = isinstance(arg, ast.Name) and arg.id == "_PG_DATABASE_SQL"
+        inline_probe = isinstance(arg, ast.Constant) and isinstance(arg.value, str) and arg.value.startswith(_OPS_ALLOWED_SQL_PREFIX)
+        if not (named_probe or inline_probe):
+            problems.append("an execute argument is not the single sanctioned read-only pg_database probe")
+    for value in _string_constants(tree):
+        if _MUTATING_SQL_RE.search(value):
+            problems.append(f"mutating-SQL keyword in a string constant: {value[:60]!r}")
+    return problems
+
+
+def _proof_sql_problems(tree: ast.AST) -> List[str]:
+    """The proof's raw-SQL rules: every execute argument is a read-only SELECT constant."""
+    problems: List[str] = []
+    for arg in _execute_sql_args(tree):
+        if not (isinstance(arg, ast.Constant) and isinstance(arg.value, str) and arg.value.lstrip().startswith("SELECT")):
+            problems.append("a proof execute argument is not a read-only SELECT constant")
+    for value in _string_constants(tree):
+        if _MUTATING_SQL_RE.search(value):
+            problems.append(f"mutating-SQL keyword in a string constant: {value[:60]!r}")
+    return problems
+
+
+def _subparser_names(tree: ast.AST) -> Set[str]:
+    names: Set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "add_parser" and node.args:
+            first = node.args[0]
+            if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                names.add(first.value)
+    return names
+
+
+def _argv_builder_problems(fn: ast.FunctionDef) -> List[str]:
+    """The B5-4 subprocess argv builder must return EXACTLY
+    ``[sys.executable, str(_B5_4_OPS), _B5_4_STATUS_COMMAND]`` — token-closed: no string constant other
+    than the docstring may appear, so no apply/removal token is constructible."""
+    problems: List[str] = []
+    returns = [node for node in ast.walk(fn) if isinstance(node, ast.Return)]
+    if len(returns) != 1 or not isinstance(returns[0].value, ast.List):
+        return ["the argv builder must have exactly one return of a list literal"]
+    elts = returns[0].value.elts
+    if len(elts) != 3:
+        problems.append(f"argv must have exactly 3 tokens, found {len(elts)}")
+        return problems
+    e0, e1, e2 = elts
+    if not (isinstance(e0, ast.Attribute) and e0.attr == "executable" and isinstance(e0.value, ast.Name) and e0.value.id == "sys"):
+        problems.append("argv[0] must be sys.executable")
+    if not (
+        isinstance(e1, ast.Call)
+        and isinstance(e1.func, ast.Name)
+        and e1.func.id == "str"
+        and len(e1.args) == 1
+        and isinstance(e1.args[0], ast.Name)
+        and e1.args[0].id == "_B5_4_OPS"
+    ):
+        problems.append("argv[1] must be str(_B5_4_OPS)")
+    if not (isinstance(e2, ast.Name) and e2.id == "_B5_4_STATUS_COMMAND"):
+        problems.append("argv[2] must be the _B5_4_STATUS_COMMAND constant (never an inline token)")
+    body_constants = [node.value for node in ast.walk(fn) if isinstance(node, ast.Constant) and isinstance(node.value, str)]
+    docstring = ast.get_docstring(fn, clean=False)
+    for value in body_constants:
+        if value != docstring:
+            problems.append(f"stray string token inside the argv builder: {value!r}")
+    return problems
+
+
+def _subprocess_run_calls(tree: ast.AST) -> List[ast.Call]:
+    return [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "run"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "subprocess"
+    ]
+
+
+def _manual_only_mapping(guard_tree: ast.Module) -> Dict[str, str]:
+    for node in ast.walk(guard_tree):
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "MANUAL_ONLY_EXCEPTIONS" for t in node.targets):
+            mapping = ast.literal_eval(node.value)  # plain literals ONLY — a computed entry raises here
+            assert isinstance(mapping, dict)
+            return {str(k): str(v) for k, v in mapping.items()}
+    raise AssertionError("MANUAL_ONLY_EXCEPTIONS not found in the completeness guard")
+
+
+def _runbook_problems(text: str) -> List[str]:
+    problems = [f"missing:{needle}" for needle in _RUNBOOK_REQUIRED_NEEDLES if needle not in text]
+    lowered = text.lower()
+    for banned in (_CLOSURE_NEEDLE, _MVP_DONE_NEEDLE):
+        if banned in text:
+            problems.append(f"forbidden:{banned}")
+    for banned in _SMOKE_PASSED_NEEDLES:
+        if banned in lowered:
+            problems.append(f"forbidden:{banned}")
+    return problems
+
+
+def _canonical_facts(module) -> Dict[str, object]:  # noqa: ANN001  (test helper)
+    return {
+        "membership_roles": {tid: module._ROLE_VALUE for tid in module.MEMBERSHIP_TENANT_IDS},
+        "membership_count": len(module.MEMBERSHIP_TENANT_IDS),
+        "tenant_ids": [*module.READY_TENANT_IDS, module.DORMANT_TENANT_ID],
+        "dormant_row": dict(module._EXPECTED_DORMANT_ROW),
+        "dormant_read_state": {"tenant_id": module.DORMANT_TENANT_ID, "lifecycle_state": "Registered", "ready": False},
+        "dormant_member": True,
+        "register_audit": [{"actor": module._ACTOR, "from_state": None, "to_state": "Registered"}],
+        "dormant_secret_file": False,
+        "dormant_secret_env": False,
+        "cp_adapter_resolves": False,
+        "dbr_adapter_resolves": False,
+        "dormant_database_present": False,
+        "smoke_residue_count": 0,
+    }
+
+
+def _problem_for(module, facts: Dict[str, object], check_name: str) -> Optional[str]:  # noqa: ANN001
+    for name, problem in module._evaluate(facts):
+        if name == check_name:
+            return problem
+    raise AssertionError(f"status check {check_name!r} not found (fail closed)")
+
+
+# ------------------------------------------------------------------------------------------------
+# the real pins
+# ------------------------------------------------------------------------------------------------
+def test_files_exist() -> None:
+    for path in (_OPS, _PROOF, _RUNBOOK, _COMPLETENESS_GUARD):
+        assert path.is_file(), f"B5-4A V2 surface file missing: {path}"
+
+
+def test_ops_module_is_import_inert_and_stdlib_only_at_top() -> None:
+    tree = _tree(_OPS)
+    imported: Set[str] = set()
+    for index, node in enumerate(tree.body):
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            assert index == 0, "only the module docstring may be a bare expression"
+            continue
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name for alias in node.names)
+            elif node.module and node.level == 0:
+                imported.add(node.module)
+            continue
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.FunctionDef, ast.ClassDef)):
+            continue
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+            call = ast.unparse(node.value.func)
+            assert call == "sys.path.insert", f"the only top-level call allowed is sys.path.insert (found {call})"
+            continue
+        if isinstance(node, ast.If):
+            test_src = ast.unparse(node.test)
+            assert "__name__" in test_src, f"top-level If must be the __main__ guard (found: {test_src})"
+            continue
+        raise AssertionError(f"import-inertness violated: unexpected top-level statement {ast.dump(node)[:120]}")
+    unexpected = {m for m in imported if m.split(".")[0] not in {a.split(".")[0] for a in _OPS_TOP_IMPORT_ALLOW}}
+    assert not unexpected, f"ops module top-level imports must be stdlib-only (lazy backend imports): {sorted(unexpected)}"
+
+
+def test_no_forbidden_imports_or_names_anywhere() -> None:
+    for path in _NEW_PY_FILES:
+        rp = _scan.relposix(path)
+        mods = _scan.imported_modules(path)
+        for mod in mods:
+            top = mod.split(".")[0]
+            assert top not in _FORBIDDEN_IMPORTS, f"forbidden import '{mod}' in {rp} (driver/vendor/threading/socket/http banned)"
+            assert "b5_standing_topology" not in mod, f"{rp} must never import the original B5-4 harness (subprocess-only)"
+        source = path.read_text(encoding="utf-8")
+        for name in _FORBIDDEN_NAMES:
+            assert name not in source, f"forbidden name '{name}' in {rp}"
+    proof_mods = {m.split(".")[0] for m in _scan.imported_modules(_PROOF)}
+    assert "subprocess" not in proof_mods, "the proof must not import subprocess (only the operator holds that seam)"
+    # Non-vacuity: the import census detects a synthetic harness import.
+    synthetic = [a.name for n in ast.walk(ast.parse("import b5_standing_topology\n")) if isinstance(n, ast.Import) for a in n.names]
+    assert any("b5_standing_topology" in m for m in synthetic), "harness-import detector went vacuous"
+
+
+def test_no_removal_token_or_smoke_prefix_in_new_files() -> None:
+    for path in _NEW_PY_FILES:
+        source = path.read_text(encoding="utf-8")
+        assert _REMOVAL_TOKEN not in source, f"the removal-command token must not appear in {path.name}"
+        assert _SMOKE_NEEDLE not in source, f"the temporary smoke-row prefix literal must not appear in {path.name}"
+        assert "--confirm" not in source, f"no confirmation-flag surface may exist in {path.name} (nothing destructive exists)"
+    # Non-vacuity: both needles detect planted samples.
+    assert _REMOVAL_TOKEN in ("tear" + "down teardown-sample"), "removal-token detector went vacuous"
+    assert _SMOKE_NEEDLE in ("smoke" + "_c_tenant_row"), "smoke-prefix detector went vacuous"
+
+
+def test_ops_sql_surface_is_single_readonly_probe() -> None:
+    problems = _ops_sql_problems(_tree(_OPS))
+    assert not problems, f"operator raw-SQL pins failed: {problems}"
+    module = _load_ops_module()
+    assert module._PG_DATABASE_SQL == "SELECT 1 FROM pg_database WHERE datname = %s", "the probe constant is pinned verbatim"
+
+
+def test_proof_sql_surface_is_readonly() -> None:
+    problems = _proof_sql_problems(_tree(_PROOF))
+    assert not problems, f"proof raw-SQL pins failed: {problems}"
+
+
+def test_sql_pin_non_vacuity() -> None:
+    # [matrix 1] direct SQL delete and [matrix 2] truncate are rejected by the SAME predicates.
+    delete_mutant = ast.parse('def f(cur):\n    cur.execute("DELETE FROM control_memberships WHERE tenant_id = %s", (t,))\n')
+    truncate_mutant = ast.parse('def f(cur):\n    cur.execute("TRUNCATE control_audit")\n')
+    second_probe_mutant = ast.parse(
+        'def f(cur):\n    cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (t,))\n'
+        '    cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (u,))\n'
+    )
+    assert _ops_sql_problems(delete_mutant), "pin must reject a direct SQL delete mutant"
+    assert _proof_sql_problems(delete_mutant), "proof pin must reject a direct SQL delete mutant"
+    assert _ops_sql_problems(truncate_mutant), "pin must reject a truncate mutant"
+    assert _proof_sql_problems(truncate_mutant), "proof pin must reject a truncate mutant"
+    assert _ops_sql_problems(second_probe_mutant), "pin must reject a second operator execute site"
+    canonical = ast.parse('def f(cur):\n    cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (t,))\n')
+    assert not _ops_sql_problems(canonical), "the canonical single probe must PASS"
+
+
+def test_command_surface_is_exactly_plan_apply_status() -> None:
+    # [matrix 3] a removal command cannot exist: structural census + behavioral refusal.
+    names = _subparser_names(_tree(_OPS))
+    assert names == _EXPECTED_SUBCOMMANDS, f"operator subcommands must be exactly plan/apply/status: {sorted(names)}"
+    import contextlib
+    import io
+
+    module = _load_ops_module()
+    for token in (_REMOVAL_TOKEN, "delete", "remove"):
+        buf = io.StringIO()
+        refused = False
+        with contextlib.redirect_stderr(buf):
+            try:
+                module.build_parser().parse_args([token])
+            except SystemExit as exc:
+                refused = exc.code != 0
+        assert refused, f"unknown subcommand {token!r} must be refused"
+    # Non-vacuity: the census sees a planted removal subparser.
+    mutant = ast.parse(f'def build():\n    sub.add_parser("plan")\n    sub.add_parser("{_REMOVAL_TOKEN}")\n')
+    assert _subparser_names(mutant) != _EXPECTED_SUBCOMMANDS, "subcommand census went vacuous"
+
+
+def test_b5_4_subprocess_is_status_only() -> None:
+    # [matrix 4] a B5-4 apply/removal subprocess is unconstructible: one run site, token-closed argv.
+    tree = _tree(_OPS)
+    runs = _subprocess_run_calls(tree)
+    assert len(runs) == 1, f"exactly ONE subprocess.run call site is allowed, found {len(runs)}"
+    status_fn = _function(tree, "_b5_4_status")
+    assert len(_subprocess_run_calls(status_fn)) == 1, "the subprocess.run call site must live inside _b5_4_status"
+    problems = _argv_builder_problems(_function(tree, "_b5_4_status_argv"))
+    assert not problems, f"B5-4 argv builder pins failed: {problems}"
+    module = _load_ops_module()
+    assert module._B5_4_STATUS_COMMAND == "status", "the B5-4 subcommand constant must be pinned to status"
+    assert module._b5_4_status_argv()[-1] == "status", "the built argv must end with the status token"
+
+
+def test_b5_4_argv_pin_non_vacuity() -> None:
+    mutants = {
+        "apply token inline": 'def _b5_4_status_argv():\n    return [sys.executable, str(_B5_4_OPS), "apply"]\n',
+        "removal token inline": f'def _b5_4_status_argv():\n    return [sys.executable, str(_B5_4_OPS), "{_REMOVAL_TOKEN}"]\n',
+        "different command constant": "def _b5_4_status_argv():\n    return [sys.executable, str(_B5_4_OPS), _B5_4_APPLY_COMMAND]\n",
+        "extra argv token": "def _b5_4_status_argv():\n    return [sys.executable, str(_B5_4_OPS), _B5_4_STATUS_COMMAND, extra]\n",
+        "different target script": "def _b5_4_status_argv():\n    return [sys.executable, str(_OTHER_OPS), _B5_4_STATUS_COMMAND]\n",
+    }
+    canonical = "def _b5_4_status_argv():\n    return [sys.executable, str(_B5_4_OPS), _B5_4_STATUS_COMMAND]\n"
+    fn = ast.parse(canonical).body[0]
+    assert isinstance(fn, ast.FunctionDef) and not _argv_builder_problems(fn), "the canonical argv builder must PASS"
+    for label, source in mutants.items():
+        mutant_fn = ast.parse(source).body[0]
+        assert isinstance(mutant_fn, ast.FunctionDef)
+        assert _argv_builder_problems(mutant_fn), f"argv pin must reject mutant: {label}"
+
+
+def test_supported_write_apis_only() -> None:
+    ops_tree = _tree(_OPS)
+    ops_calls = _attr_call_names(ops_tree)
+    banned = ops_calls & _OPS_BANNED_CALLS
+    assert not banned, f"operator calls banned mutating APIs: {sorted(banned)}"
+    assert {"add_membership", "register_tenant"} <= ops_calls, "the two supported write APIs must be present"
+    register_calls = [
+        node
+        for node in ast.walk(ops_tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "register_tenant"
+    ]
+    assert len(register_calls) == 1, "exactly ONE register_tenant call site is allowed"
+    kw = {k.arg: k.value for k in register_calls[0].keywords}
+    assert isinstance(kw.get("tenant_id"), ast.Name) and kw["tenant_id"].id == "DORMANT_TENANT_ID", (
+        "register_tenant must target the pinned dormant tenant id"
+    )
+    assert isinstance(kw.get("actor"), ast.Name) and kw["actor"].id == "_ACTOR", "register_tenant must use the pinned actor"
+    membership_calls = [
+        node
+        for node in ast.walk(ops_tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "add_membership"
+    ]
+    assert len(membership_calls) == 1, "exactly ONE add_membership call site is allowed"
+    kw = {k.arg: k.value for k in membership_calls[0].keywords}
+    assert isinstance(kw.get("principal_ref"), ast.Name) and kw["principal_ref"].id == "PRINCIPAL", (
+        "add_membership must use the pinned fixture principal"
+    )
+    role = kw.get("role")
+    assert (
+        isinstance(role, ast.Attribute) and role.attr == "TENANT_AGENT" and isinstance(role.value, ast.Name) and role.value.id == "Role"
+    ), "add_membership must pass Role.TENANT_AGENT explicitly"
+    proof_banned = _attr_call_names(_tree(_PROOF)) & _PROOF_BANNED_CALLS
+    assert not proof_banned, f"the proof must drive everything through the operator CLI (banned calls: {sorted(proof_banned)})"
+
+
+def test_env_writes_pinned_to_standalone_posture() -> None:
+    tree = _tree(_OPS)
+    env_assigns: List[Tuple[int, ast.Assign]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Subscript):
+            target = node.targets[0]
+            if (
+                isinstance(target.value, ast.Attribute)
+                and target.value.attr == "environ"
+                and isinstance(target.value.value, ast.Name)
+                and target.value.value.id == "os"
+            ):
+                env_assigns.append((node.lineno, node))
+    assert len(env_assigns) == 2, f"exactly TWO os.environ writes are allowed (the posture selectors), found {len(env_assigns)}"
+    compose = _function(tree, "_compose_control_store_standalone_plane")
+    span = {n.lineno for n in ast.walk(compose) if hasattr(n, "lineno")}
+    values = set()
+    for lineno, assign in env_assigns:
+        assert lineno in span, "os.environ writes must live inside the compose helper only"
+        assert isinstance(assign.value, ast.Constant), "selector values must be inline constants"
+        values.add(assign.value.value)
+    assert values == {"postgres", "in_memory"}, f"selector values must be exactly postgres + in_memory, found {sorted(values)}"
+    compose_src = ast.get_source_segment(_OPS.read_text(encoding="utf-8"), compose) or ""
+    for required in ("PostgresControlStore", "_MixedPostureOnboardingGuard"):
+        assert required in compose_src, f"the compose helper must assert the {required} defense-in-depth check"
+
+
+def test_effectful_commands_consult_b5_4_first() -> None:
+    # [matrix 17] status (and apply) can never omit the original B5-4 6/6 delegation.
+    tree = _tree(_OPS)
+    status_fn = _function(tree, "cmd_status")
+    b5_4 = _first_call_lineno(status_fn, "_b5_4_status")
+    gather = _first_call_lineno(status_fn, "_gather_facts")
+    assert b5_4 is not None, "cmd_status must invoke the original B5-4 status"
+    assert gather is not None and b5_4 < gather, "cmd_status must report the original B5-4 status BEFORE the extension checks"
+    apply_fn = _function(tree, "cmd_apply")
+    b5_4 = _first_call_lineno(apply_fn, "_b5_4_status")
+    preflight = _first_call_lineno(apply_fn, "_preflight")
+    register = _first_call_lineno(apply_fn, "register_tenant")
+    membership = _first_call_lineno(apply_fn, "add_membership")
+    assert b5_4 is not None and preflight is not None and register is not None and membership is not None
+    assert b5_4 < preflight < register, "cmd_apply must require B5-4 6/6, then preflight, before ANY write"
+    assert preflight < membership, "cmd_apply must preflight before the membership writes"
+    # Non-vacuity: a status without the delegation is caught by the same predicate.
+    mutant = _function(ast.parse("def cmd_status(a):\n    facts = _gather_facts(cp, dsn, sd)\n    return 0\n"), "cmd_status")
+    assert _first_call_lineno(mutant, "_b5_4_status") is None, "delegation-order detector went vacuous"
+
+
+def test_intended_rows_are_exactly_four() -> None:
+    module = _load_ops_module()
+    assert module.PRINCIPAL == "b5_standing_member"
+    assert tuple(module.READY_TENANT_IDS) == ("b5_standing_alpha", "b5_standing_beta")
+    assert module.DORMANT_TENANT_ID == "b5_standing_dormant"
+    assert tuple(module.MEMBERSHIP_TENANT_IDS) == ("b5_standing_alpha", "b5_standing_beta", "b5_standing_dormant")
+    assert module._ROLE_VALUE == "TENANT_AGENT"
+    assert module.intended_rows() == _EXPECTED_INTENDED_ROWS, "the intended permanent rows must be EXACTLY the four"
+    assert len(module.intended_rows()) == 4, "no fifth intended row may exist"
+    assert module._EXPECTED_DORMANT_ROW == {
+        "lifecycle_state": "Registered",
+        "organization_ref": "b5_standing_org",
+        "expected_schema_version": "1",
+        "federation_config_ref": "b5_standing_fed",
+        "assoc_store_ref": "tenant/b5_standing_dormant/dsn",
+        "assoc_version": "1",
+    }, "the exact dormant registry row is pinned"
+
+
+def test_classification_predicates() -> None:
+    module = _load_ops_module()
+    assert module._membership_classification(None) == module.ABSENT
+    assert module._membership_classification("TENANT_AGENT") == module.EXACT
+    assert module._membership_classification("MASTER_AGENT") == module.CONFLICTING  # [matrix 8] role drift
+    assert module._tenant_classification(None) == module.ABSENT
+    assert module._tenant_classification(dict(module._EXPECTED_DORMANT_ROW)) == module.EXACT
+    drifted = dict(module._EXPECTED_DORMANT_ROW)
+    drifted["lifecycle_state"] = "Ready"
+    assert module._tenant_classification(drifted) == module.CONFLICTING  # [matrix 9] dormant marked Ready
+    drifted = dict(module._EXPECTED_DORMANT_ROW)
+    drifted["assoc_version"] = "2"
+    assert module._tenant_classification(drifted) == module.CONFLICTING  # [matrix 13] canonical ref drift
+
+
+def test_b5_4_status_predicate() -> None:
+    # [matrix 5/6] any drift the original B5-4 status detects (alpha non-Ready, beta association) must
+    # fail this operator too: the delegation predicate accepts ONLY exit 0 + the full 6/6 PASS set.
+    module = _load_ops_module()
+    six_pass = "\n".join(f"  PASS: check {i}" for i in range(6)) + "\nSTATUS OK — complete standing topology\n"
+    assert module._b5_4_status_problem(0, six_pass) is None, "the canonical 6/6 output must PASS"
+    assert module._b5_4_status_problem(1, six_pass) is not None, "a non-zero B5-4 exit must fail"
+    five_pass = "\n".join(f"  PASS: check {i}" for i in range(5)) + "\nSTATUS OK\n"
+    assert module._b5_4_status_problem(0, five_pass) is not None, "a 5/6 output must fail"
+    no_ok = "\n".join(f"  PASS: check {i}" for i in range(6))
+    assert module._b5_4_status_problem(0, no_ok) is not None, "output without the STATUS OK line must fail"
+
+
+def test_status_mutation_matrix() -> None:
+    # The state-shaped mutation matrix (planted facts snapshots; the SAME _evaluate the live status runs).
+    module = _load_ops_module()
+    canonical = _canonical_facts(module)
+    for name, problem in module._evaluate(canonical):
+        assert problem is None, f"canonical facts must PASS every check; {name!r} said: {problem}"
+
+    def mutate(**overrides):  # noqa: ANN003, ANN202
+        facts = _canonical_facts(module)
+        facts.update(overrides)
+        return facts
+
+    roles_missing = dict(canonical["membership_roles"])
+    roles_missing["b5_standing_dormant"] = None
+    omitted = _problem_for(module, mutate(membership_roles=roles_missing), "dormant membership exact")
+    assert omitted, "[matrix 7] omitted dormant membership must fail"
+
+    roles_drift = dict(canonical["membership_roles"])
+    roles_drift["b5_standing_dormant"] = "MASTER_AGENT"
+    drifted_role = _problem_for(module, mutate(membership_roles=roles_drift), "dormant membership exact")
+    assert drifted_role, "[matrix 8] drifted dormant role must fail"
+
+    ready_row = dict(module._EXPECTED_DORMANT_ROW)
+    ready_row["lifecycle_state"] = "Ready"
+    ready_state = {"tenant_id": module.DORMANT_TENANT_ID, "lifecycle_state": "Ready", "ready": True}
+    facts = mutate(dormant_row=ready_row, dormant_read_state=ready_state)
+    assert _problem_for(module, facts, "dormant tenant exact"), "[matrix 9] Ready dormant row must fail the exact-row check"
+    assert _problem_for(module, facts, "dormant ready=false through real read service"), "[matrix 9] Ready dormant must fail readiness"
+    assert _problem_for(module, facts, "dormant tenant produces the membership-gated non-Ready precondition"), "[matrix 9] precondition"
+
+    for label, override in (
+        ("secret file", {"dormant_secret_file": True}),
+        ("secret env key", {"dormant_secret_env": True}),
+        ("cp-adapter resolution", {"cp_adapter_resolves": True}),
+        ("dbr-adapter resolution", {"dbr_adapter_resolves": True}),
+    ):
+        assert _problem_for(module, mutate(**override), "no dormant secret material"), f"[matrix 10] {label} must fail"
+
+    assert _problem_for(module, mutate(dormant_database_present=True), "no dormant physical database or tenant schema"), (
+        "[matrix 11/12] a dormant physical database (schema implied) must fail"
+    )
+
+    ref_drift = dict(module._EXPECTED_DORMANT_ROW)
+    ref_drift["assoc_store_ref"] = "tenant/b5_standing_dormant/raw"
+    assert _problem_for(module, mutate(dormant_row=ref_drift), "dormant canonical reference exact"), "[matrix 13] ref drift must fail"
+
+    extra_membership = mutate(membership_count=4)
+    check = "no unrelated standing rows (exactly three memberships; exactly the three standing tenants)"
+    assert _problem_for(module, extra_membership, check), "[matrix 14] an unrelated fifth record must fail"
+    extra_tenant = mutate(tenant_ids=[*canonical["tenant_ids"], "b5_unrelated"])
+    assert _problem_for(module, extra_tenant, check), "[matrix 14] an unrelated tenant row must fail"
+
+    smoke_name = f"zero {module._SMOKE_PREFIX} residue"
+    assert _problem_for(module, mutate(smoke_residue_count=1), smoke_name), "[matrix 15] smoke residue must fail"
+
+    dup_audit = [
+        {"actor": module._ACTOR, "from_state": None, "to_state": "Registered"},
+        {"actor": module._ACTOR, "from_state": None, "to_state": "Registered"},
+    ]
+    audit_check = "exactly one permanent RegisterTenant audit row"
+    assert _problem_for(module, mutate(register_audit=dup_audit), audit_check), "[matrix 16] duplicate audit provenance must fail"
+    assert _problem_for(module, mutate(register_audit=[]), audit_check), "[matrix 16] missing audit provenance must fail"
+    wrong_actor = [{"actor": "someone_else", "from_state": None, "to_state": "Registered"}]
+    assert _problem_for(module, mutate(register_audit=wrong_actor), audit_check), "[matrix 16] foreign provenance must fail"
+
+
+def test_manual_only_exception_exact() -> None:
+    # [matrix 18] the manual-only entry can be neither absent, widened, nor computed.
+    mapping = _manual_only_mapping(_tree(_COMPLETENESS_GUARD))
+    assert _MANUAL_ONLY_KEY in mapping, "the B5-4A V2 proof must be a registered MANUAL_ONLY exception"
+    assert mapping[_MANUAL_ONLY_KEY].strip(), "the B5-4A V2 exception must carry a written justification"
+    assert _B5_4_MANUAL_ONLY_KEY in mapping, "the original B5-4 exception must be preserved"
+    assert "*" not in _MANUAL_ONLY_KEY and _MANUAL_ONLY_KEY.endswith(".py"), "the exception key must be one exact file"
+    # Non-vacuity: the SAME extractor rejects a computed entry and misses an absent key.
+    computed = ast.parse('MANUAL_ONLY_EXCEPTIONS = {"tests/x.py": f"computed {reason}"}\n')
+    raised = False
+    try:
+        _manual_only_mapping(computed)
+    except ValueError:
+        raised = True
+    assert raised, "a computed (non-literal) justification must break the literal_eval extraction"
+    without = _manual_only_mapping(ast.parse('MANUAL_ONLY_EXCEPTIONS = {"tests/other.py": "reason"}\n'))
+    assert _MANUAL_ONLY_KEY not in without, "manual-only detector went vacuous"
+
+
+def test_no_production_import_of_ops_module() -> None:
+    # [matrix 19] production code can never import the operator.
+    offenders: List[str] = []
+    for path in _scan.py_files():
+        if _TESTS_DIR in path.parents:
+            continue
+        if any("b5_standing_auth_fixture" in mod for mod in _scan.imported_modules(path)):
+            offenders.append(_scan.relposix(path))
+    assert not offenders, f"production code must never import the B5-4A V2 ops harness: {offenders}"
+    # Non-vacuity: the census detects a synthetic import.
+    synthetic = ast.parse("import b5_standing_auth_fixture\n")
+    names = [a.name for n in ast.walk(synthetic) if isinstance(n, ast.Import) for a in n.names]
+    assert "b5_standing_auth_fixture" in names, "import census went vacuous"
+
+
+def test_runbook_obligations_and_no_overclaim() -> None:
+    # [matrix 20] the runbook can never claim Smoke C success or B5-BLK-4 closure.
+    problems = _runbook_problems(_RUNBOOK.read_text(encoding="utf-8"))
+    assert not problems, f"runbook census failed: {problems}"
+
+
+def test_runbook_census_non_vacuity() -> None:
+    canonical = " ".join(_RUNBOOK_REQUIRED_NEEDLES)
+    assert _runbook_problems(canonical) == [], "the canonical needle join must PASS the census"
+    dropped = canonical.replace("B5-BLK-4 OPEN.", "")
+    assert "missing:B5-BLK-4 OPEN." in _runbook_problems(dropped), "a dropped standing-status line must be caught"
+    dropped = canonical.replace("no teardown command and no delete path", "removal is available")
+    assert any(p.startswith("missing:no ") for p in _runbook_problems(dropped)), "a dropped no-removal statement must be caught"
+    closed = canonical + " " + _CLOSURE_NEEDLE
+    assert f"forbidden:{_CLOSURE_NEEDLE}" in _runbook_problems(closed), "a closure claim must be caught"
+    passed = canonical + " Smoke C pass" + "ed."
+    assert any(p.startswith("forbidden:smoke c pass") for p in _runbook_problems(passed)), "a smoke-passed claim must be caught"
+    done = canonical + " " + _MVP_DONE_NEEDLE
+    assert f"forbidden:{_MVP_DONE_NEEDLE}" in _runbook_problems(done), "an MVP-completion claim must be caught"
+
+
+if __name__ == "__main__":
+    _scan.run(
+        [
+            test_files_exist,
+            test_ops_module_is_import_inert_and_stdlib_only_at_top,
+            test_no_forbidden_imports_or_names_anywhere,
+            test_no_removal_token_or_smoke_prefix_in_new_files,
+            test_ops_sql_surface_is_single_readonly_probe,
+            test_proof_sql_surface_is_readonly,
+            test_sql_pin_non_vacuity,
+            test_command_surface_is_exactly_plan_apply_status,
+            test_b5_4_subprocess_is_status_only,
+            test_b5_4_argv_pin_non_vacuity,
+            test_supported_write_apis_only,
+            test_env_writes_pinned_to_standalone_posture,
+            test_effectful_commands_consult_b5_4_first,
+            test_intended_rows_are_exactly_four,
+            test_classification_predicates,
+            test_b5_4_status_predicate,
+            test_status_mutation_matrix,
+            test_manual_only_exception_exact,
+            test_no_production_import_of_ops_module,
+            test_runbook_obligations_and_no_overclaim,
+            test_runbook_census_non_vacuity,
+        ]
+    )
