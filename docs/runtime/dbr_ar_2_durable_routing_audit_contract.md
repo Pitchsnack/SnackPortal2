@@ -18,11 +18,17 @@ Authoritative standing status (unchanged by this document):
 - The Lovable cutover remains OPEN (B5-BLK-5 / B5-BLK-6; separate track).
 - The gate §5 activation condition "provisioning audit sink available (B-6) — or an explicit, approved waiver" remains binding at activation time and is not waived by anything in this document.
 
-**DBR-AR-2A status (event contract and port — the first implementation slice):**
+**DBR-AR-2A / DBR-AR-2B status (event contract and port; durable storage capability):**
 
-- DBR-AR-2A — implemented when this PR merges.
+- DBR-AR-2A — implemented.
+- DBR-AR-2B — storage capability implemented when this PR merges: created-not-applied DDL, append-only enforcement, Control Plane store, internal ingest adapter, and uncomposed Database Router client.
 - DBR-AR-2 — remains OPEN.
-- DBR-AR-2B through DBR-AR-2E — not started.
+- DBR-AR-2C through DBR-AR-2E — not started.
+- The DDL is not applied.
+- Production composition is not implemented.
+- Live durability is not yet proven.
+- Least-privilege routing-audit writer-role DDL remains separately governed and is not delivered by DBR-AR-2B.
+- Production activation remains NOT READY / DO-NOT-ACTIVATE.
 
 This document changes no blocker, no blocker count, no decision, no gate posture, and no routing semantics. It is
 the readiness-reviewed implementation contract that the DBR-AR-2 implementation slices (§16) must satisfy.
@@ -55,7 +61,7 @@ request was denied. DBR-AR-2 defines the durable, vendor-neutral, references-onl
   (its denial scenarios are denied at the auth boundary and never reach `route()`).
   Before DBR-AR-2A: two pre-target denials (`tenant_routing_unavailable`, `no_active_tenant`) had no router-edge audit event.
   After DBR-AR-2A: every completed or denied `route()` invocation produces exactly one router-edge in-memory event.
-  Durability remains unimplemented.
+  Live durability is not yet proven.
 - **Event shape today (`backend/shared/audit.py`):** frozen `OperationalAuditEvent` — `actor_ref`, `action`,
   `correlation_id`, `outcome`, `target_ref`; references only.
 - **Router-edge denial vocabulary (`backend/database_router/models.py`, `disclosure.py`, `resolver.py`,
@@ -353,7 +359,7 @@ Standing checks in this V1 phase were read-only; no apply, no teardown, no Smoke
 | Slice | Objective | Authorized surface | Off-limits | Acceptance / test strategy | Live proof | Rollback | Depends on | Model |
 |---|---|---|---|---|---|---|---|---|
 | **DBR-AR-2A — event contract and port** | Amend IC-002 (class-3 extension: router-edge routing-decision events, field set of §8) + IC-005 (emission-edge reconciliation: router = single edge for routing-decision events; gateway sole edge for the four existing class-3 events) + evolve `test_audit_class_homes.py` in lockstep; define the router-side event model and port extension (no persistence) | `contracts/IC-002…`, `contracts/IC-005…`, `backend/database_router/` event model, `backend/tests/**` | adapters/providers persistence, DDL, `main.py` wiring, gateway code | contract text pins + unit tests over the event model; taxonomy guard updated in the same PR | none (contract + in-memory) | revert PR | this V1 | Fable5 REQUIRED |
-| **DBR-AR-2B — durable adapter and schema/storage contract** | Created-not-applied DDL for the routing-audit table + append-only trigger (+ unique `event_id`), next free numbers under `infrastructure/db/control/**`, registered with the DDL blob/pin guards; Control-Plane store method (append/list) on both adapters; internal-only ingest-edge adapter; router-side transport client | `infrastructure/db/control/**`, `backend/control_plane/**`, `backend/database_router/adapters/providers/**`, tests | applying DDL, runtime wiring, activation | blob-pinned DDL; adapter unit tests; fail-closed first-use tests; guard battery | B-7A-style live-PG exercise of the new DDL (separately gated) | revert PR (DDL created-not-applied) | 2A | Fable5 REQUIRED |
+| **DBR-AR-2B — durable adapter and schema/storage contract** | Created-not-applied DDL for the routing-audit table + append-only trigger (+ unique `event_id`), next free numbers under `infrastructure/db/control/**`, registered with the DDL blob/pin guards; Control-Plane store method (append-only write behind a dedicated store port — no list/read/query/export/purge surface in 2B; those remain separately governed); internal-only ingest-edge adapter; router-side transport client | `infrastructure/db/control/**`, `backend/control_plane/**`, `backend/database_router/adapters/providers/**`, tests | applying DDL, runtime wiring, activation | blob-pinned DDL; adapter unit tests; fail-closed first-use tests; guard battery | B-7A-style live-PG exercise of the new DDL (separately gated) | revert PR (DDL created-not-applied) | 2A | Fable5 REQUIRED |
 | **DBR-AR-2C — composition and failure semantics** | Env-selected composition (gate-first router-side selector for the ingest base URL; ValueError-before-socket edge knobs; lazy adapter import — the merged seam shape); audit-before-hand-back ordering in `route()`; §10 postures incl. the non-leaking condition-1 denial; bounded idempotent retry | `backend/database_router/**`, `backend/control_plane/main.py` seam, tests | activating production, changing denial disclosure, threading | seam-shape guards; §10 posture tests incl. sink-down injection; mutation battery | INTEGRATION proofs 9/11 | selector unset → prior in-memory composition, byte-for-byte | 2B | Fable5 REQUIRED |
 | **DBR-AR-2D — live proof and operator runbook** | `requires_pg` harness for proofs 1–12 over the retained standing topology; operator runbook + references-only evidence template; Smoke-C-successor zero-mutation accounting | `backend/tests/**/requires_pg/**`, `infrastructure/runbooks/**`, `docs/runtime/**` | production source changes | harness green over the standing fixture; runbook walk-through | LIVE-POSTGRES + STANDING-ENVIRONMENT (Dan-authorized runs) | teardown per runbook | 2C | Fable5 (harness); runbook prose Opus-acceptable |
 | **DBR-AR-2E — production activation evidence** | Production-environment sink availability + evidence capture at the pre-deployment stage; whether durable routing audit becomes a formal gate §5 condition is decided here (§17) | evidence records; gate docs via governed amendment | everything else | evidence review; guard evolution with the decision | PRODUCTION DEPLOYMENT (blocked with the gate; depends on B5-BLK-2/3 era work) | n/a (evidence only) | 2D + deployment phase | Fable5 REQUIRED |
@@ -392,10 +398,10 @@ explicitly authorized runbook step.
 
 ## 21. Next governed step
 
-**Next implementation slice after DBR-AR-2A is merged,
-post-merge verified, and target-branch cleaned:
-DBR-AR-2B.**
+**Next implementation slice after DBR-AR-2B is fully merged,
+post-merge verified, and target-cleaned:
+DBR-AR-2C — composition and failure semantics.**
 
-DBR-AR-2B (durable adapter and schema/storage contract) is not yet authorized; it requires its own GPT PRD,
+DBR-AR-2C (composition and failure semantics) is not yet authorized; it requires its own GPT PRD,
 readiness review, and Dan START-GATE, following the standard loop (independent pre-merge verify → Dan human
 merge → post-merge verify → target-only cleanup).
