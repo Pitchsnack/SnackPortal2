@@ -1,9 +1,88 @@
 # PRD 06 B-5 — Production Runtime Activation Gate (specification)
 
-**Phase:** PRD 06 B-5 — controlled non-production. **Baseline:** `origin/main @ 9684919`.
+**Phase:** PRD 06 B-5 — controlled non-production. **Baseline (re-grounded 2026-07-12):** `origin/main @ fff215b5bd004760ea0d81915c3d93ca128673ed`.
 **Gate status: NOT READY (default).** **B-5 builds this gate as documentation + a reference template + a blocker
 register + an evidence template + a readiness matrix + additive guard tests. B-5 does NOT activate runtime, does NOT
 modify backend source, does NOT modify `backend/control_plane/main.py`, and does NOT wire a runtime switch.**
+
+---
+
+## 0. Re-grounding note — current baseline, B5 arc, IC-002 lifecycle (2026-07-12)
+
+**Current verified baseline:** `HEAD == main == origin/main == fff215b5bd004760ea0d81915c3d93ca128673ed`.
+This note re-grounds the gate specification below (originally authored at an earlier baseline). The gate's
+fail-closed **NOT READY** production posture is **unchanged** — the re-grounding records the B5
+runtime-readiness work that has since landed on `main`, distinguishes the evidence it supplies from the
+evidence still owed, and keeps every activation blocker OPEN.
+
+**B5 runtime-readiness arc (all merged to `main`; fully closed / arc-closed):**
+
+| Slice | PR | Status |
+|---|---|---|
+| B5-1 — Control-Plane read-edge serve seam (`build_read_server_from_env`) | #69 | fully closed |
+| B5-2 — serve-lifecycle entrypoints (`serve_authenticate_api` / `serve_dispatch_api`) | #70 | fully closed |
+| B5-3 — live-wire denial semantics (404 → None; `/federation` route) | #71 | fully closed |
+| B5-4 — standing local physical topology (Control DB + two Ready tenants at database granularity) | #72 | fully closed; standing topology retained |
+| B5-5 — Smoke C specification (SMOKE-C-SPEC-01) + RS256 mint fixture | #73 | fully closed |
+| B5-4A — standing authentication fixture (memberships + non-Ready `b5_standing_dormant`) | #74 | fully closed; standing auth fixture retained |
+| Smoke C V2 — integrated live proof, **including Fix R3** target-branch cleanup | #75 | fully arc-closed |
+
+**What Smoke C V2 (including Fix R3) proves — at database granularity, over the standing fixture:**
+
+```text
+fresh RS256 token
+  -> API Gateway
+  -> Auth Router
+  -> Control Plane read edge
+  -> Database Router
+  -> exactly one physical tenant database
+```
+
+for **both** standing tenant databases (`sp2_tenant_b5_standing_alpha`, `sp2_tenant_b5_standing_beta`):
+alpha routes only to alpha's database and beta only to beta's. The seven failure-mode rows also hold —
+known non-Ready `b5_standing_dormant` → `tenant_not_ready`; unknown tenant → `tenant_access_denied`; wrong
+tenant carrier → `carrier_mismatch`; bad signature / unknown `kid` / unknown issuer → 401; read edge stopped
+→ `control_plane_unavailable` (503) — every denial performs **zero** tenant dispatch, **zero** pool
+acquisition and **zero** tenant-database connection, and the complete before-state equals the after-state
+exactly (**zero mutation**).
+
+**Scope of that evidence (do not overclaim):**
+
+```text
+Smoke C V2 including Fix R3 supplies database-granularity evidence.
+It does not itself close B5-BLK-4.
+```
+
+Database granularity means **distinct physical databases on one local admin cluster**. It is **NOT**
+cluster-level / multi-cluster distinctness, **NOT** production deployment or supervision, and **NOT** an
+MVP-completion claim. The following remain **OPEN** and separate:
+
+- **B5-BLK-4** — **OPEN** — a separate, **Dan-authorized closure decision** is required (evidence that now
+  supports a *future* closure review is enumerated in `b5_activation_blockers.md`; this is not closure).
+- **Physical Multi-Database MVP** — **mandatory and NOT complete**; final acceptance is a separate decision.
+- **Durable routing audit (DBR-AR-2)** — **OPEN**; routing/auth audit evidence in Smoke C V2 is in-memory only.
+- **Production deployment / supervision** — **OPEN** (deployment evidence required).
+- **Lovable / API-Gateway cutover** — separate track (interim Supabase/RLS; B5-BLK-5 / B5-BLK-6).
+- **AI Agent implementation** and **product billing / fees** — separate future tracks.
+
+**Next step:** a separate Dan-authorized **B5-BLK-4 / Physical Multi-Database MVP closure review**. This
+re-grounding neither performs nor bypasses that decision.
+
+**IC-002 tenant lifecycle — eight authoritative states** (copied from
+`contracts/IC-002-Tenant-Startup-Contract.md`; the `Quarantined` state was added 2026-07-06 under PRD
+07D-2b.2-A, so the lifecycle now enumerates **eight** authoritative states):
+
+```text
+Registered · Provisioning · Verifying · Ready · Suspended · Failed · Quarantined · Decommissioned
+```
+
+Only `Ready` is routable. Key transitions: `Registered → Provisioning → Verifying → Ready`;
+`Verifying → Failed`; `Verifying → Quarantined` (automatic, on isolation-class anomaly);
+`Failed → Verifying` (audited RecoverTenant); `Provisioning | Failed → Quarantined`;
+`Ready → Suspended` and `Suspended → Verifying → Ready`;
+`Registered | Provisioning | Suspended | Failed | Quarantined → Decommissioned`. **`Quarantined` has
+exactly one egress — `Quarantined → Decommissioned` — and never returns toward `Verifying` / `Ready`; the
+direct `Ready → Decommissioned` transition is removed (a `Ready` tenant is `Suspended` first).**
 
 ---
 
@@ -45,7 +124,7 @@ database references      CONTROL_DB_REF, TENANT_DB_<TENANT>_REF (D-14 secret-sto
 auth references          JWT_ISSUER_REF, OIDC_PROVIDER_REF (IC-005)
 audit reference          AUDIT_SINK_REF (provisioning audit sink — B-6; a blocker until built)
 rollback reference       ROLLBACK_PLAN_REF
-control-plane signals    tenant lifecycle/readiness state (IC-002 7 states), distinctness evidence (IC-010 §P)
+control-plane signals    tenant lifecycle/readiness state (IC-002 8 states), distinctness evidence (IC-010 §P)
 target environment       must be non-production for any B-5-era exercise
 ```
 
@@ -127,7 +206,7 @@ The current fail-closed NotImplementedError deferral remains active and is pinne
 
 ## 12. Governing references
 
-IC-001 (audit references-only) · IC-002 (7-state lifecycle / readiness) · IC-005 (auth references) · IC-010 §O
+IC-001 (audit references-only) · IC-002 (8-state lifecycle / readiness) · IC-005 (auth references) · IC-010 §O
 (physical multi-DB mandatory) / §P (distinctness verification hook) / §H,§M (router boundary) / §I (gateway sole
 ingress) · D-07 (registry-authoritative) · D-14 (secret references) · D-15 (provisioning ownership) · D-17 (schema
 migration) · D-30 (cross-tenant isolation) · CLAUDE.md #4 (infrastructure independent of backend).
