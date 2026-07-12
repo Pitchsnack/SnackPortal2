@@ -87,6 +87,30 @@ _GATE_DOCS = (_GATE_DOC, _BLOCKERS_DOC, _MATRIX_DOC)
 
 _CURRENT_BASELINE = "fff215b5bd004760ea0d81915c3d93ca128673ed"
 _STALE_BASELINE = "9684919"
+
+# ---------------------------------------------------------------------------
+# B5-E closure decision pins (2026-07-12). Dan authorized the separate closure
+# review (PRD B5-E); it recorded Decision A (B5-BLK-4 closed — evidence-bound
+# governance decision) and Decision B (Physical Multi-Database MVP accepted at
+# database granularity) in all three gate documents at the decision baseline.
+# The guards below evolve the B5-D pins: closure/acceptance wording is allowed
+# ONLY in B5-E-anchored scoped decision sentences; unanchored closure claims,
+# unauthorized reopening, other-blocker closures, unqualified MVP completion,
+# stale blocker counts, baseline regression, and boundary erosion all reject.
+# Each detector keeps a planted non-vacuity companion.
+# ---------------------------------------------------------------------------
+_DECISION_BASELINE = "84882c77cfe409bab0af454b4411cf65795bcbfd"
+_B5E_ANCHOR = "b5-e"
+_DECISION_A_SENTENCE = "decision a (b5-e, 2026-07-12, dan-authorized): b5-blk-4 — closed — evidence-bound governance decision"
+_DECISION_B_SENTENCE = "decision b (b5-e, 2026-07-12, dan-authorized): physical multi-database mvp — accepted at database granularity"
+_SCOPED_MVP_ACCEPTANCE = "accepted at database granularity"
+_MVP_BOUNDARY_SENTENCE = (
+    "mvp acceptance at database granularity is not cluster-level proof, not production deployment,"
+    " not production activation, not lovable cutover, not billing completion, and not ai agent completion"
+)
+_DBR_SENTENCE = "dbr-ar-2 (durable routing audit) remains open — a separate database router follow-on"
+_FAIL_CLOSED_SENTENCE = "production runtime activation remains not ready / do-not-activate — 8 of 9 activation blockers remain open"
+_NEXT_STEP_SENTENCE = "next step: the next dan-authorized governed slice"
 _IC002_STATES = (
     "Registered",
     "Provisioning",
@@ -149,15 +173,37 @@ def _has_current_baseline(text: str) -> bool:
     return _CURRENT_BASELINE in text
 
 
+def _decision_baseline_pinned(doc_text: str) -> bool:
+    """Every 'decision baseline' line must carry EXACTLY the B5-E decision SHA; at least one such line."""
+    found = False
+    for line in doc_text.lower().splitlines():
+        if "decision baseline" in line:
+            if _DECISION_BASELINE not in line:
+                return False
+            found = True
+    return found
+
+
 def test_b5d_01_baseline_regrounded() -> None:
     t = _gate_docs_text()
     assert not _has_stale_baseline(t), "stale baseline 9684919 must not reappear in the B5 gate docs"
-    assert _has_current_baseline(t), "current baseline fff215b… must be recorded"
+    assert _has_current_baseline(t), "the historic re-ground baseline fff215b… must stay recorded"
+    for doc in _GATE_DOCS:
+        assert _decision_baseline_pinned(doc.read_text(encoding="utf-8")), (
+            f"{doc.name} must pin the B5-E decision baseline 84882c7… on every 'decision baseline' line"
+        )
 
 
 def test_b5d_01_baseline_nonvacuity() -> None:
     assert _has_stale_baseline("Baseline: origin/main @ 9684919"), "guard must detect a reverted baseline"
     assert not _has_current_baseline("Baseline: origin/main @ 9684919")
+    # B5-E: the decision baseline is pinned per document and cannot regress.
+    assert _decision_baseline_pinned(f"decision baseline `origin/main @ {_DECISION_BASELINE}` (B5-E)")
+    assert not _decision_baseline_pinned(f"decision baseline `origin/main @ {_CURRENT_BASELINE}`")
+    assert not _decision_baseline_pinned("a document with no decision-baseline line at all")
+    assert not _decision_baseline_pinned(
+        f"decision baseline `origin/main @ {_DECISION_BASELINE}`\ndecision baseline `origin/main @ {_STALE_BASELINE}aaaa`"
+    )
 
 
 # --- G2: IC-002 eight-state lifecycle (reject reversion to seven) -----------
@@ -338,8 +384,13 @@ _B5BLK4_CLOSURE_WORD_RE = re.compile(r"\b(?:" + "|".join(_B5BLK4_CLOSURE_WORDS) 
 
 
 def _b5blk4_marked_closed(text: str) -> bool:
+    """B5-E evolution: an UNANCHORED closure claim rejects. A line carrying the
+    B5-E decision anchor is the scoped decision wording the closure review
+    authorized; every other closure assertion on a B5-BLK-4 line is drift."""
     for raw in text.lower().splitlines():
         if "b5-blk-4" not in raw:
+            continue
+        if _B5E_ANCHOR in raw:
             continue
         line = _B5BLK4_NEGATION_MASK.sub(" <negated> ", raw.replace("*", ""))
         if any(phrase in line for phrase in _B5BLK4_CLOSURE_PHRASES):
@@ -349,19 +400,44 @@ def _b5blk4_marked_closed(text: str) -> bool:
     return False
 
 
-def test_b5d_06_b5blk4_open() -> None:
+# B5-E: a CLOSED blocker must not be silently reopened. Adjacency-bounded so a
+# different-subject OPEN on the same line (DBR-AR-2, the other blockers, "8 of 9
+# blockers remain OPEN") never false-positives.
+_B5BLK4_REOPEN_RE = re.compile(
+    r"\bb5-blk-4\b\W{0,6}(?:\([^)]{0,40}\)\W{0,6})?(?:is\s+|remains\s+|stays\s+|now\s+|still\s+)?(?:re)?open(?:ed)?\b"
+)
+
+
+def _b5blk4_reopened(text: str) -> bool:
+    low = text.replace("*", "").lower()
+    return any(_B5BLK4_REOPEN_RE.search(line) for line in low.splitlines())
+
+
+def _register_row_records_closure(register_text: str) -> bool:
+    """The register's B5-BLK-4 table row must carry the anchored CLOSED status cell."""
+    for raw in register_text.lower().splitlines():
+        stripped = raw.replace("*", "").strip()
+        if stripped.startswith("| b5-blk-4"):
+            return "closed (b5-e" in stripped
+    return False
+
+
+def test_b5d_06_b5blk4_closure_decision() -> None:
     t = _gate_docs_text()
-    assert not _b5blk4_marked_closed(t), "B5-BLK-4 must not be marked closed/resolved/satisfied/cleared/lifted/etc."
+    assert not _b5blk4_marked_closed(t), "no unanchored B5-BLK-4 closure claim may appear outside the B5-E scoped wording"
+    assert not _b5blk4_reopened(t), "B5-BLK-4 was closed by the B5-E decision and must not be silently reopened"
     assert "does not itself close B5-BLK-4" in t, "the required B5-BLK-4 governing sentence must be present"
-    # Positive OPEN anchor: at least one line must still assert B5-BLK-4 OPEN
-    # (a status-cell rewrite that silently drops every OPEN marker is caught).
-    assert any("b5-blk-4" in ln and "open" in ln for ln in t.lower().splitlines()), "at least one line must record B5-BLK-4 as OPEN"
-    # Fix R1 per-document anchor: each of the three docs must carry the governing
-    # sentence ITSELF — a sibling document cannot satisfy a missing disclaimer.
+    assert _register_row_records_closure(_BLOCKERS_DOC.read_text(encoding="utf-8")), (
+        "the blocker register's B5-BLK-4 row must record the anchored CLOSED (B5-E…) status"
+    )
+    # Per-document anchors: each doc carries the governing sentence AND the exact
+    # Decision A sentence itself — a sibling document cannot mask either.
     for doc in _GATE_DOCS:
-        assert _contains_governing_sentence(doc.read_text(encoding="utf-8")), (
+        text = doc.read_text(encoding="utf-8")
+        assert _contains_governing_sentence(text), (
             f"the governing sentence (database-granularity evidence / does not itself close B5-BLK-4) must be present in {doc.name} itself"
         )
+        assert _DECISION_A_SENTENCE in _normalized_doc(text), f"the exact Decision A sentence must be present in {doc.name} itself"
 
 
 def test_b5d_06_b5blk4_nonvacuity() -> None:
@@ -404,6 +480,31 @@ def test_b5d_06_b5blk4_nonvacuity() -> None:
     assert not _b5blk4_marked_closed("B5-BLK-4 must not be marked closed until the Dan review completes.")
     assert not _b5blk4_marked_closed("B5-BLK-4 is neither closed nor resolved; the gate stays DO-NOT-ACTIVATE.")
     assert not _b5blk4_marked_closed("closure of B5-BLK-4 is a separate Dan-authorized decision (or an explicit approved waiver).")
+    # B5-E: the anchored scoped decision wording is allowed; unanchored closure stays drift.
+    assert not _b5blk4_marked_closed(
+        "Decision A (B5-E, 2026-07-12, Dan-authorized): B5-BLK-4 — CLOSED — EVIDENCE-BOUND GOVERNANCE DECISION."
+    )
+    assert _b5blk4_marked_closed("B5-BLK-4 — CLOSED — EVIDENCE-BOUND GOVERNANCE DECISION.")  # anchor missing → drift
+    # B5-E: silent reopening is rejected; different-subject OPEN on the same line is not.
+    assert _b5blk4_reopened("B5-BLK-4 — OPEN")
+    assert _b5blk4_reopened("B5-BLK-4 remains OPEN.")
+    assert _b5blk4_reopened("**B5-BLK-4** OPEN")
+    assert _b5blk4_reopened("B5-BLK-4 (B5-E) is reopened")
+    assert not _b5blk4_reopened("Decision A (B5-E, 2026-07-12, Dan-authorized): B5-BLK-4 — CLOSED — EVIDENCE-BOUND GOVERNANCE DECISION.")
+    assert not _b5blk4_reopened("8 of 9 activation blockers remain OPEN; the B5-E closure of B5-BLK-4 changes no other blocker")
+    assert not _b5blk4_reopened("DBR-AR-2 remains OPEN; it was not part of the B5-BLK-4 closure evidence bar")
+    assert not _b5blk4_reopened("retain their authoring-time open-status wording for B5-BLK-4 by design")
+    # B5-E: the register row pin fires when the status cell loses the anchored closure.
+    assert _register_row_records_closure(
+        "| **B5-BLK-4** | desc | Major | Control Plane | evidence | **CLOSED (B5-E, 2026-07-12, Dan-authorized)** | NO |"
+    )
+    assert not _register_row_records_closure("| **B5-BLK-4** | desc | Major | Control Plane | evidence | OPEN | YES |")
+    assert not _register_row_records_closure("a register with no B5-BLK-4 row at all")
+    # B5-E: each document's own Decision A sentence anchor is non-vacuous.
+    for doc in _GATE_DOCS:
+        norm_doc = _normalized_doc(doc.read_text(encoding="utf-8"))
+        assert _DECISION_A_SENTENCE in norm_doc, doc.name
+        assert _DECISION_A_SENTENCE not in norm_doc.replace(_DECISION_A_SENTENCE, ""), doc.name
     # Fix R1 per-document governing-sentence anchor is non-vacuous: removing either
     # sentence from a document's own text fails that document's anchor.
     for doc in _GATE_DOCS:
@@ -470,10 +571,17 @@ def _claims_mvp_complete(text: str) -> bool:
     # Subject scope: within these three gate documents "MVP" always denotes the
     # Physical Multi-Database MVP, so any MVP line is in scope (a shortened
     # "the MVP is complete" must not slip past a qualifier filter).
+    # B5-E evolution: the EXACT scoped acceptance phrase on a B5-E-anchored line
+    # is the authorized Decision B wording and is masked per occurrence; every
+    # other completion/readiness/acceptance claim (including an UNANCHORED or
+    # UNQUALIFIED "accepted") still rejects.
     for raw in text.lower().splitlines():
         if "mvp" not in raw:
             continue
-        line = _MVP_NEGATION_MASK.sub(" <negated> ", raw.replace("*", ""))
+        line = raw.replace("*", "")
+        if _B5E_ANCHOR in line:
+            line = line.replace(_SCOPED_MVP_ACCEPTANCE, " <scoped-acceptance> ")
+        line = _MVP_NEGATION_MASK.sub(" <negated> ", line)
         if _MVP_LINKED_CLAIM.search(line) or _MVP_ADJACENT_CLAIM.search(line) or _MVP_REVERSE_CLAIM.search(line):
             return True
         if _MVP_PREDICATE_CLAIM.search(line):
@@ -483,8 +591,17 @@ def _claims_mvp_complete(text: str) -> bool:
 
 def test_b5d_07_mvp_not_complete() -> None:
     t = _gate_docs_text()
-    assert not _claims_mvp_complete(t), "the Physical Multi-Database MVP must not be claimed complete/ready/accepted/etc."
-    assert "mandatory and NOT complete" in t, "MVP must be recorded as mandatory and NOT complete"
+    assert not _claims_mvp_complete(t), (
+        "outside the B5-E scoped Decision B wording, the Physical Multi-Database MVP must not be claimed complete/ready/etc."
+    )
+    low_norm = _normalized_doc(t)
+    assert "remains mandatory and binding" in low_norm, "the IC-010 §O MVP mandate must remain recorded as binding"
+    # Per-document anchors: the exact Decision B sentence AND the acceptance
+    # boundary sentence must live in EVERY gate doc itself.
+    for doc in _GATE_DOCS:
+        norm_doc = _normalized_doc(doc.read_text(encoding="utf-8"))
+        assert _DECISION_B_SENTENCE in norm_doc, f"the exact Decision B sentence must be present in {doc.name} itself"
+        assert _MVP_BOUNDARY_SENTENCE in norm_doc, f"the MVP acceptance boundary sentence must be present in {doc.name} itself"
 
 
 def test_b5d_07_mvp_nonvacuity() -> None:
@@ -528,6 +645,23 @@ def test_b5d_07_mvp_nonvacuity() -> None:
     # Negation still governs the shortened subject and predicate scans.
     assert not _claims_mvp_complete("The MVP is not complete.")
     assert not _claims_mvp_complete("The MVP has not shipped; the closure review remains separate.")
+    # B5-E: the anchored scoped Decision B wording is allowed; anything else still fires.
+    assert not _claims_mvp_complete(
+        "Decision B (B5-E, 2026-07-12, Dan-authorized): Physical Multi-Database MVP — ACCEPTED AT DATABASE GRANULARITY."
+    )
+    assert _claims_mvp_complete("Physical Multi-Database MVP — ACCEPTED AT DATABASE GRANULARITY.")  # anchor missing
+    assert _claims_mvp_complete("The Physical Multi-Database MVP is accepted (B5-E).")  # qualifier missing
+    assert _claims_mvp_complete("Physical Multi-Database MVP accepted at cluster level (B5-E).")  # wrong granularity
+    assert _claims_mvp_complete("The Physical Multi-Database MVP is complete (B5-E).")  # acceptance is never 'complete'
+    # The boundary sentence never neutralizes an overclaim elsewhere on the line's document,
+    # and each document's own Decision B / boundary anchors are non-vacuous.
+    for doc in _GATE_DOCS:
+        norm_doc = _normalized_doc(doc.read_text(encoding="utf-8"))
+        assert _DECISION_B_SENTENCE in norm_doc, doc.name
+        assert _DECISION_B_SENTENCE not in norm_doc.replace(_DECISION_B_SENTENCE, ""), doc.name
+        assert _MVP_BOUNDARY_SENTENCE in norm_doc, doc.name
+        assert _MVP_BOUNDARY_SENTENCE not in norm_doc.replace(_MVP_BOUNDARY_SENTENCE, ""), doc.name
+    assert "remains mandatory and binding" not in _normalized_doc(_gate_docs_text()).replace("remains mandatory and binding", "")
 
 
 # --- G8: database-granularity not mislabeled cluster-level -------------------
@@ -669,6 +803,12 @@ def test_b5d_09_routing_audit_open() -> None:
     t = _gate_docs_text()
     assert not _claims_routing_audit_complete(t), "the durable routing audit (DBR-AR-2) must not be claimed complete"
     assert "DBR-AR-2" in t, "the durable routing audit DBR-AR-2 must be recorded as open"
+    # B5-E: DBR-AR-2's exact status sentence is pinned PER DOCUMENT — the B5-E
+    # closure of B5-BLK-4 must not absorb, drop, or downgrade the separate follow-on.
+    for doc in _GATE_DOCS:
+        assert _DBR_SENTENCE in _normalized_doc(doc.read_text(encoding="utf-8")), (
+            f"the exact DBR-AR-2 open/separate-follow-on sentence must be present in {doc.name} itself"
+        )
 
 
 def test_b5d_09_routing_audit_nonvacuity() -> None:
@@ -679,6 +819,12 @@ def test_b5d_09_routing_audit_nonvacuity() -> None:
     assert _claims_routing_audit_complete("The durable routing audit is wired and achieved")
     assert not _claims_routing_audit_complete("Durable routing audit (DBR-AR-2) remains OPEN, in-memory only")
     assert not _claims_routing_audit_complete("DBR-AR-2 not yet wired; still absent")
+    # B5-E: the per-document DBR-AR-2 sentence anchor is non-vacuous.
+    for doc in _GATE_DOCS:
+        norm_doc = _normalized_doc(doc.read_text(encoding="utf-8"))
+        assert _DBR_SENTENCE in norm_doc, doc.name
+        assert _DBR_SENTENCE not in norm_doc.replace(_DBR_SENTENCE, ""), doc.name
+    assert _DBR_SENTENCE not in _normalized_doc("dbr-ar-2 is a separate follow-on with no recorded status")
 
 
 # --- G10: production deployment not complete --------------------------------
@@ -801,29 +947,138 @@ def test_b5d_11_lovable_nonvacuity() -> None:
     assert not _claims_lovable_cutover_complete("the RPC seam is to be re-pointed at the API Gateway at cutover (pending)")
 
 
-# --- G12: next step is the SEPARATE Dan-authorized closure decision ----------
-def _states_separate_closure_next_step(text: str) -> bool:
-    # Line-scoped: the NEXT-STEP statement must itself tie to the separate closure
-    # decision. Coarse corpus-wide co-occurrence would not catch a bypass, since
-    # "separate"/"closure"/"dan-authorized" also appear in unrelated sentences.
+# --- G12: next step stays the governed, Dan-authorized sequence --------------
+# B5-E evolution: the closure review has been performed; the pinned next step is
+# now the next Dan-authorized governed slice (deployment-scope blockers,
+# product/integration track, or the DBR-AR-2 follow-on PRD) — never a bypass.
+def _states_governed_next_step(text: str) -> bool:
+    # Line-scoped: the NEXT-STEP statement must itself commit to the governed,
+    # Dan-authorized sequence. Coarse corpus-wide co-occurrence would not catch
+    # a bypass, since the words also appear in unrelated sentences.
     for line in text.lower().splitlines():
-        if "next" in line and "closure" in line and ("separate" in line or "dan-authorized" in line or "dan authorized" in line):
+        if "next step" in line and "dan-authorized" in line and "governed" in line:
             return True
     return False
 
 
 def test_b5d_12_next_step_separate_closure() -> None:
     t = _gate_docs_text()
-    assert _states_separate_closure_next_step(t), "docs must state the next step is a separate Dan-authorized closure decision"
+    assert _states_governed_next_step(t), "docs must state the next step is the next Dan-authorized governed slice"
+    for doc in _GATE_DOCS:
+        assert _NEXT_STEP_SENTENCE in _normalized_doc(doc.read_text(encoding="utf-8")), (
+            f"the exact next-step sentence must be present in {doc.name} itself"
+        )
     low = t.lower()
     assert "does not perform" in low or "neither performs nor bypasses" in low or "does not perform or bypass" in low, (
-        "docs must state this re-grounding does not perform/bypass the separate closure decision"
+        "docs must state the re-grounding did not perform/bypass the separate closure decision"
     )
 
 
 def test_b5d_12_next_step_nonvacuity() -> None:
-    assert not _states_separate_closure_next_step("Next step: activate production runtime now")
-    assert _states_separate_closure_next_step("the next step is a separate Dan-authorized closure review")
+    assert not _states_governed_next_step("Next step: activate production runtime now")
+    assert not _states_governed_next_step("the next step is a separate Dan-authorized closure review")  # pre-B5-E wording
+    assert _states_governed_next_step(
+        "Next step: the next Dan-authorized governed slice; every remaining activation blocker is deployment-scope"
+    )
+    for doc in _GATE_DOCS:
+        norm_doc = _normalized_doc(doc.read_text(encoding="utf-8"))
+        assert _NEXT_STEP_SENTENCE in norm_doc, doc.name
+        assert _NEXT_STEP_SENTENCE not in norm_doc.replace(_NEXT_STEP_SENTENCE, ""), doc.name
+
+
+# --- G13 (B5-E): unrelated blockers keep their exact live statuses -----------
+_OTHER_BLOCKER_IDS = tuple(f"b5-blk-{i}" for i in (1, 2, 3, 5, 6, 7, 8, 9))
+
+
+def _other_blocker_marked_closed(text: str) -> bool:
+    """No blocker other than B5-BLK-4 may carry closure wording — B5-E has no
+    authority over them and there is no anchored allowance for any other id."""
+    for raw in text.lower().splitlines():
+        if not any(b in raw for b in _OTHER_BLOCKER_IDS):
+            continue
+        line = _B5BLK4_NEGATION_MASK.sub(" <negated> ", raw.replace("*", ""))
+        if any(phrase in line for phrase in _B5BLK4_CLOSURE_PHRASES):
+            return True
+        if _B5BLK4_CLOSURE_WORD_RE.search(line):
+            return True
+    return False
+
+
+def _register_row_is_open(register_text: str, blocker_id: str) -> bool:
+    for raw in register_text.lower().splitlines():
+        stripped = raw.replace("*", "").strip()
+        if stripped.startswith(f"| {blocker_id} ") and "| open |" in stripped:
+            return True
+    return False
+
+
+def test_b5e_13_unrelated_blockers_unchanged() -> None:
+    t = _gate_docs_text()
+    assert not _other_blocker_marked_closed(t), "no blocker other than B5-BLK-4 may be marked closed by the B5-E decision"
+    reg = _BLOCKERS_DOC.read_text(encoding="utf-8")
+    for i in (1, 2, 3, 5, 6, 7, 8, 9):
+        assert _register_row_is_open(reg, f"b5-blk-{i}"), f"B5-BLK-{i} must remain OPEN on its register row"
+
+
+def test_b5e_13_unrelated_blockers_nonvacuity() -> None:
+    assert _other_blocker_marked_closed("B5-BLK-2 is now closed")
+    assert _other_blocker_marked_closed("| **B5-BLK-7** | ... | CLOSED | YES |")
+    assert _other_blocker_marked_closed("B5-BLK-5 no longer blocks activation")
+    assert _other_blocker_marked_closed("the fleet work satisfies B5-BLK-2")
+    assert not _other_blocker_marked_closed("B5-BLK-2 is not closed; production fleet evidence is still required")
+    assert not _other_blocker_marked_closed(
+        "every remaining activation blocker is deployment-scope (B5-BLK-2/3/7/8/9) or product/integration-track (B5-BLK-5/6)"
+    )
+    assert _register_row_is_open("| **B5-BLK-2** | desc | Critical | Infra | evidence | OPEN | YES |", "b5-blk-2")
+    assert not _register_row_is_open("| **B5-BLK-2** | desc | Critical | Infra | evidence | CLOSED | YES |", "b5-blk-2")
+    assert not _register_row_is_open("no such row", "b5-blk-2")
+
+
+# --- G14 (B5-E): blocker counts agree and activation stays fail-closed -------
+_ACTIVATION_READY_PHRASES = (
+    "gate is ready",
+    "gate: ready",
+    "activation is ready",
+    "ready to activate",
+    "ready for activation",
+    "activation approved",
+    "activation authorized",
+    "activate now",
+    "standing decision: activate",
+    "standing decision is activate",
+)
+
+
+def _claims_activation_ready(text: str) -> bool:
+    low = text.lower()
+    return any(p in low for p in _ACTIVATION_READY_PHRASES)
+
+
+def test_b5e_14_fail_closed_and_counts() -> None:
+    t = _gate_docs_text()
+    assert not _claims_activation_ready(t), "production activation must not be claimed ready while blockers remain open"
+    assert "9 / 9" not in t, "the stale 9 / 9 blocker count must not persist after the B5-E closure"
+    reg = _BLOCKERS_DOC.read_text(encoding="utf-8")
+    assert "NOT READY (8 / 9 blockers OPEN" in reg, "the register must record the recalculated 8 / 9 open count"
+    for doc in _GATE_DOCS:
+        assert _FAIL_CLOSED_SENTENCE in _normalized_doc(doc.read_text(encoding="utf-8")), (
+            f"the fail-closed activation sentence must be present in {doc.name} itself"
+        )
+
+
+def test_b5e_14_fail_closed_nonvacuity() -> None:
+    for phrase in _ACTIVATION_READY_PHRASES:
+        assert _claims_activation_ready(f"Status: {phrase}."), phrase
+    assert not _claims_activation_ready("decision   ACTIVATE / DO-NOT-ACTIVATE (default DO-NOT-ACTIVATE)")
+    assert not _claims_activation_ready("A request to activate is READY only if all of the following are proven")
+    assert not _claims_activation_ready("Production runtime activation remains NOT READY / DO-NOT-ACTIVATE")
+    for doc in _GATE_DOCS:
+        norm_doc = _normalized_doc(doc.read_text(encoding="utf-8"))
+        assert _FAIL_CLOSED_SENTENCE in norm_doc, doc.name
+        assert _FAIL_CLOSED_SENTENCE not in norm_doc.replace(_FAIL_CLOSED_SENTENCE, ""), doc.name
+    assert _FAIL_CLOSED_SENTENCE not in _normalized_doc(
+        "production runtime activation remains not ready / do-not-activate — 9 of 9 activation blockers remain open"
+    )
 
 
 if __name__ == "__main__":
@@ -843,7 +1098,7 @@ if __name__ == "__main__":
             test_b5d_04_b5_4a_nonvacuity,
             test_b5d_05_pr75_fixr3_present,
             test_b5d_05_pr75_fixr3_nonvacuity,
-            test_b5d_06_b5blk4_open,
+            test_b5d_06_b5blk4_closure_decision,
             test_b5d_06_b5blk4_nonvacuity,
             test_b5d_07_mvp_not_complete,
             test_b5d_07_mvp_nonvacuity,
@@ -857,5 +1112,9 @@ if __name__ == "__main__":
             test_b5d_11_lovable_nonvacuity,
             test_b5d_12_next_step_separate_closure,
             test_b5d_12_next_step_nonvacuity,
+            test_b5e_13_unrelated_blockers_unchanged,
+            test_b5e_13_unrelated_blockers_nonvacuity,
+            test_b5e_14_fail_closed_and_counts,
+            test_b5e_14_fail_closed_nonvacuity,
         ]
     )
