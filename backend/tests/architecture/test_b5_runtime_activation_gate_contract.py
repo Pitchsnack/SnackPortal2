@@ -98,6 +98,14 @@ _STALE_BASELINE = "9684919"
 # unauthorized reopening, other-blocker closures, unqualified MVP completion,
 # stale blocker counts, baseline regression, and boundary erosion all reject.
 # Each detector keeps a planted non-vacuity companion.
+#
+# B5-E Fix R1 hardening (2026-07-12, PRD B5-E Fix R1): the independent pre-merge
+# verification proved required mutations #19/#20 escaped — the §5-not-waived
+# sentence was the only B5-E decision sentence with no per-document pin and no
+# polarity guard, and G6's waiver vocabulary fires only on lines carrying the
+# literal token `b5-blk-4`. G15 adds the exact per-document non-waiver sentence
+# anchor plus a corpus-wide affirmative-waiver detector that does NOT require
+# the B5-BLK-4 token (see the G15 section header for its allow rules).
 # ---------------------------------------------------------------------------
 _DECISION_BASELINE = "84882c77cfe409bab0af454b4411cf65795bcbfd"
 _B5E_ANCHOR = "b5-e"
@@ -1081,6 +1089,191 @@ def test_b5e_14_fail_closed_nonvacuity() -> None:
     )
 
 
+# --- G15 (B5-E Fix R1): §5 non-waiver posture — exact per-document sentence ---
+# anchor + corpus-wide affirmative-waiver detector.
+# The exact normalized non-waiver sentence must be present in EVERY gate doc
+# itself (a sibling document cannot satisfy a deleted, flipped, shortened, or
+# rewritten sentence), and no affirmative waiver claim may appear anywhere in
+# the three-document corpus — the detector is deliberately NOT scoped to lines
+# carrying the `b5-blk-4` token. Allowed and masked before detection: the §5
+# conditional noun phrase "or an explicit, approved waiver", explicitly negated
+# wording ("is not waived", "does not waive", "no waiver", "is not a waiver",
+# "does not constitute a waiver"), and subjunctive/hypothetical forms ("an
+# explicit approved waiver would be required", "could waive"). Finite
+# vocabularies only — as declared for the guards above, a paraphrase outside
+# the pinned grant/release/effect vocabulary is out of detection scope.
+_WAIVER_SENTENCE = (
+    'the gate §5 activation condition "provisioning audit sink available (b-6) — or an explicit,'
+    ' approved waiver" remains binding at activation time and is not waived by the b5-e closure'
+)
+_WAIVER_LEGAL_CONDITIONAL = "or an explicit, approved waiver"
+_WAIVER_RELEASE_SCOPE_TERMS = ("audit sink", "audit-sink", "§5", "activation condition", "availability condition")
+_WAIVER_RELEASE_WORDS = ("lifted", "suspended", "bypassed", "discharged", "removed", "vacated")
+_WAIVER_EFFECT_WORDS = ("granted", "approved", "authorized", "authorised", "recorded", "issued", "effective")
+_WAIVER_GRANT_VERBS = ("constitutes", "constitute", "grants", "grant", "approves", "authorizes", "authorises", "issues")
+_WAIVER_GRANT_PAST_VERBS = ("constituted", "granted", "approved", "authorized", "authorised", "recorded", "issued")
+_WAIVER_NEGATION_MASKS = (
+    # explicitly negated participles: "not waived", "cannot be waived", "never bypassed", …
+    re.compile(
+        r"\b(?:not|never|neither|nor|cannot\s+be|can\s+never\s+be)\s+(?:\w+\s+){0,2}?"
+        r"(?:waived|lifted|suspended|bypassed|discharged|removed|vacated)\b"
+    ),
+    # negated verb forms: "does not waive", "never waives", "not waiving", "without waiving"
+    re.compile(r"\b(?:does\s+not|do\s+not|did\s+not|not|never|cannot|without)\s+(?:\w+\s+){0,2}?waiv(?:e|es|ing)\b"),
+    # subjunctive/modal hypotheticals: "could waive", "would waive", "to waive"
+    re.compile(r"\b(?:to|can|could|may|might|would)\s+waive\b"),
+    # negated noun: "no waiver", "without a waiver", "no such waiver"
+    re.compile(r"\b(?:no|without(?:\s+an?y?)?|absent\s+an?y?)\s+(?:such\s+)?(?:explicit\s+)?(?:approved\s+)?waivers?\b"),
+    # "is not a waiver" / "was not an explicit approved waiver"
+    re.compile(r"\b(?:is|are|was|were)\s+not\s+(?:an?|the)\s+(?:[\w,§()'/-]+\s+){0,3}?waivers?\b"),
+    # negated granting verbs: "does not constitute", "never grants", …
+    re.compile(
+        r"\b(?:does\s+not|do\s+not|did\s+not|not|never|neither|nor)\s+(?:constitute|grant|approve|authorize|authorise|record|issue)s?\b"
+    ),
+    # subjunctive requirement: "an explicit approved waiver would be required …"
+    re.compile(r"\bwaivers?\s+would\b"),
+)
+# affirmative waive/waived/waives/waiving surviving the negation masks
+_WAIVER_AFFIRMED_RE = re.compile(r"\bwaived\b|\bwaiv(?:e|es|ing)\b")
+# granting verb → waiver: "constitutes an explicit approved waiver", "authorizes a waiver"
+_WAIVER_GRANTED_FORWARD_RE = re.compile(
+    r"\b(?:constitutes?|grants?|approves|authorizes?|authorises?|issues?)\s+(?:an?|the|this|that)?\s*(?:[\w,§()'/-]+\s+){0,4}?waivers?\b"
+)
+# past-tense granting verbs are adjectives in the legal phrase, so they require an
+# article/demonstrative before the noun: "approved the waiver", "granted a waiver"
+_WAIVER_GRANTED_PAST_RE = re.compile(
+    r"\b(?:constituted|granted|approved|authorized|authorised|recorded|issued)\s+(?:an?|the|this|that)\s+(?:[\w,§()'/-]+\s+){0,3}?waivers?\b"
+)
+# waiver in subject position with an affirmative effect predicate: "a waiver … has
+# been granted", "a waiver is in effect", "the waiver remains in force"
+_WAIVER_EFFECT_RE = re.compile(
+    r"\bwaivers?\b[^.;:]{0,80}?\b(?:has\s+been|have\s+been|is|are|was|were|now|hereby|stands?|remains|becomes?|became)\s+"
+    r"(?:\w+\s+){0,2}?(?:granted|approved|authorized|authorised|recorded|issued|effective)\b"
+    r"|\bwaivers?\s+(?:is\s+|are\s+|now\s+|currently\s+|remains\s+)?in\s+(?:effect|force|place)\b"
+)
+# X-is-a-waiver equations: "the START-GATE is an explicit approved waiver"
+_WAIVER_EQUATED_RE = re.compile(
+    r"\b(?:is|are|was|were|becomes?|became|remains|amounts\s+to|serves\s+as|acts\s+as|counts\s+as|operates\s+as|functions\s+as|qualifies\s+as)"
+    r"\s+(?:an?|the|this|that)\s+(?:[\w,§()'/-]+\s+){0,4}?waivers?\b"
+)
+# condition-release claims, scoped to lines about the §5/audit-sink condition so
+# unrelated lifecycle wording ("a Ready tenant is Suspended first") cannot false-positive
+_WAIVER_RELEASE_RE = re.compile(
+    r"\bno\s+longer\s+(?:binding|required|applies|needed|in\s+force|in\s+effect)\b"
+    r"|\b(?:is|are|was|were|has\s+been|have\s+been|hereby|now|stands?)\s+(?:\w+\s+){0,2}?"
+    r"(?:lifted|suspended|bypassed|discharged|removed|vacated|set\s+aside)\b"
+)
+
+
+def _affirms_waiver(text: str) -> bool:
+    """True when any line of the corpus makes an affirmative waiver claim: the §5
+    audit-sink condition waived/lifted/suspended/bypassed/no-longer-binding, a
+    waiver granted/approved/authorized/recorded/effective/in effect, or the B5-E
+    closure / Dan START-GATE constituting or authorizing a waiver."""
+    for raw in text.lower().splitlines():
+        line = raw.replace("*", "").replace(_WAIVER_LEGAL_CONDITIONAL, " <legal-conditional> ")
+        for mask in _WAIVER_NEGATION_MASKS:
+            line = mask.sub(" <negated> ", line)
+        if _WAIVER_AFFIRMED_RE.search(line):
+            return True
+        if _WAIVER_GRANTED_FORWARD_RE.search(line) or _WAIVER_GRANTED_PAST_RE.search(line):
+            return True
+        if _WAIVER_EFFECT_RE.search(line) or _WAIVER_EQUATED_RE.search(line):
+            return True
+        if any(term in line for term in _WAIVER_RELEASE_SCOPE_TERMS) and _WAIVER_RELEASE_RE.search(line):
+            return True
+    return False
+
+
+def test_b5e_15_waiver_posture_pinned() -> None:
+    t = _gate_docs_text()
+    assert not _affirms_waiver(t), (
+        "no affirmative waiver claim (B5-E/START-GATE-as-waiver, waiver granted/approved/in effect,"
+        " §5 condition waived/lifted/suspended/bypassed/no-longer-binding) may appear in the gate docs"
+    )
+    for doc in _GATE_DOCS:
+        assert _WAIVER_SENTENCE in _normalized_doc(doc.read_text(encoding="utf-8")), (
+            f"the exact gate-§5 non-waiver sentence must be present in {doc.name} itself"
+        )
+
+
+def test_b5e_15_waiver_nonvacuity() -> None:
+    # PRD B5-E Fix R1 §6 required-fail set — every claim class fires.
+    assert _affirms_waiver("The gate §5 activation condition is waived by the B5-E closure.")
+    assert _affirms_waiver("The B5-E closure waives the production audit-sink availability condition.")
+    assert _affirms_waiver("The Dan B5-E START-GATE constitutes an explicit approved waiver.")
+    assert _affirms_waiver("The Dan B5-E START-GATE authorizes a waiver of gate §5.")
+    assert _affirms_waiver("A waiver of the production audit-sink requirement has been granted.")
+    assert _affirms_waiver("The production audit-sink condition is no longer binding.")
+    assert _affirms_waiver("The production audit-sink condition is bypassed by Decision A.")
+    assert _affirms_waiver("The production audit-sink condition is no longer required.")
+    # the detector fires WITHOUT the B5-BLK-4 token anywhere on the line (PRD §6)
+    assert _affirms_waiver("the activation condition is hereby waived")
+    # mutation-20 forms: START-GATE-as-waiver and Dan-approved-the-waiver
+    assert _affirms_waiver("Dan approved the waiver.")
+    assert _affirms_waiver("The Dan B5-E START-GATE grants a waiver.")
+    assert _affirms_waiver("The Dan B5-E START-GATE approves a waiver of the audit-sink condition.")
+    assert _affirms_waiver("The START-GATE is an explicit approved waiver.")
+    assert _affirms_waiver("The START-GATE serves as the waiver.")
+    assert _affirms_waiver("The B5-E closure and the START-GATE together waive the production audit-sink condition.")
+    assert _affirms_waiver("Decision A is waiving the production audit-sink condition.")
+    assert _affirms_waiver("A waiver is in effect.")
+    assert _affirms_waiver("The waiver remains in force.")
+    assert _affirms_waiver("The waiver is hereby recorded and effective.")
+    assert _affirms_waiver("The production audit-sink condition is set aside by Decision A.")
+    # every release / effect / granting vocabulary item fires (per-branch coverage)
+    for word in _WAIVER_RELEASE_WORDS:
+        assert _affirms_waiver(f"The production audit-sink condition is {word} by Decision A."), word
+    for word in _WAIVER_EFFECT_WORDS:
+        assert _affirms_waiver(f"A waiver of the production audit-sink requirement has been {word}."), word
+    for verb in _WAIVER_GRANT_VERBS:
+        assert _affirms_waiver(f"The Dan B5-E START-GATE {verb} a waiver of gate §5."), verb
+    for verb in _WAIVER_GRANT_PAST_VERBS:
+        assert _affirms_waiver(f"The Dan B5-E START-GATE {verb} the waiver of gate §5."), verb
+    for term in _WAIVER_RELEASE_SCOPE_TERMS:
+        assert _affirms_waiver(f"The {term} for production is no longer binding."), term
+    # PRD §7 explicitly allowed wording — all stay green.
+    assert not _affirms_waiver("The gate §5 activation condition remains binding and is not waived by B5-E.")
+    assert not _affirms_waiver("An explicit approved waiver would be required if the audit sink were unavailable.")
+    assert not _affirms_waiver("No waiver is granted by this decision.")
+    assert not _affirms_waiver("The START-GATE authorizes the closure review; it does not waive the production audit-sink condition.")
+    assert not _affirms_waiver("or an explicit, approved waiver")
+    assert not _affirms_waiver("provisioning audit sink available (B-6) — or an explicit, approved waiver")
+    assert not _affirms_waiver("Production-environment availability stays a gate §5 activation condition — not waived.")
+    # explicit-negation and subjunctive mask branches — each stays green
+    assert not _affirms_waiver("The closure does not constitute a waiver of the production audit-sink condition.")
+    assert not _affirms_waiver("The Dan B5-E START-GATE is not a waiver.")
+    assert not _affirms_waiver("The decision proceeds without waiving the production audit-sink condition.")
+    assert not _affirms_waiver("Activation cannot proceed without a waiver unless the audit sink is available.")
+    assert not _affirms_waiver("Only a separate Dan-authorized decision could waive the §5 condition.")
+    assert not _affirms_waiver("The production audit-sink condition is not lifted, and it is never bypassed.")
+    assert not _affirms_waiver("The gate §5 activation condition cannot be waived by a closure review.")
+    # release vocabulary OUTSIDE the §5/audit-sink scope stays green (no subjectless false positive)
+    assert not _affirms_waiver("direct Ready → Decommissioned transition is removed (a Ready tenant is Suspended first).")
+    assert not _affirms_waiver("The old branch was removed after the merge.")
+    # per-document anchor is non-vacuous: deletion, polarity flip, shortening, and a
+    # B5-E-becomes-the-waiver rewrite each break the pin in that document itself.
+    for doc in _GATE_DOCS:
+        norm_doc = _normalized_doc(doc.read_text(encoding="utf-8"))
+        assert _WAIVER_SENTENCE in norm_doc, doc.name
+        assert _WAIVER_SENTENCE not in norm_doc.replace(_WAIVER_SENTENCE, ""), doc.name
+        assert _WAIVER_SENTENCE not in norm_doc.replace("is not waived", "is waived"), doc.name
+        assert _WAIVER_SENTENCE not in norm_doc.replace(" remains binding at activation time and is not waived by the b5-e closure", ""), (
+            doc.name
+        )
+    flipped = _WAIVER_SENTENCE.replace("is not waived", "is waived")
+    assert _WAIVER_SENTENCE not in _normalized_doc(flipped)
+    assert _affirms_waiver(flipped)
+    rewrite = (
+        'the gate §5 activation condition "provisioning audit sink available (b-6) — or an explicit,'
+        ' approved waiver" is satisfied because the b5-e closure constitutes the approved waiver'
+    )
+    assert _WAIVER_SENTENCE not in _normalized_doc(rewrite)
+    assert _affirms_waiver(rewrite)
+    # the unmutated sentence itself stays green under the detector
+    assert not _affirms_waiver(_WAIVER_SENTENCE)
+
+
 if __name__ == "__main__":
     _scan.run(
         [
@@ -1116,5 +1309,7 @@ if __name__ == "__main__":
             test_b5e_13_unrelated_blockers_nonvacuity,
             test_b5e_14_fail_closed_and_counts,
             test_b5e_14_fail_closed_nonvacuity,
+            test_b5e_15_waiver_posture_pinned,
+            test_b5e_15_waiver_nonvacuity,
         ]
     )
