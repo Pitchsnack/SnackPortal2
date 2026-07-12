@@ -13,22 +13,27 @@ tenant is taken from the signed claim resolved by Phase 3 — never re-derived.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Optional
+from uuid import uuid4
 
-from shared.audit import OperationalAudit, OperationalAuditEvent
 from shared.context import RequestContext
 from shared.secrets import SecretRef, SecretStore
 from shared.session import Lane
 
 from .models import (
+    ROUTING_AUDIT_EVENT_VERSION,
+    ROUTING_AUDIT_SOURCE_SERVICE,
+    ROUTING_AUDIT_SOURCE_VERSION,
     RouteResult,
+    RoutingAuditEvent,
     RoutingDenied,
     RoutingTarget,
     forbidden,
     unavailable,
 )
 from .pool import ConnectionPoolManager
-from .ports import ConnectionFactory, TenantConnection
+from .ports import ConnectionFactory, RoutingAuditPort, TenantConnection
 from .resolver import RoutingResolver
 
 CONTROL_ROLE = "CONTROL"
@@ -42,7 +47,7 @@ class DatabaseRouter:
         pool: ConnectionPoolManager,
         secret_store: SecretStore,
         connection_factory: ConnectionFactory,
-        audit: OperationalAudit,
+        audit: RoutingAuditPort,
         bulk_pool: Optional[ConnectionPoolManager] = None,
     ) -> None:
         self._resolver = resolver
@@ -54,7 +59,15 @@ class DatabaseRouter:
 
     # -- public API ------------------------------------------------------------
     def route(self, ctx: RequestContext, *, bootstrap_phase0: bool = False, lane: Lane = Lane.INTERACTIVE) -> RouteResult:
-        target = self._determine_target(ctx, bootstrap_phase0)
+        try:
+            target = self._determine_target(ctx, bootstrap_phase0)
+        except RoutingDenied as denied:
+            # Pre-target denial (Bootstrap Phase 0 / tenantless non-CONTROL): audited
+            # exactly once at the router edge; zero resolution, zero pool, zero tenant DB
+            # (DBR-AR-2A). Only this call is wrapped — the resolve/acquire denials below
+            # and the isolation-anomaly path keep their own single emission.
+            self._denied(ctx, ctx.active_tenant_id, denied.public_code)
+            raise
         if target is RoutingTarget.CONTROL:
             self._ok(ctx, None, "RouteControl")
             return RouteResult(target=RoutingTarget.CONTROL)
@@ -69,11 +82,19 @@ class DatabaseRouter:
 
         # Defense in depth (D-30 L3): the bound connection must match the active tenant.
         if conn.tenant_id != tenant_id:
-            self._anomaly(ctx, tenant_id)
+            self._anomaly(ctx, tenant_id, resolved_tenant_ref=conn.tenant_id)
             self._pool_for(lane).discard(conn)
             raise unavailable("routing_isolation_fault")
 
-        self._ok(ctx, tenant_id, "Route")
+        self._ok(
+            ctx,
+            tenant_id,
+            "Route",
+            resolved_tenant_ref=conn.tenant_id,
+            association_store_ref=view.database_association_ref.store_ref,
+            association_version=conn.association_version,
+            lane=lane.value,
+        )
         return RouteResult(
             target=RoutingTarget.TENANT,
             tenant_id=tenant_id,
@@ -124,36 +145,83 @@ class DatabaseRouter:
             raise unavailable("connection_unavailable") from None
 
     # -- audit (references only; never secrets/credentials) --------------------
-    def _ok(self, ctx: RequestContext, tenant_id: Optional[str], action: str) -> None:
+    # Router-edge routing-decision events (DBR-AR-2A; IC-002 class 3 — Database Router
+    # edge; sole emitter per IC-005). Exactly one event per completed or denied route().
+    def _mint(
+        self,
+        ctx: RequestContext,
+        *,
+        action: str,
+        outcome: str,
+        tenant_id: Optional[str],
+        resolved_tenant_ref: Optional[str] = None,
+        public_code: Optional[str] = None,
+        association_store_ref: Optional[str] = None,
+        association_version: Optional[str] = None,
+        lane: Optional[str] = None,
+    ) -> RoutingAuditEvent:
+        return RoutingAuditEvent(
+            actor_ref=ctx.principal_ref or "<unknown>",
+            action=action,
+            correlation_id=ctx.correlation_id,
+            outcome=outcome,
+            target_ref=tenant_id,
+            event_id=str(uuid4()),
+            event_version=ROUTING_AUDIT_EVENT_VERSION,
+            occurred_at=datetime.now(timezone.utc).isoformat(),
+            source_service=ROUTING_AUDIT_SOURCE_SERVICE,
+            source_version=ROUTING_AUDIT_SOURCE_VERSION,
+            request_ref=ctx.request_id,
+            resolved_tenant_ref=resolved_tenant_ref,
+            public_code=public_code,
+            association_store_ref=association_store_ref,
+            association_version=association_version,
+            lane=lane,
+        )
+
+    def _ok(
+        self,
+        ctx: RequestContext,
+        tenant_id: Optional[str],
+        action: str,
+        *,
+        resolved_tenant_ref: Optional[str] = None,
+        association_store_ref: Optional[str] = None,
+        association_version: Optional[str] = None,
+        lane: Optional[str] = None,
+    ) -> None:
         self._audit.initiate(
-            OperationalAuditEvent(
-                actor_ref=ctx.principal_ref or "<unknown>",
+            self._mint(
+                ctx,
                 action=action,
-                correlation_id=ctx.correlation_id,
                 outcome="success",
-                target_ref=tenant_id,
+                tenant_id=tenant_id,
+                resolved_tenant_ref=resolved_tenant_ref,
+                association_store_ref=association_store_ref,
+                association_version=association_version,
+                lane=lane,
             )
         )
 
     def _denied(self, ctx: RequestContext, tenant_id: Optional[str], code: str) -> None:
         self._audit.initiate(
-            OperationalAuditEvent(
-                actor_ref=ctx.principal_ref or "<unknown>",
+            self._mint(
+                ctx,
                 action="RouteDenied",
-                correlation_id=ctx.correlation_id,
                 outcome="denied:" + code,
-                target_ref=tenant_id,
+                tenant_id=tenant_id,
+                public_code=code,
             )
         )
 
-    def _anomaly(self, ctx: RequestContext, tenant_id: Optional[str]) -> None:
+    def _anomaly(self, ctx: RequestContext, tenant_id: Optional[str], *, resolved_tenant_ref: Optional[str] = None) -> None:
         # Cross-tenant-adjacent anomaly (D-30 L4) — no secrets, no topology.
         self._audit.initiate(
-            OperationalAuditEvent(
-                actor_ref=ctx.principal_ref or "<unknown>",
+            self._mint(
+                ctx,
                 action="IsolationAnomaly",
-                correlation_id=ctx.correlation_id,
                 outcome="anomaly:tenant_binding",
-                target_ref=tenant_id,
+                tenant_id=tenant_id,
+                resolved_tenant_ref=resolved_tenant_ref,
             )
         )

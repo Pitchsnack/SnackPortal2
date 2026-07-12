@@ -18,6 +18,12 @@ Authoritative standing status (unchanged by this document):
 - The Lovable cutover remains OPEN (B5-BLK-5 / B5-BLK-6; separate track).
 - The gate §5 activation condition "provisioning audit sink available (B-6) — or an explicit, approved waiver" remains binding at activation time and is not waived by anything in this document.
 
+**DBR-AR-2A status (event contract and port — the first implementation slice):**
+
+- DBR-AR-2A — implemented when this PR merges.
+- DBR-AR-2 — remains OPEN.
+- DBR-AR-2B through DBR-AR-2E — not started.
+
 This document changes no blocker, no blocker count, no decision, no gate posture, and no routing semantics. It is
 the readiness-reviewed implementation contract that the DBR-AR-2 implementation slices (§16) must satisfy.
 
@@ -41,12 +47,15 @@ request was denied. DBR-AR-2 defines the durable, vendor-neutral, references-onl
 
 ## 3. Current-state evidence (re-derived live at the baseline)
 
-- **Emission sites (Database Router, `backend/database_router/router.py`):** exactly one outcome event per
-  `route()` call — `_ok` (action `Route` with the bound tenant, or `RouteControl` for the control target),
-  `_denied` (action `RouteDenied`, outcome `denied:<public_code>`), `_anomaly` (action `IsolationAnomaly`,
-  outcome `anomaly:tenant_binding`, D-30 L3). Denials perform zero pool acquisition and zero tenant-database
-  connection beyond the failing step; the Smoke C harness asserts exactly 1 router event per successful dispatch
-  and exactly 0 router events on every denial.
+- **Emission sites (Database Router, `backend/database_router/router.py`):** `_ok` (action `Route` with the
+  bound tenant, or `RouteControl` for the control target), `_denied` (action `RouteDenied`, outcome
+  `denied:<public_code>`), `_anomaly` (action `IsolationAnomaly`, outcome `anomaly:tenant_binding`, D-30 L3).
+  Denials perform zero pool acquisition and zero tenant-database connection beyond the failing step; the Smoke C
+  harness asserts exactly 1 router event per successful dispatch and exactly 0 router events on every denial
+  (its denial scenarios are denied at the auth boundary and never reach `route()`).
+  Before DBR-AR-2A: two pre-target denials (`tenant_routing_unavailable`, `no_active_tenant`) had no router-edge audit event.
+  After DBR-AR-2A: every completed or denied `route()` invocation produces exactly one router-edge in-memory event.
+  Durability remains unimplemented.
 - **Event shape today (`backend/shared/audit.py`):** frozen `OperationalAuditEvent` — `actor_ref`, `action`,
   `correlation_id`, `outcome`, `target_ref`; references only.
 - **Router-edge denial vocabulary (`backend/database_router/models.py`, `disclosure.py`, `resolver.py`,
@@ -383,6 +392,10 @@ explicitly authorized runbook step.
 
 ## 21. Next governed step
 
-**Next governed step: DBR-AR-2A (event contract and port)** — authored as a GPT PRD, readiness-reviewed, and
-executed only under a Dan START-GATE, following the standard loop (independent pre-merge verify → Dan human
+**Next implementation slice after DBR-AR-2A is merged,
+post-merge verified, and target-branch cleaned:
+DBR-AR-2B.**
+
+DBR-AR-2B (durable adapter and schema/storage contract) is not yet authorized; it requires its own GPT PRD,
+readiness review, and Dan START-GATE, following the standard loop (independent pre-merge verify → Dan human
 merge → post-merge verify → target-only cleanup).
