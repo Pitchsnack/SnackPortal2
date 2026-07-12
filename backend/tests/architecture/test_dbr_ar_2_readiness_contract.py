@@ -1,14 +1,18 @@
 """DBR-AR-2 V1 — durable routing-audit CONTRACT guard (text-inspection only; no runtime, no driver import).
 
 Pins the DBR-AR-2 V1 contract-capture record (PRD DBR-AR-2 V1, 2026-07-12, baseline
-ac6ca9da48837b5c06cf6a9f1663af73fedf1b74) as evolved by DBR-AR-2A (2026-07-13): the dedicated contract document
-and the readiness-matrix cross-reference must keep DBR-AR-2 OPEN, keep every B5-E decision sentence intact,
-commit to the selected architecture (Option B — Control-Plane-owned durable routing-audit store behind a service
-boundary), carry the event-schema minimums and the forbidden-data list, state explicit failure semantics with no
-silent fail-open, claim no cross-database atomicity, authorize no cross-service import, claim no delivered
-persistence / schema / production wiring, keep the blocker count at 8 of 9, record the implementation-slice
-sequence and the exact next governed step, and carry the exact DBR-AR-2A status block (2A implemented when its
-PR merges; DBR-AR-2 remains OPEN; 2B-2E not started) plus the Before/After early-denial coverage sentences.
+ac6ca9da48837b5c06cf6a9f1663af73fedf1b74) as evolved by DBR-AR-2A (2026-07-13) and DBR-AR-2B (2026-07-13): the
+dedicated contract document and the readiness-matrix cross-reference must keep DBR-AR-2 OPEN, keep every B5-E
+decision sentence intact, commit to the selected architecture (Option B — Control-Plane-owned durable
+routing-audit store behind a service boundary), carry the event-schema minimums and the forbidden-data list,
+state explicit failure semantics with no silent fail-open, claim no cross-database atomicity, authorize no
+cross-service import, keep the Control Plane the sole Control-DB writer with no router credential, claim no
+applied schema / production wiring / proven live durability, keep the blocker count at 8 of 9, record the
+implementation-slice sequence and the exact next governed step (DBR-AR-2C), and carry the exact DBR-AR-2A/2B
+status block (2A implemented; 2B storage capability implemented when its PR merges — created-not-applied DDL,
+append-only enforcement, Control Plane store, internal ingest adapter, uncomposed Database Router client;
+DBR-AR-2 remains OPEN; 2C-2E not started; DDL not applied; composition not implemented; live durability not yet
+proven; writer-role DDL separately governed) plus the Before/After early-denial coverage sentences.
 Every detector carries a planted-mutation non-vacuity companion (PRD §12/§19 batteries). Text inspection only —
 pure stdlib; standalone-runnable:
   python tests/architecture/test_dbr_ar_2_readiness_contract.py
@@ -46,21 +50,38 @@ _NO_ATOMICITY_SENTENCE = (
     " there is no distributed transaction and no two-phase commit"
 )
 _NO_IMPORT_SENTENCE = "no cross-service import is authorized"
-_NEXT_STEP_SENTENCE = "next implementation slice after dbr-ar-2a is merged, post-merge verified, and target-branch cleaned: dbr-ar-2b."
+_NEXT_STEP_SENTENCE = (
+    "next implementation slice after dbr-ar-2b is fully merged, post-merge verified, and target-cleaned:"
+    " dbr-ar-2c — composition and failure semantics."
+)
+_SOLE_WRITER_SENTENCE = "the control plane remains the sole writer of the control database"
+_NO_ROUTER_CREDENTIAL_SENTENCE = "it gains no control-db credential under option b"
+_NO_QUEUE_SENTENCE = "there is no queue or outbox to fill"
 
-# --- DBR-AR-2A status + coverage anchors (contract doc only; the matrix carries none) ---
-_2A_STATUS_SENTENCE = "dbr-ar-2a — implemented when this pr merges."
+# --- DBR-AR-2A / DBR-AR-2B status + coverage anchors (contract doc only; the matrix carries none) ---
+_2A_STATUS_SENTENCE = "dbr-ar-2a — implemented."
+_2B_STATUS_SENTENCE = (
+    "dbr-ar-2b — storage capability implemented when this pr merges: created-not-applied ddl, append-only"
+    " enforcement, control plane store, internal ingest adapter, and uncomposed database router client."
+)
 _2A_OPEN_SENTENCE = "dbr-ar-2 — remains open."
-_2A_SLICES_SENTENCE = "dbr-ar-2b through dbr-ar-2e — not started."
+_2A_SLICES_SENTENCE = "dbr-ar-2c through dbr-ar-2e — not started."
+_DDL_NOT_APPLIED_SENTENCE = "the ddl is not applied."
+_NO_COMPOSITION_SENTENCE = "production composition is not implemented."
+_WRITER_ROLE_SENTENCE = "least-privilege routing-audit writer-role ddl remains separately governed and is not delivered by dbr-ar-2b."
 _BEFORE_2A_SENTENCE = (
     "before dbr-ar-2a: two pre-target denials (tenant_routing_unavailable, no_active_tenant) had no router-edge audit event."
 )
 _AFTER_2A_SENTENCE = "after dbr-ar-2a: every completed or denied route() invocation produces exactly one router-edge in-memory event."
-_DURABILITY_SENTENCE = "durability remains unimplemented."
+_DURABILITY_SENTENCE = "live durability is not yet proven."
 _2A_ANCHORS = (
     _2A_STATUS_SENTENCE,
+    _2B_STATUS_SENTENCE,
     _2A_OPEN_SENTENCE,
     _2A_SLICES_SENTENCE,
+    _DDL_NOT_APPLIED_SENTENCE,
+    _NO_COMPOSITION_SENTENCE,
+    _WRITER_ROLE_SENTENCE,
     _BEFORE_2A_SENTENCE,
     _AFTER_2A_SENTENCE,
     _DURABILITY_SENTENCE,
@@ -336,6 +357,7 @@ _OPEN_MARKER_RE = re.compile(r"\b(?:open|in-memory|follow-on|not|pending|remains
 def _mask_v1_status(norm_text: str) -> str:
     # Exact-sentence masks only: any variant of a closure claim still trips m01.
     masked = norm_text.replace(_V1_STATUS_SENTENCE, " <v1-status-sentence> ")
+    masked = masked.replace(_2B_STATUS_SENTENCE, " <2b-status-sentence> ")
     return masked.replace(_2A_STATUS_SENTENCE, " <2a-status-sentence> ")
 
 
@@ -377,14 +399,22 @@ def test_dbr2_2a_status_nonvacuity() -> None:
     for anchor in _2A_ANCHORS:
         assert anchor not in norm.replace(anchor, ""), anchor
     # The mask is exact-sentence only: near-miss closure claims still trip m01.
-    assert _claims_dbr2_complete("dbr-ar-2a — implemented.")
+    assert _claims_dbr2_complete("dbr-ar-2a — implemented when this pr merges.")  # the superseded 2A long form is unmasked
+    assert _claims_dbr2_complete("dbr-ar-2b — implemented.")
+    assert _claims_dbr2_complete("dbr-ar-2b — storage capability implemented.")  # a shortened 2B closure claim is unmasked
     assert _claims_dbr2_complete("dbr-ar-2 — implemented when this pr merges.")
-    assert not _claims_dbr2_complete("- DBR-AR-2A — implemented when this PR merges.")
+    assert not _claims_dbr2_complete("- DBR-AR-2A — implemented.")
+    assert not _claims_dbr2_complete(
+        "- DBR-AR-2B — storage capability implemented when this PR merges: created-not-applied DDL, append-only"
+        " enforcement, Control Plane store, internal ingest adapter, and uncomposed Database Router client."
+    )
     # Exactly-one cannot silently become zero-or-more, and the early-denial coverage
     # sentence cannot be reworded away without failing the anchor pin.
     assert _AFTER_2A_SENTENCE not in _norm("after dbr-ar-2a: zero or more router-edge in-memory events may be produced")
     assert _BEFORE_2A_SENTENCE not in _norm("before dbr-ar-2a: pre-target denials were fully audited")
-    assert _2A_SLICES_SENTENCE not in _norm("dbr-ar-2b through dbr-ar-2e — started")
+    assert _2A_SLICES_SENTENCE not in _norm("dbr-ar-2c through dbr-ar-2e — started")
+    assert _DURABILITY_SENTENCE not in _norm("live durability is proven")
+    assert _WRITER_ROLE_SENTENCE not in _norm("the writer-role ddl is delivered by dbr-ar-2b")
 
 
 # Mutation 2 — B5-BLK-4 reopened.
@@ -740,6 +770,44 @@ def test_dbr2_m23_nonvacuity() -> None:
 # test_dbr2_open_status_pinned_per_document / test_dbr2_open_status_nonvacuity above.
 
 
+# --- DBR-AR-2B additions: ownership/boundary pins + durability-proven detector -------------
+def test_dbr2_ownership_and_boundary_sentences_pinned() -> None:
+    norm = _norm(_contract())
+    assert _SOLE_WRITER_SENTENCE in norm, "the contract doc must pin the Control Plane as the sole Control-DB writer"
+    assert _NO_ROUTER_CREDENTIAL_SENTENCE in norm, "the contract doc must pin that the router gains no Control-DB credential"
+    assert _NO_QUEUE_SENTENCE in norm, "the contract doc must pin that no queue/outbox exists"
+
+
+def test_dbr2_ownership_and_boundary_nonvacuity() -> None:
+    norm = _norm(_contract())
+    for anchor in (_SOLE_WRITER_SENTENCE, _NO_ROUTER_CREDENTIAL_SENTENCE, _NO_QUEUE_SENTENCE):
+        assert anchor not in norm.replace(anchor, ""), anchor
+
+
+# Mutation 30 — live durability claimed proven before the DBR-AR-2D evidence.
+_DURABILITY_PROVEN_RE = re.compile(
+    r"\b(?:live\s+)?durability\s+(?:is|was|now|hereby|has\s+been)\s+(?:proven|proved|demonstrated|verified|established)\b"
+    r"|\brestart\s+survival\s+(?:is|was|has\s+been)\s+(?:proven|proved|demonstrated|verified)\b"
+)
+
+
+def _claims_durability_proven(norm_text: str) -> bool:
+    return bool(_DURABILITY_PROVEN_RE.search(norm_text))
+
+
+def test_dbr2_m30_no_durability_proven_claim() -> None:
+    assert not _claims_durability_proven(_norm(_both())), "live durability must not be claimed proven before DBR-AR-2D evidence"
+    assert _DURABILITY_SENTENCE in _norm(_contract()), "the exact live-durability truth sentence must be present"
+
+
+def test_dbr2_m30_nonvacuity() -> None:
+    assert _claims_durability_proven("live durability is proven")
+    assert _claims_durability_proven("durability has been demonstrated on postgresql")
+    assert _claims_durability_proven("restart survival is proven")
+    assert not _claims_durability_proven("live durability is not yet proven.")
+    assert not _claims_durability_proven("audit event survives process restart")
+
+
 if __name__ == "__main__":
     _scan.run(
         [
@@ -799,5 +867,9 @@ if __name__ == "__main__":
             test_dbr2_m22_nonvacuity,
             test_dbr2_m23_blocker_count_unchanged,
             test_dbr2_m23_nonvacuity,
+            test_dbr2_ownership_and_boundary_sentences_pinned,
+            test_dbr2_ownership_and_boundary_nonvacuity,
+            test_dbr2_m30_no_durability_proven_claim,
+            test_dbr2_m30_nonvacuity,
         ]
     )

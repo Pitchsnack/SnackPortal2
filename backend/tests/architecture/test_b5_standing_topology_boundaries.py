@@ -79,6 +79,14 @@ _EXPECTED_DDL = (
     "008_distinctness_fingerprint_unique.sql",
     "009_control_tenants_cas_version.sql",
 )
+# DBR-AR-2B: created-not-applied routing-audit DDL. Present on disk beside the canonical
+# apply set, but deliberately NOT enrolled in the standing-topology apply order — applying
+# it is a separately governed later phase (DBR-AR-2D live proof), and the ops module
+# (schema-application code) is unchanged by DBR-AR-2B.
+_EXPECTED_UNENROLLED_DDL = (
+    "010_routing_audit.sql",
+    "011_routing_audit_append_only.sql",
+)
 
 
 def _tree(path: pathlib.Path) -> ast.Module:
@@ -167,8 +175,24 @@ def test_ddl_loaded_only_from_canonical_assets() -> None:
     module = _load_ops_module()
     assert tuple(module._CONTROL_DDL_ORDER) == _EXPECTED_DDL, "the ops module must apply EXACTLY the canonical 001-009 set in order"
     on_disk = sorted(p.name for p in _CONTROL_DDL_DIR.glob("*.sql"))
-    assert on_disk == sorted(_EXPECTED_DDL), f"canonical control DDL inventory drifted: {on_disk}"
+    assert on_disk == sorted(_EXPECTED_DDL + _EXPECTED_UNENROLLED_DDL), f"canonical control DDL inventory drifted: {on_disk}"
     assert module._CONTROL_DDL_DIR == _CONTROL_DDL_DIR, "the ops module must read the canonical infrastructure/db/control directory"
+
+
+def test_routing_audit_ddl_not_enrolled_for_application() -> None:
+    # DBR-AR-2B: the routing-audit DDL is created-not-applied — it must be present on disk
+    # (inventory above) and must NOT be enrolled in the standing-topology apply order; the
+    # ops module's schema-application surface is unchanged (PRD DBR-AR-2B §7.4).
+    module = _load_ops_module()
+    for name in _EXPECTED_UNENROLLED_DDL:
+        assert name in (p.name for p in _CONTROL_DDL_DIR.glob("*.sql")), f"{name} missing from the control DDL inventory"
+        assert name not in module._CONTROL_DDL_ORDER, (
+            f"{name} is created-not-applied (DBR-AR-2B) and must NOT be enrolled in the standing-topology apply order"
+        )
+    # Non-vacuity: the detector notices a planted enrollment and a planted de-enrollment.
+    planted_order = _EXPECTED_DDL + ("010_routing_audit.sql",)
+    assert any(name in planted_order for name in _EXPECTED_UNENROLLED_DDL), "not-enrolled detector went vacuous (planted enrollment)"
+    assert all(name not in _EXPECTED_DDL for name in _EXPECTED_UNENROLLED_DDL), "apply-order pin must exclude the 2B DDL"
 
 
 def test_fixed_deterministic_identities_and_bounded_teardown() -> None:
@@ -587,6 +611,7 @@ if __name__ == "__main__":
             test_no_forbidden_imports_or_names_anywhere,
             test_no_embedded_ddl_literals_in_ops_module,
             test_ddl_loaded_only_from_canonical_assets,
+            test_routing_audit_ddl_not_enrolled_for_application,
             test_fixed_deterministic_identities_and_bounded_teardown,
             test_teardown_refuses_without_confirmation_behaviorally,
             test_secret_root_containment_refusals_behaviorally,

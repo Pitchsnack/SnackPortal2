@@ -42,6 +42,14 @@ from control_plane.records import (
     TenantLifecycleState,
     TenantRecord,
 )
+from control_plane.routing_audit import (
+    ROUTING_AUDIT_STORE_ACTIONS,
+    RoutingAuditAppendResult,
+    RoutingAuditConflictError,
+    RoutingAuditInvalidError,
+    RoutingAuditRecord,
+    RoutingAuditStorePort,
+)
 from shared.secrets import SecretRef, SecretStore
 
 
@@ -442,4 +450,230 @@ class PostgresControlStore(ControlStore):
             created_at=row[7],
             updated_at=row[8],
             version=int(row[9]),
+        )
+
+
+# --- DBR-AR-2B: durable routing-audit store (dedicated port; ControlStore unchanged) ---
+
+# Caller-bound columns of control_routing_audit (DDL 010) in INSERT/SELECT order.
+# id and recorded_at are store-assigned and are never bound by the adapter.
+_ROUTING_AUDIT_COLUMNS = (
+    "event_id",
+    "event_version",
+    "occurred_at",
+    "correlation_id",
+    "actor_ref",
+    "action",
+    "outcome",
+    "source_service",
+    "source_version",
+    "request_ref",
+    "trace_ref",
+    "tenant_ref",
+    "resolved_tenant_ref",
+    "public_code",
+    "error_class",
+    "association_store_ref",
+    "association_version",
+    "lane",
+)
+
+_ROUTING_AUDIT_INSERT = (
+    "INSERT INTO control_routing_audit ("
+    + ", ".join(_ROUTING_AUDIT_COLUMNS)
+    + ") VALUES ("
+    + ", ".join(["%s"] * len(_ROUTING_AUDIT_COLUMNS))
+    + ") ON CONFLICT (event_id) DO NOTHING RETURNING id"
+)
+
+_ROUTING_AUDIT_SELECT = "SELECT " + ", ".join(_ROUTING_AUDIT_COLUMNS) + " FROM control_routing_audit WHERE event_id = %s"
+
+
+def _same_instant(stored: Any, submitted: str) -> bool:
+    """True iff a stored ``occurred_at`` and the submitted ISO-8601 string are the same instant.
+
+    A ``timestamptz`` comes back from the driver as an aware ``datetime`` whose textual form
+    may differ from the router-minted ISO string for the SAME instant — a replay must not be
+    misclassified as a conflict over representation (nor a different instant accepted as a
+    match). Naive values are assumed UTC (the ``_ts_to_iso`` convention)."""
+    try:
+        submitted_dt = datetime.fromisoformat(submitted)
+    except ValueError:
+        return str(stored) == submitted  # non-ISO caller value: byte comparison only
+    if isinstance(stored, datetime):
+        stored_dt = stored
+    else:
+        try:
+            stored_dt = datetime.fromisoformat(str(stored))
+        except ValueError:
+            return False
+    if stored_dt.tzinfo is None:
+        stored_dt = stored_dt.replace(tzinfo=timezone.utc)
+    if submitted_dt.tzinfo is None:
+        submitted_dt = submitted_dt.replace(tzinfo=timezone.utc)
+    return stored_dt == submitted_dt
+
+
+class PostgresRoutingAuditStore(RoutingAuditStorePort):
+    """Durable routing-audit adapter (DBR-AR-2B): one idempotent append into control_routing_audit.
+
+    A DEDICATED adapter behind ``RoutingAuditStorePort`` — deliberately NOT a ``ControlStore``
+    method (the frozen port is unchanged; the DistinctnessLedger precedent). Same conventions as
+    ``PostgresControlStore``: lazy-connect (construction performs NO ``psycopg.connect``), dual
+    construction (literal ``dsn=`` OR ``secrets=`` + ``ref=`` reference resolution, D-14),
+    ``autocommit = False``, commit ONLY on a newly inserted row, rollback-then-reraise on any
+    failure, ``release()`` = rollback + close. ``recorded_at`` and ``id`` are assigned by the
+    database (DDL 010) and are never bound here. An exact replay of an existing ``event_id`` is
+    an idempotent no-op (``DUPLICATE_MATCH``, nothing committed); a same-ID/different-payload
+    replay fails closed with ``RoutingAuditConflictError`` (contract §7.2/§12). Append-only:
+    this adapter contains no UPDATE, DELETE, read, query, export, or purge surface. Errors are
+    re-raised unchanged and never wrapped with SQL, descriptor, topology, or row content.
+    Uncomposed in DBR-AR-2B: no composition root constructs it (DBR-AR-2C owns composition)."""
+
+    def __init__(
+        self,
+        dsn: Optional[str] = None,
+        *,
+        secrets: Optional[SecretStore] = None,
+        ref: Optional[SecretRef] = None,
+    ) -> None:
+        # Lazy-connect: record inputs only; NO psycopg.connect here (B7B-D11 convention).
+        if (dsn is None) == (ref is None):
+            raise ValueError("PostgresRoutingAuditStore requires exactly one of dsn= or (secrets=, ref=)")
+        if ref is not None and secrets is None:
+            raise ValueError("PostgresRoutingAuditStore ref= requires a SecretStore (secrets=)")
+        self._dsn = dsn
+        self._secrets = secrets
+        self._ref = ref
+        self._conn_cache: Any = None
+
+    @property
+    def _conn(self) -> Any:
+        """Lazily open and cache the Control-DB connection (no I/O until first use)."""
+        if self._conn_cache is None:
+            self._conn_cache = self._open()
+        return self._conn_cache
+
+    def _open(self) -> Any:
+        """Resolve the Control-DB descriptor (by reference or literal) and open the connection.
+
+        Fail-closed: resolution and connect errors propagate — the append is rejected and no
+        partial state is committed. The resolved descriptor is dropped immediately (D-14)."""
+        descriptor: Optional[str] = None
+        try:
+            if self._ref is not None:
+                assert self._secrets is not None  # guaranteed by __init__
+                descriptor = self._secrets.resolve(self._ref).material  # in-memory only
+            else:
+                assert self._dsn is not None  # guaranteed by __init__ (exactly one source)
+                descriptor = self._dsn
+            conn = psycopg.connect(descriptor)
+            conn.autocommit = False  # single-INSERT transaction; commit only on a new row
+            return conn
+        finally:
+            descriptor = None  # never retained on the adapter
+
+    def release(self) -> None:
+        """Roll back any open transaction and close the cached connection (idempotent)."""
+        conn = self._conn_cache
+        if conn is None:
+            return
+        self._conn_cache = None
+        try:
+            conn.rollback()
+        except Exception:
+            pass  # broken connection: no transaction survives it
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    def append_routing_audit(self, record: RoutingAuditRecord) -> RoutingAuditAppendResult:
+        self._validate(record)
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(_ROUTING_AUDIT_INSERT, self._params(record))
+                inserted = cur.fetchone() is not None
+                stored = None
+                if not inserted:
+                    cur.execute(_ROUTING_AUDIT_SELECT, (record.event_id,))
+                    stored = cur.fetchone()
+            if inserted:
+                self._conn.commit()  # the ONLY commit: exactly one new durable row
+                return RoutingAuditAppendResult.INSERTED
+            # Replay path: nothing durable to persist — end the transaction WITHOUT committing.
+            self._conn.rollback()
+            if stored is not None and self._replay_matches(stored, record):
+                return RoutingAuditAppendResult.DUPLICATE_MATCH
+            raise RoutingAuditConflictError("routing-audit idempotency conflict for a replayed event_id")
+        except (RoutingAuditConflictError, RoutingAuditInvalidError):
+            raise  # bounded errors: transaction already closed above
+        except Exception:
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass  # connection-level failure: the original error below is the signal
+            raise
+
+    @staticmethod
+    def _validate(record: RoutingAuditRecord) -> None:
+        """Bounded pre-insert validation (fail closed BEFORE any durable write)."""
+        if record.action not in ROUTING_AUDIT_STORE_ACTIONS:
+            raise RoutingAuditInvalidError("routing-audit record rejected: unknown action")
+        if record.event_version <= 0:
+            raise RoutingAuditInvalidError("routing-audit record rejected: non-positive event_version")
+        if record.source_service != "database_router":
+            raise RoutingAuditInvalidError("routing-audit record rejected: unknown source_service")
+        for name in ("event_id", "occurred_at", "correlation_id", "actor_ref", "outcome", "source_version"):
+            if not getattr(record, name):
+                raise RoutingAuditInvalidError("routing-audit record rejected: missing required field")
+
+    @staticmethod
+    def _params(record: RoutingAuditRecord) -> Tuple[Any, ...]:
+        return (
+            record.event_id,
+            record.event_version,
+            record.occurred_at,
+            record.correlation_id,
+            record.actor_ref,
+            record.action,
+            record.outcome,
+            record.source_service,
+            record.source_version,
+            record.request_ref,
+            record.trace_ref,
+            record.tenant_ref,
+            record.resolved_tenant_ref,
+            record.public_code,
+            record.error_class,
+            record.association_store_ref,
+            record.association_version,
+            record.lane,
+        )
+
+    @staticmethod
+    def _replay_matches(row: Tuple[Any, ...], record: RoutingAuditRecord) -> bool:
+        """Exact field comparison of a stored row against a replayed record (contract §7.2)."""
+        if str(row[0]).lower() != record.event_id.lower():
+            return False  # defensive: the select is keyed by event_id
+        if int(row[1]) != record.event_version:
+            return False
+        if not _same_instant(row[2], record.occurred_at):
+            return False
+        return tuple(row[3:18]) == (
+            record.correlation_id,
+            record.actor_ref,
+            record.action,
+            record.outcome,
+            record.source_service,
+            record.source_version,
+            record.request_ref,
+            record.trace_ref,
+            record.tenant_ref,
+            record.resolved_tenant_ref,
+            record.public_code,
+            record.error_class,
+            record.association_store_ref,
+            record.association_version,
+            record.lane,
         )
