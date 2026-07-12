@@ -2,14 +2,14 @@
 
 **Gate posture: NOT READY.** Production runtime activation is **blocked** while any blocker below is OPEN. Default is
 conservative: missing evidence ⇒ OPEN ⇒ activation blocked. This register is grounded in the **actual** current state
-(current baseline `origin/main @ fff215b5bd004760ea0d81915c3d93ca128673ed`, re-grounded 2026-07-12); production is far off by design.
+(re-grounded 2026-07-12 at `fff215b5bd004760ea0d81915c3d93ca128673ed`; decision baseline `origin/main @ 84882c77cfe409bab0af454b4411cf65795bcbfd`, B5-E closure decision 2026-07-12); production is far off by design.
 
 | ID | Description | Severity | Owner | Evidence required | Status | Blocks activation |
 |----|-------------|----------|-------|-------------------|--------|-------------------|
 | **B5-BLK-1** | `backend/control_plane/main.py` runtime wiring is deferred (`NotImplementedError`; default `in_memory`). The durable/real adapters exist (B-2/B-4) but are not constructed at runtime. | Critical | Control Plane | A separately-authorized runtime-activation phase that flips the deferral under the gate, with the regression lock consciously updated. | OPEN | YES |
 | **B5-BLK-2** | No production Control DB / Tenant DB fleet provisioned. B-3 was docs/scaffold-only; D-15 IaC has not been executed against production. | Critical | Infra / Control Plane | Provisioned, physically-distinct Control + per-tenant DBs in the target environment, with identity proof. | OPEN | YES |
 | **B5-BLK-3** | No production secret store wired. The D-14 reference-based abstraction exists; the default provider is `EnvReferenceSecretStore`. | Critical | Infra | A production-grade pluggable secret store resolving `*_REF` references at connect time; references only. | OPEN | YES |
-| **B5-BLK-4** | Provisioning audit sink — B-6 machinery built on `main` (#21 / #23 / #25); not yet wired into the production runtime path, and the durable routing audit (DBR-AR-2) is still absent. | Major | Control Plane | B-6 audit sink available **and** wired for the target (production) environment, or an explicit approved waiver; closure is a separate Dan-authorized decision. | OPEN | YES |
+| **B5-BLK-4** | Provisioning audit sink — B-6 machinery built on `main` (#21 / #23 / #25), durable behavior live-proven (B-7A #24), runtime selector wiring landed (B-7B #25) and exercised over the standing Control DB (B5-4 #72 / B5-4A #74 / Smoke C V2 #75). The durable routing audit (DBR-AR-2) remains a separate open follow-on outside this row's evidence bar. | Major | Control Plane | Evidence captured at the pre-deployment stage: audit sink available and wired for the controlled non-production standing environment; AT-D15T1-3 HARD-GATE satisfied (Smoke C V2). Production-environment availability stays a gate §5 activation condition — not waived. | **CLOSED (B5-E, 2026-07-12, Dan-authorized) — EVIDENCE-BOUND GOVERNANCE DECISION** | NO (B5-E) — the gate §5 audit-sink condition still binds at activation time |
 | **B5-BLK-5** | Frontend on interim Supabase/RLS; Lovable → API-Gateway cutover pending (DRIFT-01). | Major | Frontend / Gateway | Lovable integrates only through the API Gateway; no direct frontend DB/Supabase calls. | OPEN | YES |
 | **B5-BLK-6** | IC-009 portal contracts and IC-007 cross-tenant contracts not runtime-bound. | Major | Architecture | Portal/cross-tenant contracts bound to runtime behavior under the Gateway. | OPEN | YES |
 | **B5-BLK-7** | Production migration / DDL readiness evidence missing (D-17). | Major | Infra / Control Plane | Reviewed DDL applied (blob-pinned) within the supported schema range; version-gated readiness proven. | OPEN | YES |
@@ -24,7 +24,7 @@ While any blocker is OPEN, the Production Runtime Activation Gate decision is DO
 B-5 changes none of these to closed: B-5 builds the gate; it does not activate runtime or provision production.
 ```
 
-**Current standing decision: NOT READY (9 / 9 blockers OPEN).**
+**Current standing decision: NOT READY (8 / 9 blockers OPEN; B5-BLK-4 CLOSED per Decision A, B5-E, 2026-07-12).**
 
 ## Evidence re-grounding (2026-07-12, baseline `fff215b5bd004760ea0d81915c3d93ca128673ed`)
 
@@ -52,20 +52,33 @@ multi-cluster distinctness, **not** production deployment, and **not** MVP compl
 | Standing authentication memberships + non-Ready `b5_standing_dormant` tenant | SATISFIED — MERGED AND VERIFIED | B5-4A / PR #74 |
 | Integrated authenticated routing through all real seams — alpha → alpha DB only, beta → beta DB only, dormant → `tenant_not_ready`, unknown → `tenant_access_denied`, denials perform zero dispatch / pool / tenant-DB connection, before-state == after-state | SATISFIED AT DATABASE GRANULARITY | Smoke C V2 + Fix R3 / PR #75 |
 
-### Blocker evidence taxonomy (every blocker REMAINS OPEN — the gate stays DO-NOT-ACTIVATE)
+### Blocker evidence taxonomy (B5-BLK-4 CLOSED per B5-E; every other blocker REMAINS OPEN — the gate stays DO-NOT-ACTIVATE)
 
 | Blocker | Evidence taxonomy | Re-grounded note |
 |---|---|---|
 | **B5-BLK-1** | OPEN — GOVERNANCE DECISION REQUIRED | The composed runtime path is proven locally (Smoke C V2, database granularity), but `main.py`'s in-memory default deferral is intact by design; flipping it is a separately-authorized decision. |
 | **B5-BLK-2** | OPEN — DEPLOYMENT EVIDENCE REQUIRED | Physical distinctness proven **at database granularity** locally (B5-4/B5-4A/Smoke C V2); production fleet + cluster-level distinctness not provisioned. |
 | **B5-BLK-3** | OPEN — DEPLOYMENT EVIDENCE REQUIRED | D-14 reference secret-store + local file/env materialization exercised locally; a production-grade store is not wired. |
-| **B5-BLK-4** | OPEN — GOVERNANCE DECISION REQUIRED | B-6 provisioning audit sink (#21), B-7 durable store (#23) and B-7B runtime wiring (#25) landed on `main` — **evidence that now supports a future closure review, not closure**. The durable **routing** audit (DBR-AR-2) remains a separate open follow-on, and closure is a **separate Dan-authorized decision**. **Smoke C V2 including Fix R3 does not close B5-BLK-4.** |
+| **B5-BLK-4** | SATISFIED BY GOVERNANCE DECISION — CLOSED (B5-E, 2026-07-12, Dan-authorized) | B-6 provisioning audit sink (#21), B-7 durable store (#23), B-7A live-PG exercise (#24) and B-7B runtime wiring (#25) landed on `main`; standing-environment wiring exercised (B5-4 #72 / B5-4A #74 / Smoke C V2 #75); AT-D15T1-3 HARD-GATE satisfied. That separate Dan-authorized closure review has now been performed and recorded as B5-E. The durable **routing** audit (DBR-AR-2) remains a separate open follow-on. **Smoke C V2 including Fix R3 does not itself close B5-BLK-4 — the closure is the separate B5-E governance decision.** |
 | **B5-BLK-5** | OPEN — PRODUCT/INTEGRATION TRACK | Lovable interim Supabase/RLS; API-Gateway cutover pending (DRIFT-01) — separate track. |
 | **B5-BLK-6** | OPEN — PRODUCT/INTEGRATION TRACK | IC-009 portal / IC-007 cross-tenant contracts not runtime-bound — separate track. |
 | **B5-BLK-7** | OPEN — DEPLOYMENT EVIDENCE REQUIRED | Production migration / DDL readiness evidence still missing (D-17). |
 | **B5-BLK-8** | OPEN — DEPLOYMENT EVIDENCE REQUIRED | Production rollback evidence still missing. |
 | **B5-BLK-9** | OPEN — DEPLOYMENT EVIDENCE REQUIRED | Production monitoring / alerting evidence still missing. |
 
-**B5-BLK-4 remains OPEN — a separate, Dan-authorized closure decision is required. The Physical
-Multi-Database MVP remains mandatory and NOT complete.** The next step is that separate closure review;
-this re-grounding does not perform or bypass it. No blocker above is CLOSED, COMPLETE, or RESOLVED.
+## B5-E closure decision record (2026-07-12)
+
+Decision baseline: `origin/main @ 84882c77cfe409bab0af454b4411cf65795bcbfd` (B5-E, 2026-07-12).
+
+**Decision A (B5-E, 2026-07-12, Dan-authorized): B5-BLK-4 — CLOSED — EVIDENCE-BOUND GOVERNANCE DECISION.**
+**Decision B (B5-E, 2026-07-12, Dan-authorized): Physical Multi-Database MVP — ACCEPTED AT DATABASE GRANULARITY.**
+
+MVP acceptance at database granularity is not cluster-level proof, not production deployment, not production activation, not Lovable cutover, not billing completion, and not AI Agent completion.
+The Physical Multi-Database MVP mandate (IC-010 §O) remains mandatory and binding; acceptance at database granularity does not weaken it.
+Cluster-level distinctness remains deployment scope (AT-D15T1-4; held by B5-BLK-2).
+DBR-AR-2 (durable routing audit) remains OPEN — a separate Database Router follow-on; it was not part of the B5-BLK-4 closure evidence bar (see the B5-E record) and its status is unchanged by this decision.
+Production runtime activation remains NOT READY / DO-NOT-ACTIVATE — 8 of 9 activation blockers remain OPEN; the B5-E closure of B5-BLK-4 changes no other blocker and does not make the gate ready.
+The gate §5 activation condition "provisioning audit sink available (B-6) — or an explicit, approved waiver" remains binding at activation time and is not waived by the B5-E closure.
+Historical slice documents (SMOKE-C-SPEC-01 §9, the B-6/B-7/B-7B blocker notes, runbook no-overclaim blocks, and contract status lines) retain their authoring-time open-status wording for B5-BLK-4 by design; the three live B5 gate documents are the blocker authority, and those frozen lines are superseded by the B5-E record.
+Next step: the next Dan-authorized governed slice; every remaining activation blocker is deployment-scope (B5-BLK-2/3/7/8/9) or product/integration-track (B5-BLK-5/6), and DBR-AR-2 is the named Database Router follow-on PRD.
+The 2026-07-12 re-grounding itself neither performs nor bypasses this decision; the decision is the separate B5-E record above.

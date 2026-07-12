@@ -1,6 +1,6 @@
 # PRD 06 B-5 — Production Runtime Activation Gate (specification)
 
-**Phase:** PRD 06 B-5 — controlled non-production. **Baseline (re-grounded 2026-07-12):** `origin/main @ fff215b5bd004760ea0d81915c3d93ca128673ed`.
+**Phase:** PRD 06 B-5 — controlled non-production. **Baseline (re-grounded 2026-07-12):** `origin/main @ fff215b5bd004760ea0d81915c3d93ca128673ed`. **Decision baseline (B5-E, 2026-07-12):** `origin/main @ 84882c77cfe409bab0af454b4411cf65795bcbfd`.
 **Gate status: NOT READY (default).** **B-5 builds this gate as documentation + a reference template + a blocker
 register + an evidence template + a readiness matrix + additive guard tests. B-5 does NOT activate runtime, does NOT
 modify backend source, does NOT modify `backend/control_plane/main.py`, and does NOT wire a runtime switch.**
@@ -57,16 +57,31 @@ Database granularity means **distinct physical databases on one local admin clus
 cluster-level / multi-cluster distinctness, **NOT** production deployment or supervision, and **NOT** an
 MVP-completion claim. The following remain **OPEN** and separate:
 
-- **B5-BLK-4** — **OPEN** — a separate, **Dan-authorized closure decision** is required (evidence that now
-  supports a *future* closure review is enumerated in `b5_activation_blockers.md`; this is not closure).
-- **Physical Multi-Database MVP** — **mandatory and NOT complete**; final acceptance is a separate decision.
+- **B5-BLK-4** — **CLOSED (B5-E, 2026-07-12, Dan-authorized) — EVIDENCE-BOUND GOVERNANCE DECISION** — the
+  separate Dan-authorized closure review has been performed and recorded (see the B5-E decision record below
+  and `b5_activation_blockers.md`); the §5 audit-sink availability condition remains binding at activation time.
+- **Physical Multi-Database MVP** — **ACCEPTED AT DATABASE GRANULARITY (B5-E, 2026-07-12, Dan-authorized)**;
+  the IC-010 §O mandate remains mandatory and binding, and acceptance does not weaken it.
 - **Durable routing audit (DBR-AR-2)** — **OPEN**; routing/auth audit evidence in Smoke C V2 is in-memory only.
 - **Production deployment / supervision** — **OPEN** (deployment evidence required).
 - **Lovable / API-Gateway cutover** — separate track (interim Supabase/RLS; B5-BLK-5 / B5-BLK-6).
 - **AI Agent implementation** and **product billing / fees** — separate future tracks.
 
-**Next step:** a separate Dan-authorized **B5-BLK-4 / Physical Multi-Database MVP closure review**. This
-re-grounding neither performs nor bypasses that decision.
+**B5-E closure decision record (2026-07-12).**
+
+Decision baseline: `origin/main @ 84882c77cfe409bab0af454b4411cf65795bcbfd` (B5-E, 2026-07-12).
+
+**Decision A (B5-E, 2026-07-12, Dan-authorized): B5-BLK-4 — CLOSED — EVIDENCE-BOUND GOVERNANCE DECISION.**
+**Decision B (B5-E, 2026-07-12, Dan-authorized): Physical Multi-Database MVP — ACCEPTED AT DATABASE GRANULARITY.**
+
+MVP acceptance at database granularity is not cluster-level proof, not production deployment, not production activation, not Lovable cutover, not billing completion, and not AI Agent completion.
+The Physical Multi-Database MVP mandate (IC-010 §O) remains mandatory and binding; acceptance at database granularity does not weaken it.
+Cluster-level distinctness remains deployment scope (AT-D15T1-4; held by B5-BLK-2).
+DBR-AR-2 (durable routing audit) remains OPEN — a separate Database Router follow-on; it was not part of the B5-BLK-4 closure evidence bar (see the B5-E record) and its status is unchanged by this decision.
+Production runtime activation remains NOT READY / DO-NOT-ACTIVATE — 8 of 9 activation blockers remain OPEN; the B5-E closure of B5-BLK-4 changes no other blocker and does not make the gate ready.
+The gate §5 activation condition "provisioning audit sink available (B-6) — or an explicit, approved waiver" remains binding at activation time and is not waived by the B5-E closure.
+Next step: the next Dan-authorized governed slice; every remaining activation blocker is deployment-scope (B5-BLK-2/3/7/8/9) or product/integration-track (B5-BLK-5/6), and DBR-AR-2 is the named Database Router follow-on PRD.
+The 2026-07-12 re-grounding itself neither performs nor bypasses this decision; the decision is the separate B5-E record above.
 
 **IC-002 tenant lifecycle — eight authoritative states** (copied from
 `contracts/IC-002-Tenant-Startup-Contract.md`; the `Quarantined` state was added 2026-07-06 under PRD
@@ -192,7 +207,7 @@ Forbidden (B-5 era): production. Real production activation requires a separate,
 to the live main.py deferral : the gate sits ABOVE it; B-5 leaves the NotImplementedError deferral active and pinned.
 to a future runtime-gate impl : a later, separately-gated phase implements/wires the switch (wrapping/superseding the
                                 SP2_CP_* mechanism while preserving fail-closed); B-5 wires nothing.
-to B-6 (provisioning audit sink): the audit sink is an input + a blocker (B5-BLK-4); B-6 builds it separately.
+to B-6 (provisioning audit sink): the audit sink is a §5 input; its register blocker B5-BLK-4 was closed by the B5-E decision (2026-07-12) — the §5 availability condition remains binding; B-6 builds it separately.
 to Lovable/API-Gateway cutover : out of scope; Lovable is UI-only and never accesses DBs directly; cutover is separate.
 ```
 
