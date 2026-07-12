@@ -16,9 +16,24 @@ import + lineage write can commit atomically on the single resolved connection
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Optional
+from typing import Any, Optional, Protocol
 
-from .models import TenantRoutingView
+from .models import RoutingAuditEvent, TenantRoutingView
+
+
+class RoutingAuditPort(Protocol):
+    """Router-side routing-audit port (DBR-AR-2A; IC-002 class 3 — Database Router edge).
+
+    Synchronous, router-local, references-only: one `RoutingAuditEvent` per call. No
+    transport, no database, no thread, no queue, no retry loop, no background worker,
+    no vendor dependency. Accepts only the router-edge routing-decision event model.
+    Read/query/export/purge do not belong here (later Control Plane slices). Structural
+    (`Protocol`) so any operational-audit sink whose `initiate` accepts the shared event
+    supertype conforms; the in-memory sink under `adapters/providers/` implements it.
+    Durable persistence and its failure posture are later slices (DBR-AR-2B/2C).
+    """
+
+    def initiate(self, event: RoutingAuditEvent) -> None: ...
 
 
 class ControlPlaneRoutingReadPort(ABC):

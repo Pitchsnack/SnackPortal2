@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
+from shared.audit import OperationalAuditEvent
 from shared.errors import DenialReason
 from shared.secrets import SecretRef
 from shared.session import Lane
@@ -52,6 +53,50 @@ class RouteResult:
     association_version: Optional[str] = None
     connection: Optional[object] = None  # a bound TenantConnection for TENANT routes
     lane: Lane = Lane.INTERACTIVE  # which capacity lane served this route (D-13)
+
+
+# --- router-edge routing-decision audit events (DBR-AR-2A; IC-002 class 3 — Database Router edge) ---
+
+# Router-local source identity (mirrors the liveness `build_phase` string; main.py is
+# the composition root and is never imported from here — DAG rule).
+ROUTING_AUDIT_SOURCE_SERVICE = "database_router"
+ROUTING_AUDIT_SOURCE_VERSION = "4"
+
+# Additive-only event-shape version (IC-002 class 3 — Database Router edge).
+ROUTING_AUDIT_EVENT_VERSION = 1
+
+# Exact frozen action vocabulary of the router-edge routing-decision subclass.
+# Extension only by contract amendment (IC-002/IC-005).
+ROUTING_AUDIT_ACTIONS = ("Route", "RouteControl", "RouteDenied", "IsolationAnomaly")
+
+
+@dataclass(frozen=True, kw_only=True)
+class RoutingAuditEvent(OperationalAuditEvent):
+    """Router-edge routing-decision event (IC-002 class 3 — Database Router edge).
+
+    Immutable, versioned, references only. Extends the shared operational-audit shape
+    (inherited: `actor_ref`, `action`, `correlation_id`, `outcome`, `target_ref` — the
+    authenticated active-tenant reference) with the router-minted identity and reference
+    fields of the DBR-AR-2 contract §8. The Database Router is the sole emitter of this
+    subclass (IC-005 Runtime Operational Audit Emission); exactly one event is emitted
+    per completed or denied `route()` invocation. `recorded_at` is store-assigned at
+    persistence time (a later slice) and is deliberately NOT a router-minted field.
+    No credentials, tokens, payloads, tenant result data, hostnames, or topology —
+    `association_store_ref` is the D-14 reference, never a resolved value.
+    """
+
+    event_id: str  # router-minted UUID; the idempotency identity
+    event_version: int  # ROUTING_AUDIT_EVENT_VERSION; additive-only evolution
+    occurred_at: str  # UTC ISO-8601, router clock; informational only — never an ordering authority
+    source_service: str  # ROUTING_AUDIT_SOURCE_SERVICE
+    source_version: str  # ROUTING_AUDIT_SOURCE_VERSION
+    request_ref: Optional[str] = None  # RequestContext.request_id where present
+    resolved_tenant_ref: Optional[str] = None  # tenant the router actually bound (divergence => IsolationAnomaly)
+    public_code: Optional[str] = None  # canonical router-edge denial code; None on success
+    error_class: Optional[str] = None  # bounded internal vocabulary; unpopulated in DBR-AR-2A
+    association_store_ref: Optional[str] = None  # D-14 SecretRef.store_ref — a reference, never a value
+    association_version: Optional[str] = None  # association reference version bound for this route
+    lane: Optional[str] = None  # "interactive" / "bulk" (D-13 capacity lane)
 
 
 class RoutingDenied(Exception):

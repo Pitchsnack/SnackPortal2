@@ -1,14 +1,16 @@
 """DBR-AR-2 V1 — durable routing-audit CONTRACT guard (text-inspection only; no runtime, no driver import).
 
 Pins the DBR-AR-2 V1 contract-capture record (PRD DBR-AR-2 V1, 2026-07-12, baseline
-ac6ca9da48837b5c06cf6a9f1663af73fedf1b74): the dedicated contract document and the readiness-matrix
-cross-reference must keep DBR-AR-2 OPEN, keep every B5-E decision sentence intact, commit to the selected
-architecture (Option B — Control-Plane-owned durable routing-audit store behind a service boundary), carry the
-event-schema minimums and the forbidden-data list, state explicit failure semantics with no silent fail-open,
-claim no cross-database atomicity, authorize no cross-service import, claim no delivered implementation /
-schema / production wiring, keep the blocker count at 8 of 9, and record the implementation-slice sequence and
-the exact next governed step. Every detector carries a planted-mutation non-vacuity companion (PRD §12 battery).
-Text inspection only — pure stdlib; standalone-runnable:
+ac6ca9da48837b5c06cf6a9f1663af73fedf1b74) as evolved by DBR-AR-2A (2026-07-13): the dedicated contract document
+and the readiness-matrix cross-reference must keep DBR-AR-2 OPEN, keep every B5-E decision sentence intact,
+commit to the selected architecture (Option B — Control-Plane-owned durable routing-audit store behind a service
+boundary), carry the event-schema minimums and the forbidden-data list, state explicit failure semantics with no
+silent fail-open, claim no cross-database atomicity, authorize no cross-service import, claim no delivered
+persistence / schema / production wiring, keep the blocker count at 8 of 9, record the implementation-slice
+sequence and the exact next governed step, and carry the exact DBR-AR-2A status block (2A implemented when its
+PR merges; DBR-AR-2 remains OPEN; 2B-2E not started) plus the Before/After early-denial coverage sentences.
+Every detector carries a planted-mutation non-vacuity companion (PRD §12/§19 batteries). Text inspection only —
+pure stdlib; standalone-runnable:
   python tests/architecture/test_dbr_ar_2_readiness_contract.py
 """
 
@@ -44,7 +46,25 @@ _NO_ATOMICITY_SENTENCE = (
     " there is no distributed transaction and no two-phase commit"
 )
 _NO_IMPORT_SENTENCE = "no cross-service import is authorized"
-_NEXT_STEP_SENTENCE = "next governed step: dbr-ar-2a (event contract and port)"
+_NEXT_STEP_SENTENCE = "next implementation slice after dbr-ar-2a is merged, post-merge verified, and target-branch cleaned: dbr-ar-2b."
+
+# --- DBR-AR-2A status + coverage anchors (contract doc only; the matrix carries none) ---
+_2A_STATUS_SENTENCE = "dbr-ar-2a — implemented when this pr merges."
+_2A_OPEN_SENTENCE = "dbr-ar-2 — remains open."
+_2A_SLICES_SENTENCE = "dbr-ar-2b through dbr-ar-2e — not started."
+_BEFORE_2A_SENTENCE = (
+    "before dbr-ar-2a: two pre-target denials (tenant_routing_unavailable, no_active_tenant) had no router-edge audit event."
+)
+_AFTER_2A_SENTENCE = "after dbr-ar-2a: every completed or denied route() invocation produces exactly one router-edge in-memory event."
+_DURABILITY_SENTENCE = "durability remains unimplemented."
+_2A_ANCHORS = (
+    _2A_STATUS_SENTENCE,
+    _2A_OPEN_SENTENCE,
+    _2A_SLICES_SENTENCE,
+    _BEFORE_2A_SENTENCE,
+    _AFTER_2A_SENTENCE,
+    _DURABILITY_SENTENCE,
+)
 
 _REQUIRED_SCHEMA_FIELDS = (
     "event_id",
@@ -208,22 +228,35 @@ def test_dbr2_forbidden_data_nonvacuity() -> None:
     assert "tenant result data" not in norm.replace("tenant result data", ""), "forbidden-data pin must detect removal"
 
 
+def _norm_line(raw_line: str) -> str:
+    return " ".join(raw_line.lower().replace("*", "").replace("`", "").split())
+
+
 def test_dbr2_failure_semantics_explicit() -> None:
-    norm = _norm(_contract())
+    # Row-scoped (ATR-V2: no 400-char window bleed — a neighbor row's classification
+    # token can never satisfy a different row): every physical line carrying a §11
+    # condition must carry that condition's classification on the SAME line.
+    lines = [_norm_line(raw) for raw in _contract().splitlines()]
     for condition, classification in _FAILURE_ROWS:
-        idx = norm.find(condition)
-        assert idx >= 0, f"failure condition missing from the contract doc: {condition}"
-        window = norm[idx : idx + 400]
-        assert classification in window, f"condition {condition!r} must carry the classification {classification!r}"
+        rows = [line for line in lines if condition in line]
+        assert rows, f"failure condition missing from the contract doc: {condition}"
+        for row in rows:
+            assert classification in row, f"condition {condition!r} must carry the classification {classification!r} on its own row"
 
 
 def test_dbr2_failure_semantics_nonvacuity() -> None:
     norm = _norm(_contract())
     gutted = norm.replace("audit sink unavailable before dispatch", "")
     assert "audit sink unavailable before dispatch" not in gutted, "failure-row pin must detect removal"
-    # a row whose classification was stripped is detected: the classification must sit within the row window
-    fabricated = "audit sink unavailable before dispatch | (unclassified) | the request proceeds" + " x" * 250
-    assert "fail closed" not in fabricated[:400]
+    # a row whose classification was stripped is detected on its own line (no window bleed
+    # from an adjacent classified row)
+    fabricated = _norm_line("| 1 | Audit sink unavailable before dispatch | (unclassified) | the request proceeds |")
+    assert "audit sink unavailable before dispatch" in fabricated and "fail closed" not in fabricated
+    neighbor_bleed = [
+        _norm_line("| 5 | Audit storage becomes read-only | (unclassified) | writes fail |"),
+        _norm_line("| 6 | Audit queue is full | fail closed | no queue exists |"),
+    ]
+    assert "fail closed" not in neighbor_bleed[0] and "fail closed" in neighbor_bleed[1]
 
 
 def test_dbr2_denial_events_recorded() -> None:
@@ -301,7 +334,9 @@ _OPEN_MARKER_RE = re.compile(r"\b(?:open|in-memory|follow-on|not|pending|remains
 
 
 def _mask_v1_status(norm_text: str) -> str:
-    return norm_text.replace(_V1_STATUS_SENTENCE, " <v1-status-sentence> ")
+    # Exact-sentence masks only: any variant of a closure claim still trips m01.
+    masked = norm_text.replace(_V1_STATUS_SENTENCE, " <v1-status-sentence> ")
+    return masked.replace(_2A_STATUS_SENTENCE, " <2a-status-sentence> ")
 
 
 # Mutation 1 — DBR-AR-2 marked closed (G9-shaped, scoped to routing-audit lines).
@@ -327,6 +362,29 @@ def test_dbr2_m01_nonvacuity() -> None:
         assert _claims_dbr2_complete(f"the durable routing audit is {word}"), word
     assert not _claims_dbr2_complete("DBR-AR-2 (durable routing audit) remains OPEN")
     assert not _claims_dbr2_complete(_V1_STATUS_SENTENCE)
+
+
+# DBR-AR-2A recognized as implemented — exact status/coverage anchors (contract doc only;
+# the readiness matrix carries no 2A status line — the B5 gate guard scans it unmasked).
+def test_dbr2_2a_status_pinned() -> None:
+    norm = _norm(_contract())
+    for anchor in _2A_ANCHORS:
+        assert anchor in norm, f"missing DBR-AR-2A status/coverage anchor: {anchor!r}"
+
+
+def test_dbr2_2a_status_nonvacuity() -> None:
+    norm = _norm(_contract())
+    for anchor in _2A_ANCHORS:
+        assert anchor not in norm.replace(anchor, ""), anchor
+    # The mask is exact-sentence only: near-miss closure claims still trip m01.
+    assert _claims_dbr2_complete("dbr-ar-2a — implemented.")
+    assert _claims_dbr2_complete("dbr-ar-2 — implemented when this pr merges.")
+    assert not _claims_dbr2_complete("- DBR-AR-2A — implemented when this PR merges.")
+    # Exactly-one cannot silently become zero-or-more, and the early-denial coverage
+    # sentence cannot be reworded away without failing the anchor pin.
+    assert _AFTER_2A_SENTENCE not in _norm("after dbr-ar-2a: zero or more router-edge in-memory events may be produced")
+    assert _BEFORE_2A_SENTENCE not in _norm("before dbr-ar-2a: pre-target denials were fully audited")
+    assert _2A_SLICES_SENTENCE not in _norm("dbr-ar-2b through dbr-ar-2e — started")
 
 
 # Mutation 2 — B5-BLK-4 reopened.
@@ -412,14 +470,20 @@ def test_dbr2_m05_nonvacuity() -> None:
     assert not _lovable_marked_complete("the lovable cutover remains open (separate track)")
 
 
-# Mutations 8-11 — forbidden data allowed (raw DSN / token-JWT / request body / tenant result data).
-_FORBID_NEGATION_RE = re.compile(r"\b(?:never|not|no|nor|neither|must never|must not|cannot)\b[^.;|]{0,60}")
+# Mutations 8-11 — forbidden data allowed (raw DSN / token-JWT / request body / tenant
+# result data / hostname-topology). ATR-V2: the negation mask stops at colons so a
+# negated clause cannot hide an allowance introduced after a colon.
+_FORBID_NEGATION_RE = re.compile(r"\b(?:never|not|no|nor|neither|must never|must not|cannot)\b[^.;|:]{0,60}")
 _FORBID_ALLOW_RE = re.compile(
     r"\b(?:raw\s+dsns?|dsns?|passwords?|private\s+keys?|jwts?|bearer\s+tokens?|tokens?|authorization\s+headers?"
-    r"|request\s+bod(?:y|ies)|response\s+bod(?:y|ies)|tenant\s+result\s+data|tenant\s+business\s+content|secret\s+values?)\b"
+    r"|request\s+bod(?:y|ies)|response\s+bod(?:y|ies)|tenant\s+result\s+data|tenant\s+business\s+content|secret\s+values?"
+    r"|database\s+hostnames?|physical\s+database\s+names?|connection\s+topology|tenantconnection)\b"
     r"[^.;|]{0,60}?\b(?:(?:may|can|shall|will)\s+be|(?:is|are)(?:\s+be)?)\s+"
     r"(?:allowed|permitted|recorded|stored|included|persisted|carried|written|logged)\b"
 )
+
+# ATR-V2: a forbidden field name must never enter an event-schema table row.
+_FORBIDDEN_FIELD_ROW_RE = re.compile(r"\|\s*(?:request_body|response_body|jwt|bearer_token|dsn|password|access_token)\s*\|")
 
 
 def _permits_forbidden_data(norm_text: str) -> bool:
@@ -437,8 +501,24 @@ def test_dbr2_m08_to_m11_nonvacuity() -> None:
     assert _permits_forbidden_data("the request body will be included in the event")
     assert _permits_forbidden_data("tenant result data is allowed in audit events")
     assert _permits_forbidden_data("bearer tokens are persisted alongside the record")
+    assert _permits_forbidden_data("database hostnames are recorded for operator convenience")
+    assert _permits_forbidden_data("connection topology is included in the row")
+    assert _permits_forbidden_data("a tenantconnection is carried inside the event")
     assert not _permits_forbidden_data("raw dsns must never be recorded")
     assert not _permits_forbidden_data("no secret values are stored; references only")
+    # colon-stop: a negation cannot mask an allowance introduced after a colon
+    assert _permits_forbidden_data("never leak internals: raw dsns are recorded only here")
+
+
+def test_dbr2_no_forbidden_field_row() -> None:
+    assert not _FORBIDDEN_FIELD_ROW_RE.search(_norm(_both())), "a forbidden field name must never enter the event-schema table"
+
+
+def test_dbr2_no_forbidden_field_row_nonvacuity() -> None:
+    assert _FORBIDDEN_FIELD_ROW_RE.search(_norm("| `request_body` | OPTIONAL | captured for debugging |"))
+    assert _FORBIDDEN_FIELD_ROW_RE.search(_norm("| dsn | REQUIRED | connection detail |"))
+    assert _FORBIDDEN_FIELD_ROW_RE.search(_norm("| `jwt` | OPTIONAL | inbound credential |"))
+    assert not _FORBIDDEN_FIELD_ROW_RE.search(_norm("| `request_ref` | OPTIONAL | the RequestContext.request_id |"))
 
 
 # Mutation 12 is covered by test_dbr2_failure_semantics_explicit (all seven rows classified).
@@ -498,7 +578,7 @@ def _authorizes_cross_service_import(norm_text: str) -> bool:
     masked = masked.replace("no cross-service import", " <negated> ")
     return bool(
         re.search(
-            r"\bcross-service\s+import\s+is\s+(?:authorized|permitted|allowed)\b"
+            r"\bcross-service\s+imports?\s+(?:is|are)\s+(?:authorized|permitted|allowed)\b"
             r"|\b(?:database_router|control_plane)\s+(?:imports|may\s+import|is\s+authorized\s+to\s+import)\b",
             masked,
         )
@@ -512,6 +592,7 @@ def test_dbr2_m15_no_cross_service_import() -> None:
 
 def test_dbr2_m15_nonvacuity() -> None:
     assert _authorizes_cross_service_import("for this slice a cross-service import is authorized")
+    assert _authorizes_cross_service_import("cross-service imports are permitted for audit ingest")
     assert _authorizes_cross_service_import("database_router imports control_plane for the audit store")
     assert _authorizes_cross_service_import("control_plane may import database_router models")
     assert not _authorizes_cross_service_import("database_router does not import control_plane")
@@ -555,11 +636,14 @@ _V1_NEG_MASKS = (
     re.compile(r"\bnot\s+(?:implemented|added|applied|wired|created|built|shipped|delivered)\b"),
     re.compile(r"\bcreated-not-applied\b|\bcreated,\s+not\s+applied\b|\bnever\s+applied\b"),
     re.compile(r"\bno\s+(?:implementation|adapter|schema|migration|wiring|endpoint|queue|outbox|runtime\s+ddl)\b"),
+    re.compile(r"\bnone\s+begins?\b"),
 )
-_V1_CLAIM_RE = re.compile(
-    r"\bv1\b[^.;|]{0,120}?\b(?:delivers?|delivered|implements?|implemented|wires?|wired|creates?|created|builds?|built|ships?|shipped)\b"
-    r"|\b(?:delivers?|delivered|implements?|implemented|wires?|wired|creates?|created|builds?|built|ships?|shipped)\b[^.;|]{0,60}?\bv1\b"
+# ATR-V2: claim-verb list extended (begins/adds/includes/applies + past forms).
+_V1_CLAIM_VERBS = (
+    r"(?:delivers?|delivered|implements?|implemented|wires?|wired|creates?|created|builds?|built|ships?|shipped"
+    r"|begins?|began|adds?|added|includes?|included|applies|applied)"
 )
+_V1_CLAIM_RE = re.compile(r"\bv1\b[^.;|]{0,120}?\b" + _V1_CLAIM_VERBS + r"\b" + r"|\b" + _V1_CLAIM_VERBS + r"\b[^.;|]{0,60}?\bv1\b")
 _SCHEMA_DELIVERED_RE = re.compile(
     r"\b(?:ddl|schema|migration|table)\b[^.;|]{0,80}?\b(?:applied|delivered|landed|executed|migrated|in\s+place)\b"
     r"|\b(?:applied|delivered|landed|executed)\b[^.;|]{0,40}?\b(?:ddl|schema|migration)\b"
@@ -583,7 +667,9 @@ def _claims_v1_implements(norm_text: str) -> bool:
 def _claims_routing_schema_delivered(text: str) -> bool:
     for raw_line in text.lower().splitlines():
         line = _masked_for_v1_claims(" ".join(raw_line.replace("*", "").replace("`", "").split()))
-        if "dbr-ar-2" not in line and "routing audit" not in line and "routing-audit" not in line:
+        # ATR-V2: 'routing_audit' also matches future underscored table names
+        # (e.g. control_routing_audit) so a delivered-table claim cannot hide there.
+        if "dbr-ar-2" not in line and "routing audit" not in line and "routing-audit" not in line and "routing_audit" not in line:
             continue
         if _SCHEMA_DELIVERED_RE.search(line):
             return True
@@ -602,7 +688,11 @@ def test_dbr2_m20_nonvacuity() -> None:
     assert _claims_v1_implements("this v1 delivers the durable adapter")
     assert _claims_v1_implements("the ingest endpoint was implemented in v1")
     assert _claims_v1_implements("v1 wires the production sink")
+    assert _claims_v1_implements("v1 adds the durable ingest edge")
+    assert _claims_v1_implements("the persistence layer was included in v1")
+    assert _claims_v1_implements("v1 applies the routing-audit ddl")
     assert not _claims_v1_implements("this v1 records the implementation contract only")
+    assert not _claims_v1_implements("none begin in v1")
     assert not _claims_v1_implements(_V1_STATUS_SENTENCE)
 
 
@@ -613,8 +703,10 @@ def test_dbr2_m21_no_schema_delivered_claim() -> None:
 def test_dbr2_m21_nonvacuity() -> None:
     assert _claims_routing_schema_delivered("the routing-audit table DDL is applied to production")
     assert _claims_routing_schema_delivered("dbr-ar-2 schema delivered and live")
+    assert _claims_routing_schema_delivered("the control_routing_audit table is applied")
     assert not _claims_routing_schema_delivered("created-not-applied DDL for the routing-audit table")
     assert not _claims_routing_schema_delivered("the provisioning control_audit DDL (B-7A) is unrelated here")
+    assert not _claims_routing_schema_delivered("internal code routing_audit_unavailable; wire disclosure stays the sanitized bucket")
 
 
 def test_dbr2_m22_no_production_wiring_claim() -> None:
@@ -656,6 +748,8 @@ if __name__ == "__main__":
             test_dbr2_baseline_nonvacuity,
             test_dbr2_open_status_pinned_per_document,
             test_dbr2_open_status_nonvacuity,
+            test_dbr2_2a_status_pinned,
+            test_dbr2_2a_status_nonvacuity,
             test_dbr2_standing_decisions_restated_intact,
             test_dbr2_standing_decisions_nonvacuity,
             test_dbr2_selected_architecture_pinned,
@@ -687,6 +781,8 @@ if __name__ == "__main__":
             test_dbr2_m05_nonvacuity,
             test_dbr2_m08_to_m11_forbidden_data_never_allowed,
             test_dbr2_m08_to_m11_nonvacuity,
+            test_dbr2_no_forbidden_field_row,
+            test_dbr2_no_forbidden_field_row_nonvacuity,
             test_dbr2_m13_no_silent_fail_open,
             test_dbr2_m13_nonvacuity,
             test_dbr2_m14_no_false_atomicity,
