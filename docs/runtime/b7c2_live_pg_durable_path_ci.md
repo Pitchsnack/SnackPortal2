@@ -14,12 +14,13 @@ These harnesses are **standalone scripts**, not pytest tests: each takes a `conn
 `_pg.run()` in its `__main__` block (there is no pytest fixture). The workflow therefore invokes each via
 `python <file>` — **not** `pytest` — and applies a **non-vacuity gate** (below).
 
-**Run set (13 harnesses):**
+**Run set (14 harnesses):**
 
 - `tests/control_plane/requires_pg/` — `test_pg_distinctness.py`, `test_pg_distinctness_ledger.py`,
   `test_pg_control_audit_ddl.py`, `test_pg_control_store_runtime_wiring.py`, `test_pg_provisioning_ddl.py`,
   `test_pg_onboarding_e2e_schema_application.py`, `test_pg_control_schema_mcc.py`,
-  `test_pg_tenant_business_schema_07c.py`, `test_pg_composition_onboarding_07d.py`
+  `test_pg_tenant_business_schema_07c.py`, `test_pg_composition_onboarding_07d.py`,
+  `test_dbr_ar_2d_routing_audit_live_pg.py`
 - `tests/lineage_service/requires_pg/` — `test_pg_append_only.py`, `test_pg_chain_serialization.py`,
   `test_pg_privilege.py`, `test_pg_traversal.py`
 
@@ -29,6 +30,16 @@ DDL, and the 07C tenant business schema — proofs that were previously manual-o
 `test_pg_composition_onboarding_07d.py` was added by **PRD 07D-1** (composition activation): it proves the
 env-selected `create_app()` composition onboards a real physical tenant to READY end-to-end with all secrets
 resolved by reference (canonical `tenant/<tenant_id>/dsn` refs; admin DSN by `control/provisioning-admin-dsn`).
+`test_dbr_ar_2d_routing_audit_live_pg.py` was added by **PRD DBR-AR-2D V2** (the disposable routing-audit
+proof): after a blob-pinned STOP-before-connect check it applies the reviewed routing-audit DDL
+(`010_routing_audit.sql` then `011_routing_audit_append_only.sql`) to a proof-owned scratch database on the
+ephemeral service and proves the real Database-Router → `BoundedRoutingAuditPolicy` → `HttpRoutingAudit` →
+Control-Plane ingest → `PostgresRoutingAuditStore` → PostgreSQL durable path end-to-end (all four event
+classes, INSERTED/DUPLICATE_MATCH/CONFLICT idempotency, fresh store/server reconstruction, append-only
+rejection, bounded failure semantics), then drops the proof database. **Disposable-only:** the 2D harness
+owns its proof database lifecycle (create → prove → drop) on the ephemeral service; no standing or
+production DDL application occurs, DDL 010/011 stay un-enrolled from the standing apply order, and
+DBR-AR-2 remains OPEN (the standing-environment 2D witnesses are separately governed).
 
 **Excluded:** `test_pg_distinctness`'s sibling `test_b3a_multi_database_topology.py` is **NOT** run here — it
 requires **four physically distinct clusters** (`SP2_B3A_CONTROL_DB_DSN` / `_ACME_` / `_ZETA_` / `_NOVA_`) and

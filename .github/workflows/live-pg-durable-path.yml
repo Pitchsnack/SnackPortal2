@@ -125,7 +125,8 @@ jobs:
             tests/control_plane/requires_pg/test_pg_onboarding_e2e_schema_application.py \
             tests/control_plane/requires_pg/test_pg_control_schema_mcc.py \
             tests/control_plane/requires_pg/test_pg_tenant_business_schema_07c.py \
-            tests/control_plane/requires_pg/test_pg_composition_onboarding_07d.py ; do
+            tests/control_plane/requires_pg/test_pg_composition_onboarding_07d.py \
+            tests/control_plane/requires_pg/test_dbr_ar_2d_routing_audit_live_pg.py ; do
             echo "::group::$h"
             out="$(python "$h" 2>&1)"
             code=$?

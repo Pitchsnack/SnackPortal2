@@ -1,8 +1,11 @@
 """DBR-AR-2 V1 — durable routing-audit CONTRACT guard (text-inspection only; no runtime, no driver import).
 
 Pins the DBR-AR-2 V1 contract-capture record (PRD DBR-AR-2 V1, 2026-07-12, baseline
-ac6ca9da48837b5c06cf6a9f1663af73fedf1b74) as evolved by DBR-AR-2A (2026-07-13), DBR-AR-2B (2026-07-13), and
-DBR-AR-2C (2026-07-14): the
+ac6ca9da48837b5c06cf6a9f1663af73fedf1b74) as evolved by DBR-AR-2A (2026-07-13), DBR-AR-2B (2026-07-13),
+DBR-AR-2C (2026-07-14), and the DBR-AR-2D disposable/hosted sub-slice (2026-07-14 — status anchors only:
+the 2D status records the delivered disposable/hosted PostgreSQL proof with the standing-environment
+witnesses not started, DBR-AR-2E stays not started, and the live-durability truth sentence is scoped to
+the disposable proof; DBR-AR-2 remains OPEN and every other pin is unchanged): the
 dedicated contract document and the readiness-matrix cross-reference must keep DBR-AR-2 OPEN, keep every B5-E
 decision sentence intact, commit to the selected architecture (Option B — Control-Plane-owned durable
 routing-audit store behind a service boundary), carry the event-schema minimums and the forbidden-data list,
@@ -77,7 +80,14 @@ _2C_STATUS_SENTENCE = (
     " path in the same explicitly authorized degraded mode)."
 )
 _2A_OPEN_SENTENCE = "dbr-ar-2 — remains open."
-_2A_SLICES_SENTENCE = "dbr-ar-2d through dbr-ar-2e — not started."
+# PRD DBR-AR-2D V2: the combined 2C-era "2d through 2e — not started" sentence is superseded by the
+# truthful per-slice status pair (disposable/hosted proof delivered; standing witnesses not started;
+# 2D still OPEN; 2E not started).
+_2D_STATUS_SENTENCE = (
+    "dbr-ar-2d — disposable/hosted postgresql proof delivered by this slice; standing-environment"
+    " witnesses not started and separately governed; dbr-ar-2d remains open."
+)
+_2E_STATUS_SENTENCE = "dbr-ar-2e — not started."
 _DDL_NOT_APPLIED_SENTENCE = "the ddl is not applied."
 _2C_COMPOSITION_SENTENCE = (
     "production composition is implemented as an explicit opt-in environment seam and stays dormant unless"
@@ -88,13 +98,16 @@ _BEFORE_2A_SENTENCE = (
     "before dbr-ar-2a: two pre-target denials (tenant_routing_unavailable, no_active_tenant) had no router-edge audit event."
 )
 _AFTER_2A_SENTENCE = "after dbr-ar-2a: every completed or denied route() invocation produces exactly one router-edge in-memory event."
-_DURABILITY_SENTENCE = "live durability is not yet proven."
+_DURABILITY_SENTENCE = (
+    "live durability evidence exists for the disposable postgresql proof only; standing-environment durability remains not yet proven."
+)
 _2A_ANCHORS = (
     _2A_STATUS_SENTENCE,
     _2B_STATUS_SENTENCE,
     _2C_STATUS_SENTENCE,
     _2A_OPEN_SENTENCE,
-    _2A_SLICES_SENTENCE,
+    _2D_STATUS_SENTENCE,
+    _2E_STATUS_SENTENCE,
     _DDL_NOT_APPLIED_SENTENCE,
     _2C_COMPOSITION_SENTENCE,
     _WRITER_ROLE_SENTENCE,
@@ -373,6 +386,7 @@ _OPEN_MARKER_RE = re.compile(r"\b(?:open|in-memory|follow-on|not|pending|remains
 def _mask_v1_status(norm_text: str) -> str:
     # Exact-sentence masks only: any variant of a closure claim still trips m01.
     masked = norm_text.replace(_V1_STATUS_SENTENCE, " <v1-status-sentence> ")
+    masked = masked.replace(_2D_STATUS_SENTENCE, " <2d-status-sentence> ")
     masked = masked.replace(_2C_STATUS_SENTENCE, " <2c-status-sentence> ")
     masked = masked.replace(_2B_STATUS_SENTENCE, " <2b-status-sentence> ")
     return masked.replace(_2A_STATUS_SENTENCE, " <2a-status-sentence> ")
@@ -432,10 +446,17 @@ def test_dbr2_2a_status_nonvacuity() -> None:
     # sentence cannot be reworded away without failing the anchor pin.
     assert _AFTER_2A_SENTENCE not in _norm("after dbr-ar-2a: zero or more router-edge in-memory events may be produced")
     assert _BEFORE_2A_SENTENCE not in _norm("before dbr-ar-2a: pre-target denials were fully audited")
-    assert _2A_SLICES_SENTENCE not in _norm("dbr-ar-2d through dbr-ar-2e — started")
-    assert _2A_SLICES_SENTENCE not in _norm("dbr-ar-2c through dbr-ar-2e — not started")  # the superseded 2B-era form no longer satisfies
+    assert _2D_STATUS_SENTENCE not in _norm("dbr-ar-2d through dbr-ar-2e — not started")  # the superseded 2C-era form no longer satisfies
+    assert _2D_STATUS_SENTENCE not in _norm(_2D_STATUS_SENTENCE.replace("witnesses not started", "witnesses complete")), (
+        "a standing-witness completion mask must be detectable"
+    )
+    assert _2E_STATUS_SENTENCE not in _norm("dbr-ar-2e — started")
+    assert _claims_dbr2_complete("dbr-ar-2d — delivered.")  # a shortened 2D closure claim is unmasked
+    assert _claims_dbr2_complete("dbr-ar-2d — disposable/hosted postgresql proof delivered.")  # ditto without the open markers
+    assert not _claims_dbr2_complete("- " + _2D_STATUS_SENTENCE)  # the exact truthful sentence stays sanctioned
     assert _2C_COMPOSITION_SENTENCE not in _norm("production composition is implemented")  # a shortened form must not satisfy
     assert _DURABILITY_SENTENCE not in _norm("live durability is proven")
+    assert _DURABILITY_SENTENCE not in _norm("live durability evidence exists for the disposable postgresql proof only")  # shortened form
     assert _WRITER_ROLE_SENTENCE not in _norm("the writer-role ddl is delivered by dbr-ar-2b")
 
 
@@ -827,6 +848,7 @@ def test_dbr2_m30_nonvacuity() -> None:
     assert _claims_durability_proven("durability has been demonstrated on postgresql")
     assert _claims_durability_proven("restart survival is proven")
     assert not _claims_durability_proven("live durability is not yet proven.")
+    assert not _claims_durability_proven(_DURABILITY_SENTENCE)  # the scoped 2D truth sentence never satisfies an unscoped claim
     assert not _claims_durability_proven("audit event survives process restart")
 
 
