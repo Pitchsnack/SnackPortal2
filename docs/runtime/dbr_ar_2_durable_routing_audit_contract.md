@@ -18,14 +18,15 @@ Authoritative standing status (unchanged by this document):
 - The Lovable cutover remains OPEN (B5-BLK-5 / B5-BLK-6; separate track).
 - The gate §5 activation condition "provisioning audit sink available (B-6) — or an explicit, approved waiver" remains binding at activation time and is not waived by anything in this document.
 
-**DBR-AR-2A / DBR-AR-2B status (event contract and port; durable storage capability):**
+**DBR-AR-2A / DBR-AR-2B / DBR-AR-2C status (event contract and port; durable storage capability; composition and failure semantics):**
 
 - DBR-AR-2A — implemented.
 - DBR-AR-2B — storage capability implemented when this PR merges: created-not-applied DDL, append-only enforcement, Control Plane store, internal ingest adapter, and uncomposed Database Router client.
+- DBR-AR-2C — composition and failure semantics implemented when this PR merges: explicit opt-in environment-selected composition (C2; selector unset preserves the prior in-memory composition byte-for-byte), audit-before-hand-back with connection discard and the bounded condition-1 denial, one bounded synchronous idempotent retry for transient unavailability only, and fixed-key degradation counters for denial/anomaly record loss (the §11 condition-3 witness, covering the isolation-anomaly path in the same explicitly authorized degraded mode).
 - DBR-AR-2 — remains OPEN.
-- DBR-AR-2C through DBR-AR-2E — not started.
+- DBR-AR-2D through DBR-AR-2E — not started.
 - The DDL is not applied.
-- Production composition is not implemented.
+- Production composition is implemented as an explicit opt-in environment seam and stays dormant unless selected; no production environment selects it and the activation gate is unchanged.
 - Live durability is not yet proven.
 - Least-privilege routing-audit writer-role DDL remains separately governed and is not delivered by DBR-AR-2B.
 - Production activation remains NOT READY / DO-NOT-ACTIVATE.
@@ -398,10 +399,10 @@ explicitly authorized runbook step.
 
 ## 21. Next governed step
 
-**Next implementation slice after DBR-AR-2B is fully merged,
+**Next implementation slice after DBR-AR-2C is fully merged,
 post-merge verified, and target-cleaned:
-DBR-AR-2C — composition and failure semantics.**
+DBR-AR-2D — live proof and operator runbook.**
 
-DBR-AR-2C (composition and failure semantics) is not yet authorized; it requires its own GPT PRD,
+DBR-AR-2D (live proof and operator runbook) is not yet authorized; it requires its own GPT PRD,
 readiness review, and Dan START-GATE, following the standard loop (independent pre-merge verify → Dan human
 merge → post-merge verify → target-only cleanup).

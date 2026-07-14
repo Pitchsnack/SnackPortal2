@@ -13,9 +13,14 @@ the psycopg connection factory + the env tenant-credential SecretStore and retur
 composed ``DatabaseRouter``; unset/empty keeps the caller's injected composition; a
 malformed/off-scheme value fails closed (``ValueError``). The seam is inert — it opens
 no connection, starts no service, and touches no physical database (construction only).
-It composes ``build_router``'s default in-memory audit sink, so the composed router is
-NOT production-durable; a durable routing-audit sink is a separate follow-on (DBR-AR-2).
-This seam does NOT complete the Physical Multi-Database MVP or make Smoke C runnable.
+Routing audit is selected by the DBR-AR-2C opt-in (``SP2_DBR_ROUTING_AUDIT_BASE_URL``,
+consulted gate-first only while this seam is active): unset preserves the prior default
+in-memory sink byte-for-byte; a valid value composes the durable ``HttpRoutingAudit``
+client behind the bounded per-event-class ``BoundedRoutingAuditPolicy`` (one idempotent
+retry for transient unavailability only; condition-1 fail-closed for allowed routes;
+condition-3 preserve-and-count for denial/anomaly records — never a fallback once
+selected). DBR-AR-2 remains OPEN pending the DBR-AR-2D live durability proof. This seam
+does NOT complete the Physical Multi-Database MVP or make Smoke C runnable.
 
 ``build_dispatch_server_from_env`` is the paired follow-on: it composes an internal
 Database Router dispatch **server object** from config — ``build_router_from_env()`` first
@@ -30,16 +35,17 @@ DB, or make Smoke C runnable.
 from __future__ import annotations
 
 import os
-from typing import Dict, Iterable, Optional, Tuple
+from typing import Dict, Iterable, Optional, Tuple, Type, cast
 from urllib.parse import urlsplit
 
-from shared.audit import OperationalAudit
+from shared.audit import OperationalAudit, OperationalAuditEvent
 from shared.secrets import SecretStore
 
 from .adapters.providers.in_memory_audit_sink import InMemoryAuditSink
 from .cache import RoutingViewCache
+from .models import RoutingAuditEvent
 from .pool import ConnectionPoolManager
-from .ports import ConnectionFactory, ControlPlaneRoutingReadPort
+from .ports import ConnectionFactory, ControlPlaneRoutingReadPort, RoutingAuditPort
 from .resolver import RoutingResolver
 from .router import DatabaseRouter
 
@@ -61,6 +67,25 @@ SP2_DBR_ROUTING_READ_BASE_URL = "SP2_DBR_ROUTING_READ_BASE_URL"
 # Only consulted when the router seam is active (SP2_DBR_ROUTING_READ_BASE_URL selected).
 SP2_DBR_DISPATCH_HOST = "SP2_DBR_DISPATCH_HOST"
 SP2_DBR_DISPATCH_PORT = "SP2_DBR_DISPATCH_PORT"
+
+# The DBR-AR-2C durable routing-audit opt-in selector (C2 — explicit opt-in composition).
+# Non-secret internal config: the loopback/internal Control-Plane routing-audit INGEST base
+# URL, never a credential. Consulted ONLY when the outer routing seam
+# (SP2_DBR_ROUTING_READ_BASE_URL) is active — gate-first, the merged dispatch-seam
+# precedent. Unset/empty preserves the prior in-memory composition byte-for-byte; a
+# structurally valid internal http URL (no credentials, query, or fragment) selects the
+# durable HttpRoutingAudit client wrapped in the bounded per-event-class policy; anything
+# else raises ValueError (fail closed — once durable mode is selected there is NEVER a
+# fallback to the in-memory sink).
+SP2_DBR_ROUTING_AUDIT_BASE_URL = "SP2_DBR_ROUTING_AUDIT_BASE_URL"
+
+# The durable routing-audit client timeout (seconds). Unset/empty -> the pinned default
+# 2.0; otherwise a finite number in (0, 30.0]; anything else raises ValueError BEFORE any
+# client construction (fail closed). Read at build time only.
+SP2_DBR_ROUTING_AUDIT_TIMEOUT_SECONDS = "SP2_DBR_ROUTING_AUDIT_TIMEOUT_SECONDS"
+
+_ROUTING_AUDIT_TIMEOUT_DEFAULT = 2.0
+_ROUTING_AUDIT_TIMEOUT_MAX = 30.0
 
 
 def build_router(
@@ -90,6 +115,145 @@ def build_router(
     )
 
 
+class BoundedRoutingAuditPolicy(OperationalAudit):
+    """DBR-AR-2C per-event-class routing-audit failure policy (contract §11/§12).
+
+    Wraps the durable routing-audit transport client behind the same ``initiate`` port
+    and owns BOTH 2C failure decisions:
+
+    * exactly ONE immediate, synchronous, idempotent retry of the SAME event (same
+      ``event_id``, same payload — maximum two total transport calls), and only when
+      the transport failure kind is ``unavailable`` (transient); ``invalid`` and
+      ``conflict`` are NEVER retried (contract §12). No retry loop, no sleep, no queue,
+      no outbox, no thread, no background machinery.
+    * per-event-class terminal posture (contract §11): a finally-failed ``Route`` /
+      ``RouteControl`` write re-raises so the router fails the ALLOWED route closed
+      (condition 1 — ``router.py`` discards the acquired connection and answers the
+      bounded ``routing_audit_unavailable`` denial); a finally-failed ``RouteDenied`` /
+      ``IsolationAnomaly`` write is swallowed and counted so the ORIGINAL denial (and
+      the anomaly path's existing connection discard + ``routing_isolation_fault``
+      denial) is preserved unchanged — condition 3, CONTINUE WITH EXPLICITLY AUTHORIZED
+      DEGRADED MODE; the request outcome is never upgraded. The audit failure itself is
+      never audited into the failed sink (contract §7: NOT RECORDABLE IN THE FAILED
+      SINK — no recursive audit-failure event exists).
+
+    The degradation witness is the fixed two-key integer snapshot below — no payload,
+    tenant, correlation, credential, list, metrics backend, or monitoring integration.
+    A duplicate replay answered ``DUPLICATE_MATCH`` is SUCCESS inside the wrapped
+    client and never reaches this policy's failure paths.
+    """
+
+    def __init__(self, inner: RoutingAuditPort, *, transport_error: Type[Exception]) -> None:
+        self._inner = inner
+        self._transport_error = transport_error
+        self._route_denied_audit_failures = 0
+        self._isolation_anomaly_audit_failures = 0
+
+    def degradation_snapshot(self) -> Dict[str, int]:
+        """The fixed-key in-memory degradation counters (integer counts only)."""
+        return {
+            "route_denied_audit_failures": self._route_denied_audit_failures,
+            "isolation_anomaly_audit_failures": self._isolation_anomaly_audit_failures,
+        }
+
+    def _retryable(self, failure: Exception) -> bool:
+        # Exactly the transient transport kind is retryable; invalid/conflict never (§12).
+        return isinstance(failure, self._transport_error) and getattr(failure, "kind", None) == "unavailable"
+
+    def _terminal(self, event: OperationalAuditEvent, failure: Exception) -> None:
+        if event.action == "RouteDenied":
+            self._route_denied_audit_failures += 1
+            return  # the original denial is preserved unchanged (condition 3)
+        if event.action == "IsolationAnomaly":
+            self._isolation_anomaly_audit_failures += 1
+            return  # the existing discard + isolation denial are preserved (condition-3 scope)
+        raise failure  # Route / RouteControl: the allowed route fails closed (condition 1)
+
+    def initiate(self, event: OperationalAuditEvent) -> None:
+        routed = cast(RoutingAuditEvent, event)  # the router mints RoutingAuditEvent exclusively
+        try:
+            self._inner.initiate(routed)
+            return
+        except Exception as first:
+            if not self._retryable(first):
+                self._terminal(event, first)
+                return
+        try:
+            self._inner.initiate(routed)  # the single bounded retry: the SAME event object
+        except Exception as second:
+            self._terminal(event, second)
+
+
+def _routing_audit_timeout_from_env() -> float:
+    """Parse ``SP2_DBR_ROUTING_AUDIT_TIMEOUT_SECONDS`` fail-closed: unset/empty/whitespace
+    -> the pinned default ``2.0``; otherwise a number with ``0 < timeout <= 30.0`` (NaN
+    fails the comparison and ±inf falls outside the bounds, so an accepted value is finite
+    by construction); anything else -> ``ValueError`` raised BEFORE any client
+    construction."""
+    raw = (os.environ.get(SP2_DBR_ROUTING_AUDIT_TIMEOUT_SECONDS) or "").strip()
+    if not raw:
+        return _ROUTING_AUDIT_TIMEOUT_DEFAULT
+    try:
+        timeout = float(raw)
+    except ValueError:
+        raise ValueError(
+            f"invalid {SP2_DBR_ROUTING_AUDIT_TIMEOUT_SECONDS}={raw!r}; expected a finite number of"
+            f" seconds in (0, {_ROUTING_AUDIT_TIMEOUT_MAX}]"
+        ) from None
+    if not (0.0 < timeout <= _ROUTING_AUDIT_TIMEOUT_MAX):
+        raise ValueError(
+            f"invalid {SP2_DBR_ROUTING_AUDIT_TIMEOUT_SECONDS}={raw!r}; timeout must be finite and in"
+            f" (0, {_ROUTING_AUDIT_TIMEOUT_MAX}] seconds"
+        )
+    return timeout
+
+
+def _routing_audit_from_env() -> Optional[OperationalAudit]:
+    """The DBR-AR-2C durable routing-audit opt-in selector (C2 — explicit opt-in).
+
+    Consulted ONLY when the outer routing seam is active (``build_router_from_env`` calls
+    this after its own gate — gate-first, so the audit variables are never read while the
+    outer seam is inactive).
+
+    * ``SP2_DBR_ROUTING_AUDIT_BASE_URL`` unset, or empty/whitespace after stripping →
+      ``None``: ``build_router`` composes its default in-memory sink — the PRIOR
+      composition, byte-for-byte (the contract §17 rollback posture; durable mode was
+      never selected, so this is not a fallback).
+    * a structurally valid internal ``http://host[:port]`` value with NO credentials,
+      NO query, and NO fragment → the durable ``HttpRoutingAudit`` client (bound to
+      exactly that base URL and the validated timeout) wrapped in the bounded
+      per-event-class ``BoundedRoutingAuditPolicy``. Passing the non-None ``audit=``
+      into ``build_router`` makes its in-memory fallback structurally unreachable:
+      once durable mode is selected there is NEVER a fallback to the in-memory sink.
+    * anything else → ``ValueError`` at the composition boundary, BEFORE any client
+      construction (fail closed — never a silent fallback; the configured value is
+      deliberately NOT echoed so a mis-pasted credential can never leak through the
+      error).
+    """
+    raw = (os.environ.get(SP2_DBR_ROUTING_AUDIT_BASE_URL) or "").strip()
+    if not raw:
+        return None
+    parts = urlsplit(raw)
+    if (
+        parts.scheme != "http"
+        or not parts.netloc
+        or "@" in parts.netloc  # no userinfo/credential material may ride the audit URL
+        or parts.query
+        or parts.fragment
+    ):
+        raise ValueError(
+            f"unsupported {SP2_DBR_ROUTING_AUDIT_BASE_URL}; expected an internal http://host[:port]"
+            " routing-audit ingest base URL with no credentials, query, or fragment (fail closed —"
+            " the configured value is not echoed)"
+        )
+    timeout = _routing_audit_timeout_from_env()
+    # Lazy relative import (the merged seam shape): the transport client is deferred to
+    # selection time so database_router/main.py stays import-light while inactive.
+    from .adapters.providers.http_routing_audit import HttpRoutingAudit, RoutingAuditTransportError
+
+    return BoundedRoutingAuditPolicy(HttpRoutingAudit(raw, timeout=timeout), transport_error=RoutingAuditTransportError)
+
+
 def build_router_from_env() -> Optional[DatabaseRouter]:
     """The config-selectable production composition seam (mirrors the merged gateway
     ``build_authenticator_from_env`` / ``build_router_dispatch_from_env`` seams).
@@ -117,15 +281,17 @@ def build_router_from_env() -> Optional[DatabaseRouter]:
     Secret store: ``EnvTenantSecretStore()`` reads ``SNACKPORTAL_TENANT_SECRET_DIR`` (an
     infra-owned, deployment-pinned absolute path); the adapter's ``tenant/`` guard is
     preserved (composition cannot weaken it) and no in-slice secret-store hardening is
-    performed. Audit: this seam composes ``build_router``'s default in-memory audit sink,
-    so the composed router's routing audit is NON-durable — a durable routing-audit sink
-    is a separate follow-on (DBR-AR-2). The bulk/interactive pool lanes (D-13) are
-    preserved via ``build_router``'s defaults.
+    performed. Audit (DBR-AR-2C): selected by ``_routing_audit_from_env`` AFTER this
+    seam's own gate (gate-first — the audit variables are never consulted while this
+    seam is inactive): unset preserves the prior default in-memory sink byte-for-byte;
+    a valid opt-in composes the durable client behind the bounded policy and durable
+    mode never falls back. The bulk/interactive pool lanes (D-13) are preserved via
+    ``build_router``'s defaults.
 
     No overclaim: this inert seam proves config-assembly of a production ``DatabaseRouter``;
-    it does NOT open a physical database, start a running service, provide durable routing
-    audit, complete the Physical Multi-Database MVP, or make Smoke C runnable. It is one
-    prerequisite among several.
+    it does NOT open a physical database, start a running service, prove live audit
+    durability (DBR-AR-2D scope), complete the Physical Multi-Database MVP, or make
+    Smoke C runnable. It is one prerequisite among several.
     """
     raw = (os.environ.get(SP2_DBR_ROUTING_READ_BASE_URL) or "").strip()
     if not raw:
@@ -136,6 +302,8 @@ def build_router_from_env() -> Optional[DatabaseRouter]:
             f"unsupported {SP2_DBR_ROUTING_READ_BASE_URL}={raw!r}; expected an internal "
             "http://host[:port] control-plane routing-read base URL (fail closed — no silent fallback)"
         )
+    # The DBR-AR-2C audit opt-in is consulted only past the gate above (gate-first).
+    audit = _routing_audit_from_env()
     # Lazy provider imports keep database_router/main.py driver-free at import: the psycopg
     # connection factory module binds the driver at load, so it is deferred to selection time.
     from .adapters.providers.env_tenant_secret_store import EnvTenantSecretStore
@@ -146,6 +314,7 @@ def build_router_from_env() -> Optional[DatabaseRouter]:
         read=HttpRoutingRead(raw),
         secret_store=EnvTenantSecretStore(),
         connection_factory=PsycopgConnectionFactory(),
+        audit=audit,
     )
 
 
