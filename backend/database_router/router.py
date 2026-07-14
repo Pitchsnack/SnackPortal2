@@ -69,7 +69,14 @@ class DatabaseRouter:
             self._denied(ctx, ctx.active_tenant_id, denied.public_code)
             raise
         if target is RoutingTarget.CONTROL:
-            self._ok(ctx, None, "RouteControl")
+            try:
+                self._ok(ctx, None, "RouteControl")
+            except Exception:
+                # DBR-AR-2C (contract §11 condition 1): an ALLOWED control route whose
+                # durable audit ultimately failed is never handed back — fail closed with
+                # the bounded non-leaking denial. No connection was acquired for the
+                # control target, and the denial is never recursively audited (§7).
+                raise unavailable("routing_audit_unavailable") from None
             return RouteResult(target=RoutingTarget.CONTROL)
 
         tenant_id = ctx.active_tenant_id  # present by determination
@@ -86,15 +93,24 @@ class DatabaseRouter:
             self._pool_for(lane).discard(conn)
             raise unavailable("routing_isolation_fault")
 
-        self._ok(
-            ctx,
-            tenant_id,
-            "Route",
-            resolved_tenant_ref=conn.tenant_id,
-            association_store_ref=view.database_association_ref.store_ref,
-            association_version=conn.association_version,
-            lane=lane.value,
-        )
+        try:
+            self._ok(
+                ctx,
+                tenant_id,
+                "Route",
+                resolved_tenant_ref=conn.tenant_id,
+                association_store_ref=view.database_association_ref.store_ref,
+                association_version=conn.association_version,
+                lane=lane.value,
+            )
+        except Exception:
+            # DBR-AR-2C (contract §11 condition 1): an ALLOWED tenant route whose durable
+            # audit ultimately failed is never handed back — the acquired connection is
+            # discarded through the existing pool API and the request fails closed with
+            # the bounded non-leaking denial. The denial is never recursively audited
+            # (§7: an audit failure is NOT RECORDABLE IN THE FAILED SINK).
+            self._pool_for(lane).discard(conn)
+            raise unavailable("routing_audit_unavailable") from None
         return RouteResult(
             target=RoutingTarget.TENANT,
             tenant_id=tenant_id,

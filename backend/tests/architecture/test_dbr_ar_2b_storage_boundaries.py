@@ -1,9 +1,13 @@
 """DBR-AR-2B — durable routing-audit storage/transport boundary guard (architecture; no DB, no runtime).
 
 Machine-pins the DBR-AR-2B execution boundaries (PRD DBR-AR-2B §13.2; START-GATE MC1-MC10 /
-EC1-EC10) by text/AST inspection of the committed sources: the exact authorized production
-surface; untouched composition roots (neither ``main.py`` references or imports any 2B
-artifact — the transport pair is UNCOMPOSED); no cross-service import in either direction;
+EC1-EC10) by text/AST inspection of the committed sources, as EVOLVED IN LOCKSTEP by
+DBR-AR-2C (PRD DBR-AR-2C V2 D9): the exact authorized production surface; composition
+confined to the two authorized composition roots (each ``main.py`` references ONLY its own
+side of the 2B transport pair through lazy relative imports — the pair is COMPOSED as an
+explicit opt-in seam, and every other production file, including
+``database_router/router.py``, stays free of 2B symbols); no cross-service import in
+either direction;
 a stdlib-only router client with no database library, no Control-DB selector, and none of
 the phase-4 needle substrings; no queue/thread/worker/background machinery and none of the
 banned server-lifecycle identifiers in the new adapters; the exact ingest endpoint and
@@ -197,33 +201,64 @@ def test_2b_authorized_production_files_exist() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 2 + 18. Composition roots untouched; no production composition anywhere
+# 2 + 18. Composition confined to the two authorized DBR-AR-2C composition roots
+# (evolved in lockstep by DBR-AR-2C D9: the 2B transport pair is COMPOSED as an
+# explicit opt-in seam, exclusively through the two main.py roots; every other
+# production file stays free of 2B symbols)
 # ---------------------------------------------------------------------------
-def test_2b_main_composition_roots_reference_no_2b_artifact() -> None:
-    for main in (_DR_MAIN, _CP_MAIN):
+# The DBR-AR-2C placement matrix: each composition root may reference ONLY its own side
+# of the transport pair (plus the shared ``http_routing_audit`` module-path token its
+# lazy relative import carries — the CP root's ingest adapter module name contains it).
+# Cross-side symbols stay forbidden so neither service ever composes the other's adapter.
+_DR_MAIN_ALLOWED = frozenset({"HttpRoutingAudit", "http_routing_audit"})
+_CP_MAIN_ALLOWED = frozenset({"PostgresRoutingAuditStore", "build_routing_audit_server", "http_routing_audit"})
+
+
+def test_2c_main_composition_roots_reference_only_authorized_2b_symbols() -> None:
+    for main, allowed in ((_DR_MAIN, _DR_MAIN_ALLOWED), (_CP_MAIN, _CP_MAIN_ALLOWED)):
         text = _text(main)
         for symbol in _2B_SYMBOLS:
-            assert symbol not in text, f"{main.name} must not reference {symbol} — the 2B transport pair is UNCOMPOSED"
+            if symbol in allowed:
+                assert symbol in text, f"{main.name} must reference {symbol} — it is a DBR-AR-2C composition root"
+            else:
+                assert symbol not in text, f"{main.name} must not reference {symbol} — cross-side 2B symbols stay uncomposed"
         for module in _scan.imported_modules(main):
-            assert "routing_audit" not in module, f"{main.name} must not import a 2B module ({module})"
+            assert "routing_audit" not in module, (
+                f"{main.name} must not ABSOLUTELY import a 2B module ({module}); the composition imports are lazy relative imports"
+            )
 
 
-def test_2b_no_production_composition_census() -> None:
-    # The ONLY production files referencing the 2B classes/factories are their defining modules.
+def test_2c_no_production_composition_census() -> None:
+    # The ONLY production files referencing the 2B classes/factories are their defining
+    # modules plus the two DBR-AR-2C composition roots (D9). Notably
+    # database_router/router.py stays clean: its condition-1 failure handling references
+    # no 2B symbol (the policy's terminal re-raise reaches it as a plain exception).
     defining = {_CP_MODEL.resolve(), _CP_INGEST.resolve(), _CP_PG.resolve(), _DR_CLIENT.resolve()}
+    roots = {_DR_MAIN.resolve(), _CP_MAIN.resolve()}
     for package in _scan.SERVICE_PACKAGES + ["shared"]:
         for path in (_BACKEND / package).rglob("*.py"):
-            if _scan.SKIP_PARTS & set(path.parts) or path.resolve() in defining:
+            if _scan.SKIP_PARTS & set(path.parts) or path.resolve() in defining or path.resolve() in roots:
                 continue
             text = _text(path)
             for symbol in ("PostgresRoutingAuditStore", "build_routing_audit_server", "HttpRoutingAudit"):
-                assert symbol not in text, f"{_scan.relposix(path)} references {symbol}: production composition is DBR-AR-2C scope"
+                assert symbol not in text, f"{_scan.relposix(path)} references {symbol}: composition is confined to the two DBR-AR-2C roots"
 
 
-def test_2b_composition_census_nonvacuity() -> None:
+def test_2c_composition_census_nonvacuity() -> None:
     assert "HttpRoutingAudit" in _text(_DR_CLIENT), "census target symbol must exist where defined"
     assert "PostgresRoutingAuditStore" in _text(_CP_PG)
     assert "build_routing_audit_server" in _text(_CP_INGEST)
+    # The evolved placement matrix is live (non-vacuous): each root genuinely references
+    # its own side of the pair...
+    assert "HttpRoutingAudit" in _text(_DR_MAIN), "the DBR root must really compose the transport client"
+    assert "PostgresRoutingAuditStore" in _text(_CP_MAIN), "the CP root must really compose the durable store"
+    assert "build_routing_audit_server" in _text(_CP_MAIN), "the CP root must really compose the ingest server"
+    # ...router.py genuinely stays outside the composition census...
+    assert "HttpRoutingAudit" not in _text(_BACKEND / "database_router" / "router.py")
+    # ...and the matrix rows are disjoint on the class/factory symbols, so a cross-side
+    # placement (either root composing the other's adapter) is detectable.
+    assert "HttpRoutingAudit" not in _CP_MAIN_ALLOWED and "PostgresRoutingAuditStore" not in _DR_MAIN_ALLOWED
+    assert "build_routing_audit_server" not in _DR_MAIN_ALLOWED
 
 
 # ---------------------------------------------------------------------------
@@ -505,9 +540,9 @@ if __name__ == "__main__":
     _scan.run(
         [
             test_2b_authorized_production_files_exist,
-            test_2b_main_composition_roots_reference_no_2b_artifact,
-            test_2b_no_production_composition_census,
-            test_2b_composition_census_nonvacuity,
+            test_2c_main_composition_roots_reference_only_authorized_2b_symbols,
+            test_2c_no_production_composition_census,
+            test_2c_composition_census_nonvacuity,
             test_2b_no_cross_service_import,
             test_2b_router_client_stdlib_only_no_db_no_selector,
             test_2b_client_needle_scan_nonvacuity,

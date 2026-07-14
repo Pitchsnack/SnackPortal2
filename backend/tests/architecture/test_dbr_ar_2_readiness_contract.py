@@ -1,17 +1,21 @@
 """DBR-AR-2 V1 — durable routing-audit CONTRACT guard (text-inspection only; no runtime, no driver import).
 
 Pins the DBR-AR-2 V1 contract-capture record (PRD DBR-AR-2 V1, 2026-07-12, baseline
-ac6ca9da48837b5c06cf6a9f1663af73fedf1b74) as evolved by DBR-AR-2A (2026-07-13) and DBR-AR-2B (2026-07-13): the
+ac6ca9da48837b5c06cf6a9f1663af73fedf1b74) as evolved by DBR-AR-2A (2026-07-13), DBR-AR-2B (2026-07-13), and
+DBR-AR-2C (2026-07-14): the
 dedicated contract document and the readiness-matrix cross-reference must keep DBR-AR-2 OPEN, keep every B5-E
 decision sentence intact, commit to the selected architecture (Option B — Control-Plane-owned durable
 routing-audit store behind a service boundary), carry the event-schema minimums and the forbidden-data list,
 state explicit failure semantics with no silent fail-open, claim no cross-database atomicity, authorize no
 cross-service import, keep the Control Plane the sole Control-DB writer with no router credential, claim no
-applied schema / production wiring / proven live durability, keep the blocker count at 8 of 9, record the
-implementation-slice sequence and the exact next governed step (DBR-AR-2C), and carry the exact DBR-AR-2A/2B
+applied schema / proven live durability, keep the blocker count at 8 of 9, record the
+implementation-slice sequence and the exact next governed step (DBR-AR-2D), and carry the exact DBR-AR-2A/2B/2C
 status block (2A implemented; 2B storage capability implemented when its PR merges — created-not-applied DDL,
 append-only enforcement, Control Plane store, internal ingest adapter, uncomposed Database Router client;
-DBR-AR-2 remains OPEN; 2C-2E not started; DDL not applied; composition not implemented; live durability not yet
+2C composition and failure semantics implemented when its PR merges — explicit opt-in C2 composition,
+condition-1 discard + bounded denial, one bounded idempotent retry, fixed-key degradation counters;
+DBR-AR-2 remains OPEN; 2D-2E not started; DDL not applied; composition implemented as a dormant explicit
+opt-in seam only; live durability not yet
 proven; writer-role DDL separately governed) plus the Before/After early-denial coverage sentences.
 Every detector carries a planted-mutation non-vacuity companion (PRD §12/§19 batteries). Text inspection only —
 pure stdlib; standalone-runnable:
@@ -51,23 +55,34 @@ _NO_ATOMICITY_SENTENCE = (
 )
 _NO_IMPORT_SENTENCE = "no cross-service import is authorized"
 _NEXT_STEP_SENTENCE = (
-    "next implementation slice after dbr-ar-2b is fully merged, post-merge verified, and target-cleaned:"
-    " dbr-ar-2c — composition and failure semantics."
+    "next implementation slice after dbr-ar-2c is fully merged, post-merge verified, and target-cleaned:"
+    " dbr-ar-2d — live proof and operator runbook."
 )
 _SOLE_WRITER_SENTENCE = "the control plane remains the sole writer of the control database"
 _NO_ROUTER_CREDENTIAL_SENTENCE = "it gains no control-db credential under option b"
 _NO_QUEUE_SENTENCE = "there is no queue or outbox to fill"
 
-# --- DBR-AR-2A / DBR-AR-2B status + coverage anchors (contract doc only; the matrix carries none) ---
+# --- DBR-AR-2A / DBR-AR-2B / DBR-AR-2C status + coverage anchors (contract doc only; the matrix carries none) ---
 _2A_STATUS_SENTENCE = "dbr-ar-2a — implemented."
 _2B_STATUS_SENTENCE = (
     "dbr-ar-2b — storage capability implemented when this pr merges: created-not-applied ddl, append-only"
     " enforcement, control plane store, internal ingest adapter, and uncomposed database router client."
 )
+_2C_STATUS_SENTENCE = (
+    "dbr-ar-2c — composition and failure semantics implemented when this pr merges: explicit opt-in"
+    " environment-selected composition (c2; selector unset preserves the prior in-memory composition"
+    " byte-for-byte), audit-before-hand-back with connection discard and the bounded condition-1 denial,"
+    " one bounded synchronous idempotent retry for transient unavailability only, and fixed-key degradation"
+    " counters for denial/anomaly record loss (the §11 condition-3 witness, covering the isolation-anomaly"
+    " path in the same explicitly authorized degraded mode)."
+)
 _2A_OPEN_SENTENCE = "dbr-ar-2 — remains open."
-_2A_SLICES_SENTENCE = "dbr-ar-2c through dbr-ar-2e — not started."
+_2A_SLICES_SENTENCE = "dbr-ar-2d through dbr-ar-2e — not started."
 _DDL_NOT_APPLIED_SENTENCE = "the ddl is not applied."
-_NO_COMPOSITION_SENTENCE = "production composition is not implemented."
+_2C_COMPOSITION_SENTENCE = (
+    "production composition is implemented as an explicit opt-in environment seam and stays dormant unless"
+    " selected; no production environment selects it and the activation gate is unchanged."
+)
 _WRITER_ROLE_SENTENCE = "least-privilege routing-audit writer-role ddl remains separately governed and is not delivered by dbr-ar-2b."
 _BEFORE_2A_SENTENCE = (
     "before dbr-ar-2a: two pre-target denials (tenant_routing_unavailable, no_active_tenant) had no router-edge audit event."
@@ -77,10 +92,11 @@ _DURABILITY_SENTENCE = "live durability is not yet proven."
 _2A_ANCHORS = (
     _2A_STATUS_SENTENCE,
     _2B_STATUS_SENTENCE,
+    _2C_STATUS_SENTENCE,
     _2A_OPEN_SENTENCE,
     _2A_SLICES_SENTENCE,
     _DDL_NOT_APPLIED_SENTENCE,
-    _NO_COMPOSITION_SENTENCE,
+    _2C_COMPOSITION_SENTENCE,
     _WRITER_ROLE_SENTENCE,
     _BEFORE_2A_SENTENCE,
     _AFTER_2A_SENTENCE,
@@ -357,6 +373,7 @@ _OPEN_MARKER_RE = re.compile(r"\b(?:open|in-memory|follow-on|not|pending|remains
 def _mask_v1_status(norm_text: str) -> str:
     # Exact-sentence masks only: any variant of a closure claim still trips m01.
     masked = norm_text.replace(_V1_STATUS_SENTENCE, " <v1-status-sentence> ")
+    masked = masked.replace(_2C_STATUS_SENTENCE, " <2c-status-sentence> ")
     masked = masked.replace(_2B_STATUS_SENTENCE, " <2b-status-sentence> ")
     return masked.replace(_2A_STATUS_SENTENCE, " <2a-status-sentence> ")
 
@@ -402,17 +419,22 @@ def test_dbr2_2a_status_nonvacuity() -> None:
     assert _claims_dbr2_complete("dbr-ar-2a — implemented when this pr merges.")  # the superseded 2A long form is unmasked
     assert _claims_dbr2_complete("dbr-ar-2b — implemented.")
     assert _claims_dbr2_complete("dbr-ar-2b — storage capability implemented.")  # a shortened 2B closure claim is unmasked
+    assert _claims_dbr2_complete("dbr-ar-2c — implemented.")  # a shortened 2C closure claim is unmasked
+    assert _claims_dbr2_complete("dbr-ar-2c — composition and failure semantics implemented.")
     assert _claims_dbr2_complete("dbr-ar-2 — implemented when this pr merges.")
     assert not _claims_dbr2_complete("- DBR-AR-2A — implemented.")
     assert not _claims_dbr2_complete(
         "- DBR-AR-2B — storage capability implemented when this PR merges: created-not-applied DDL, append-only"
         " enforcement, Control Plane store, internal ingest adapter, and uncomposed Database Router client."
     )
+    assert not _claims_dbr2_complete("- " + _2C_STATUS_SENTENCE)
     # Exactly-one cannot silently become zero-or-more, and the early-denial coverage
     # sentence cannot be reworded away without failing the anchor pin.
     assert _AFTER_2A_SENTENCE not in _norm("after dbr-ar-2a: zero or more router-edge in-memory events may be produced")
     assert _BEFORE_2A_SENTENCE not in _norm("before dbr-ar-2a: pre-target denials were fully audited")
-    assert _2A_SLICES_SENTENCE not in _norm("dbr-ar-2c through dbr-ar-2e — started")
+    assert _2A_SLICES_SENTENCE not in _norm("dbr-ar-2d through dbr-ar-2e — started")
+    assert _2A_SLICES_SENTENCE not in _norm("dbr-ar-2c through dbr-ar-2e — not started")  # the superseded 2B-era form no longer satisfies
+    assert _2C_COMPOSITION_SENTENCE not in _norm("production composition is implemented")  # a shortened form must not satisfy
     assert _DURABILITY_SENTENCE not in _norm("live durability is proven")
     assert _WRITER_ROLE_SENTENCE not in _norm("the writer-role ddl is delivered by dbr-ar-2b")
 
