@@ -80,16 +80,19 @@ _PIN_007 = "aa6066a7398cfb81e8e96067927023c3f11bb391"
 _DDL_009 = _CONTROL / "009_control_tenants_cas_version.sql"
 _PIN_009 = "64f8227e829d446a74efeb3784e06b0e28f47549"
 # DBR-AR-2B: pin the routing-audit DDL pair — 010 (control_routing_audit table) and 011 (its
-# append-only trigger). Both are created-not-applied repository artifacts (applied only by a
-# separately governed later phase — DBR-AR-2D live proof); they are deliberately NOT enrolled
-# in the B5-4 standing-topology apply order (see test_b5_standing_topology_boundaries.py).
-# NO requires_pg harness pins them yet, so there is no _REVIEWED_010_BLOB/_REVIEWED_011_BLOB
-# cross-check here — the b7c1r2 meta-guard's INV-B fires only on harness pins, none of which
-# exist for 010/011 in 2B; the DBR-AR-2D slice adds the harness and its cross-check in lockstep.
+# append-only trigger). Both are created-not-applied repository artifacts, deliberately NOT
+# enrolled in the B5-4 standing-topology apply order (see test_b5_standing_topology_boundaries.py).
+# PRD DBR-AR-2D V2 added the anticipated lockstep: the disposable live proof
+# (test_dbr_ar_2d_routing_audit_live_pg.py) pins the SAME blobs under _REVIEWED_010_BLOB /
+# _REVIEWED_011_BLOB and STOPs before connecting/applying on a mismatch; the cross-check below
+# enforces repository pin == live-harness reviewed pin == committed blob (b7c1r2 INV-B lockstep).
+# The disposable proof does NOT standing-apply the DDL; standing application stays the separately
+# governed operator runbook (infrastructure/runbooks/dbr_ar_2_durable_routing_audit.md).
 _DDL_010 = _CONTROL / "010_routing_audit.sql"
 _DDL_011 = _CONTROL / "011_routing_audit_append_only.sql"
 _PIN_010 = "0c5eeecd5e20ef9fe4f11293b6c6561ae7cc897e"
 _PIN_011 = "cea40fc62c063e9f711fdb7ac90b00a8859586d4"
+_2D_HARNESS = _scan.BACKEND_ROOT / "tests" / "control_plane" / "requires_pg" / "test_dbr_ar_2d_routing_audit_live_pg.py"
 _MCC_HARNESS = _scan.BACKEND_ROOT / "tests" / "control_plane" / "requires_pg" / "test_pg_control_schema_mcc.py"
 # (harness var name, guard pin, DDL path) — var names are LITERAL so the b7c1r2 meta-guard's pin-var scan sees them.
 _MCC_PINS = [
@@ -184,6 +187,22 @@ def test_routing_audit_ddl_blobs_match_known_pins() -> None:
     )
 
 
+def test_dbr_ar_2d_harness_pins_match_current_ddl() -> None:
+    # PRD DBR-AR-2D V2 §7.1 lockstep: the disposable live proof pins 010/011 under
+    # _REVIEWED_010_BLOB / _REVIEWED_011_BLOB; each harness pin must equal the CURRENT blob of
+    # its DDL (single source of truth = the DDL bytes; the guard pins above move in the same PR).
+    text = _2D_HARNESS.read_text(encoding="utf-8")
+    m010 = re.search(r'_REVIEWED_010_BLOB\s*=\s*"([0-9a-f]{40})"', text)
+    m011 = re.search(r'_REVIEWED_011_BLOB\s*=\s*"([0-9a-f]{40})"', text)
+    assert m010 and m011, "test_dbr_ar_2d_routing_audit_live_pg.py must pin _REVIEWED_010_BLOB and _REVIEWED_011_BLOB"
+    assert m010.group(1) == _git_blob_sha1(_DDL_010), (
+        "test_dbr_ar_2d_routing_audit_live_pg.py _REVIEWED_010_BLOB diverges from the current 010 DDL blob"
+    )
+    assert m011.group(1) == _git_blob_sha1(_DDL_011), (
+        "test_dbr_ar_2d_routing_audit_live_pg.py _REVIEWED_011_BLOB diverges from the current 011 DDL blob"
+    )
+
+
 def test_mcc_harness_pins_match_current_ddl() -> None:
     # MCC Option P lockstep: the live-PG harness pins 004-007 under _REVIEWED_004_BLOB.._REVIEWED_007_BLOB;
     # each harness pin must equal the CURRENT blob of its DDL (single source of truth = the DDL bytes).
@@ -205,6 +224,7 @@ if __name__ == "__main__":
             test_distinctness_harness_008_pin_matches_current_ddl,
             test_mcc_control_registry_ddl_blobs_match_known_pins,
             test_routing_audit_ddl_blobs_match_known_pins,
+            test_dbr_ar_2d_harness_pins_match_current_ddl,
             test_mcc_harness_pins_match_current_ddl,
         ]
     )
