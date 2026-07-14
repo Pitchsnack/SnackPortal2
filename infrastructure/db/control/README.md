@@ -49,18 +49,22 @@ harness (`backend/tests/control_plane/requires_pg/test_pg_control_schema_mcc.py`
 (07D). Blob pins live in `tests/architecture/test_b7c1_control_audit_ddl_blob_pins.py` (in lockstep with the
 harness pins).
 
-## Scope boundary (DBR-AR-2D — disposable proof only)
+## Scope boundary (DBR-AR-2D — disposable proof + V3 standing witnesses)
 
 `010_routing_audit.sql` and `011_routing_audit_append_only.sql` (the DBR-AR-2B durable routing-audit
 table + its append-only trigger) were **reviewed and exercised by the DBR-AR-2D disposable live proof**
 (`backend/tests/control_plane/requires_pg/test_dbr_ar_2d_routing_audit_live_pg.py`): the harness pins both
 files by LF-normalized git blob (`_REVIEWED_010_BLOB` / `_REVIEWED_011_BLOB`, STOP-before-connect on
 mismatch), applies 010 then 011 to a proof-owned disposable database, proves the durable routing-audit
-path end-to-end, and drops the proof database. They remain **created, not applied** for every standing
-environment and are deliberately **not enrolled in the B5-4 standing apply order**
-(`b5_standing_topology.py` applies 001–009 only). The standing-environment apply is the separately
-governed operator runbook `infrastructure/runbooks/dbr_ar_2_durable_routing_audit.md` (its execution
-requires its own Dan authorization); production enablement remains unauthorized until DBR-AR-2E.
+path end-to-end, and drops the proof database. Under **PRD DBR-AR-2D V3** (Dan START-GATE, 2026-07-14)
+they were additionally **manually applied — backup-first, blob-verified, 010 then 011, each exactly
+once — to the retained local standing Control DB ONLY** (`snackportal2_control_local`) by the standing
+witness operator (`backend/tests/control_plane/requires_pg/dbr_ar_2d_standing_witnesses.py`, per the
+operator runbook), which then delivered the contract §16 standing witnesses (exactly four durable
+evidence rows). They remain **created, not applied for every tenant, staging, and production database**
+and are deliberately **not enrolled in the B5-4 standing apply order**
+(`b5_standing_topology.py` applies 001–009 only; the V3 apply was manual, never automatic).
+Production enablement remains unauthorized until DBR-AR-2E.
 
 ## Scope boundary (PRD 06 B-7 — provisioning audit DDL)
 
