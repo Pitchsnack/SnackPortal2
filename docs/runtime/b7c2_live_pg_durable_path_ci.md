@@ -38,8 +38,8 @@ Control-Plane ingest → `PostgresRoutingAuditStore` → PostgreSQL durable path
 classes, INSERTED/DUPLICATE_MATCH/CONFLICT idempotency, fresh store/server reconstruction, append-only
 rejection, bounded failure semantics), then drops the proof database. **Disposable-only:** the 2D harness
 owns its proof database lifecycle (create → prove → drop) on the ephemeral service; no standing or
-production DDL application occurs, DDL 010/011 stay un-enrolled from the standing apply order, and
-DBR-AR-2 remains OPEN (the standing-environment 2D witnesses are separately governed).
+production DDL application occurs, and DDL 010/011 stay un-enrolled from the standing apply order. The
+workstream status is: DBR-AR-2 — CLOSED (Dan-authorized governance decision, 2026-07-16); this closure closes zero B5 activation blockers, the blocker census remains nine with 8 of 9 OPEN, and production remains NOT READY / DO-NOT-ACTIVATE. (The retained standing-environment 2D witnesses were delivered under DBR-AR-2D V3.)
 
 **Excluded:** `test_pg_distinctness`'s sibling `test_b3a_multi_database_topology.py` is **NOT** run here — it
 requires **four physically distinct clusters** (`SP2_B3A_CONTROL_DB_DSN` / `_ACME_` / `_ZETA_` / `_NOVA_`) and

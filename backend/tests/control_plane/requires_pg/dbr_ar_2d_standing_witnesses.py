@@ -77,8 +77,10 @@ and is never committed or attached.
 
 NO OVERCLAIM. A green run delivers the DBR-AR-2 contract §16 standing-environment witnesses over
 the retained LOCAL standing topology at database granularity — nothing about production readiness,
-deployment, cluster-level distinctness, or activation. DBR-AR-2 remains OPEN; DBR-AR-2E remains
-not started and unauthorized; production activation remains NOT READY / DO-NOT-ACTIVATE.
+deployment, cluster-level distinctness, or activation. DBR-AR-2 — CLOSED (Dan-authorized governance
+decision, 2026-07-16); this closure closes zero B5 activation blockers, the blocker census remains
+nine with 8 of 9 OPEN, and production remains NOT READY / DO-NOT-ACTIVATE. DBR-AR-2E —
+production-activation evidence consolidated (Outcome A — REMAIN NOT READY / DO-NOT-ACTIVATE).
 """
 
 from __future__ import annotations
@@ -1816,7 +1818,9 @@ def cmd_run(_args: argparse.Namespace) -> int:
         print(f"RUN FAILED ({failures} obligation(s) not holding; status exit {status_rc})")
         return 1
     print("RUN OK — the DBR-AR-2 contract §16 standing witnesses are delivered on the retained standing topology;")
-    print("         DBR-AR-2 remains OPEN; DBR-AR-2E remains not started; production remains NOT READY / DO-NOT-ACTIVATE.")
+    print("         DBR-AR-2 — CLOSED (Dan-authorized governance decision, 2026-07-16); this closure closes zero B5")
+    print("         activation blockers, the blocker census remains nine with 8 of 9 OPEN, and production remains")
+    print("         NOT READY / DO-NOT-ACTIVATE.")
     return 0
 
 
@@ -1941,10 +1945,15 @@ def cmd_status(_args: argparse.Namespace) -> int:
         norm = " ".join(contract.read_text(encoding="utf-8").lower().replace("*", "").replace("`", "").split())
         if "production runtime activation remains not ready / do-not-activate" not in norm:
             return "the contract doc no longer records the fail-closed activation posture"
-        if "dbr-ar-2 — remains open." not in norm:
-            return "the contract doc no longer records DBR-AR-2 as OPEN"
-        if "dbr-ar-2e — not started." not in norm:
-            return "the contract doc no longer records DBR-AR-2E as not started"
+        closure_sentence = (
+            "dbr-ar-2 — closed (dan-authorized governance decision, 2026-07-16); this closure closes zero b5"
+            " activation blockers, the blocker census remains nine with 8 of 9 open, and production remains"
+            " not ready / do-not-activate."
+        )
+        if closure_sentence not in norm:
+            return "the contract doc no longer records the exact canonical DBR-AR-2 closure sentence"
+        if "dbr-ar-2e — production-activation evidence consolidated; outcome a is remain not ready / do-not-activate." not in norm:
+            return "the contract doc no longer records the consolidated 2E status"
         return None
 
     checks: List[Tuple[str, Callable[[], Optional[str]]]] = [
@@ -1956,7 +1965,7 @@ def cmd_status(_args: argparse.Namespace) -> int:
         ("alpha/beta preserved: Ready on their own distinct physical databases", alpha_beta_problem),
         ("zero V3 residue outside control_routing_audit; no disposable proof database", residue_problem),
         ("no leftover in-process service/listener", listener_problem),
-        ("locked activation posture intact (NOT READY; DBR-AR-2 OPEN; DBR-AR-2E not started)", posture_problem),
+        ("locked activation posture intact (NOT READY; DBR-AR-2 closure record intact; 2E evidence consolidated)", posture_problem),
     ]
     for name, fn in checks:
         try:
@@ -1984,7 +1993,10 @@ def cmd_status(_args: argparse.Namespace) -> int:
     if failures:
         print(f"STATUS FAILED ({failures} check(s) not holding)")
         return 1
-    print("STATUS OK — standing witnesses delivered and preserved; DBR-AR-2 remains OPEN; production activation remains blocked")
+    print(
+        "STATUS OK — standing witnesses delivered and preserved; the DBR-AR-2 closure record is intact"
+        " (Dan-authorized governance decision, 2026-07-16); production activation remains blocked"
+    )
     return 0
 
 

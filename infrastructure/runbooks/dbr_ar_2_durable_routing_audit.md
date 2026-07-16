@@ -8,7 +8,9 @@ DISPOSABLE-ONLY DBR-AR-2D sub-slice; executing it against the standing Control d
 separately governed, Dan-authorized standing-environment run (not performed by the delivering slice).
 The disposable/hosted proof that validated every step below is
 `backend/tests/control_plane/requires_pg/test_dbr_ar_2d_routing_audit_live_pg.py` (create → prove → drop;
-no standing database touched). Production enablement remains unauthorized until DBR-AR-2E.
+no standing database touched). Production enablement remains unauthorized (the DBR-AR-2E evidence review
+concluded Outcome A — REMAIN NOT READY / DO-NOT-ACTIVATE; enablement requires the separate human-governed
+production activation decision — see §10 and §11).
 
 Standing rules (inherited from `infrastructure/runbooks/README.md`): secret references only (D-14 —
 never a DSN, password, token, or credential in this document, a shell history echo, or any evidence
@@ -37,8 +39,10 @@ applied only by this explicit, operator-driven procedure. No runtime service eve
 7. **Explicit proof that no tenant database is targeted**: the connection's `current_database()` is the
    Control database; tenant databases (`sp2_tenant_*`) are never connected to and never named in any
    statement of this procedure.
-8. **DBR-AR-2E approval required before production enablement** — this runbook never authorizes
-   selecting the durable composition in production; production enablement remains unauthorized.
+8. **Production enablement remains unauthorized** — this runbook never authorizes selecting the durable
+   composition in production; the DBR-AR-2E evidence review concluded Outcome A — REMAIN NOT READY /
+   DO-NOT-ACTIVATE, and enablement requires the separate human-governed production activation decision
+   (8 of 9 activation blockers OPEN).
 
 ## 2. Apply (governed ops apply — never runtime DDL)
 
@@ -81,8 +85,9 @@ ingest endpoint available
 → durable row verified
 ```
 
-This sequence is documentation only; production enablement remains unauthorized until the DBR-AR-2E
-evidence review (the activation gate posture is unchanged by this runbook).
+This sequence is documentation only; production enablement remains unauthorized (the DBR-AR-2E
+evidence review concluded Outcome A — REMAIN NOT READY / DO-NOT-ACTIVATE; the activation gate posture is
+unchanged by this runbook).
 
 ## 5. Disable / incident response (allowed actions)
 
@@ -124,7 +129,7 @@ The evidence-generating `run` is EXACTLY-ONCE: the operator refuses a second `ap
 `test_pg_dbr_ar_2d_standing_witnesses.py` harness plus the operator `status` command. This record
 changes no rule above: the automatic standing apply order remains 001–009, no tenant, staging, or
 production database receives 010/011, no runtime service ever applies DDL, and production
-enablement remains unauthorized until the DBR-AR-2E evidence review.
+enablement remains unauthorized (Outcome A — REMAIN NOT READY / DO-NOT-ACTIVATE; see §10 and §11).
 
 ## 8. Incident query procedure (documentation only — references-only)
 
@@ -157,6 +162,18 @@ is deployment-era scope (B5-BLK-9).
 The DBR-AR-2E V1 evidence consolidation (Dan START-GATE, 2026-07-16) indexes this runbook in
 `docs/runtime/dbr_ar_2_production_activation_evidence.md` and its machine-readable index; it
 changes no procedure above, closes zero B5 activation blockers, keeps the activation-blocker
-census at nine, and concludes Outcome A — REMAIN NOT READY / DO-NOT-ACTIVATE. DBR-AR-2 remains
-OPEN; production enablement remains unauthorized (a separate Dan-authorized DBR-AR-2 closure
-decision and a separate production activation decision would still be required).
+census at nine, and concludes Outcome A — REMAIN NOT READY / DO-NOT-ACTIVATE. At the 2E
+consolidation DBR-AR-2 remained OPEN; production enablement remains unauthorized (a separate
+production activation decision would still be required; the subsequent Dan-authorized DBR-AR-2
+closure decision is recorded in §11).
+
+## 11. DBR-AR-2 closure record (2026-07-16)
+
+DBR-AR-2 — CLOSED (Dan-authorized governance decision, 2026-07-16); this closure closes zero B5 activation blockers, the blocker census remains nine with 8 of 9 OPEN, and production remains NOT READY / DO-NOT-ACTIVATE.
+
+The closure changes no procedure in this runbook: the apply/verify/disable/incident procedures
+above stay in force for the retained standing environment, the automatic standing apply order
+remains 001–009, DDL 010/011 remain un-enrolled and applied only to the retained local standing
+Control database, the standing witness harness remains manual-only (never CI-enrolled), production
+enablement remains unauthorized (the separate human-governed production activation decision), and
+ATR-2B-1 remains a separately governed HTTP-hardening follow-up.

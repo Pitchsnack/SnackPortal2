@@ -116,7 +116,22 @@ _MVP_BOUNDARY_SENTENCE = (
     "mvp acceptance at database granularity is not cluster-level proof, not production deployment,"
     " not production activation, not lovable cutover, not billing completion, and not ai agent completion"
 )
-_DBR_SENTENCE = "dbr-ar-2 (durable routing audit) remains open — a separate database router follow-on"
+# The ONLY sanctioned DBR-AR-2 closure claim (PRD DBR-AR-2 Closure Decision V2 START-GATE §7 —
+# MC-CD-3): the exact full anchored sentence — date + Dan-authorized governance-decision label +
+# zero-blocker-closure statement + nine-census/8-of-9 count + NOT READY / DO-NOT-ACTIVATE posture.
+_DBR_CLOSURE_SENTENCE = (
+    "dbr-ar-2 — closed (dan-authorized governance decision, 2026-07-16); this closure closes zero b5"
+    " activation blockers, the blocker census remains nine with 8 of 9 open, and production remains"
+    " not ready / do-not-activate."
+)
+# The superseded pre-closure status sentence — it must NOT be resurrected in any gate doc.
+_DBR_SUPERSEDED_OPEN_SENTENCE = "dbr-ar-2 (durable routing audit) remains open — a separate database router follow-on"
+# The exact V1 contract-capture status sentence (pinned per document by
+# test_dbr_ar_2_readiness_contract.py) — masked as a sanctioned exact sentence in G9.
+_DBR_V1_STATUS_SENTENCE = (
+    "this v1 records the implementation contract only. no durable routing-audit adapter,"
+    " schema, production wiring or activation change is delivered by v1."
+)
 _FAIL_CLOSED_SENTENCE = "production runtime activation remains not ready / do-not-activate — 8 of 9 activation blockers remain open"
 _NEXT_STEP_SENTENCE = "next step: the next dan-authorized governed slice"
 _IC002_STATES = (
@@ -773,9 +788,15 @@ def test_b5d_08_granularity_nonvacuity() -> None:
     assert not _distinguishes_granularity_in(matrix_norm.replace("not cluster-level", "at cluster-level"))
 
 
-# --- G9: durable routing audit (DBR-AR-2) not complete ----------------------
+# --- G9: durable routing audit (DBR-AR-2) closure wording is exact-only ------
 # Fix R1 §8: bounded completed/achieved/wired/in-place synonym coverage; the
 # open-marker skip uses word-boundary "not" (no bare-substring negation).
+# Closure evolution (2026-07-16): the exact canonical closure sentence is masked
+# per line (the B5-E G6 anchor idiom at full-decision-phrase width); every OTHER
+# closure claim — bare, shortened, date-free, count-free, zero-closure-free, or
+# production-posture-free — rejects REGARDLESS of open-marker vocabulary on the
+# line (the canonical sentence itself carries "OPEN" and "NOT READY", so the
+# open-marker skip alone cannot police closure variants).
 _ROUTING_AUDIT_DONE_WORDS = (
     "complete",
     "completed",
@@ -794,10 +815,22 @@ _ROUTING_AUDIT_DONE_WORDS = (
     "shipped",
 )
 _ROUTING_AUDIT_OPEN_RE = re.compile(r"\b(?:open|in-memory|follow-on|not|pending|remains|absent|outstanding)\b")
+# Unanchored-closure detector: status-claim token = CLOSED; the bounded [^.;|] window never
+# crosses a sentence boundary or a table-cell pipe (so the anchored B5-BLK-4 CLOSED register
+# cell can never bind to a DBR-AR-2 token in a neighboring cell); "fail closed"/"fail-closed"
+# posture vocabulary and underscored identifiers (routing_audit_unavailable) are out of scope.
+_ROUTING_AUDIT_UNANCHORED_CLOSED_RE = re.compile(
+    r"\b(?:dbr-ar-2\b|durable routing audit\b|routing[ -]audit\b)[^.;|]{0,80}?(?<!fail )(?<!fail-)\bclosed\b"
+)
 
 
 def _claims_routing_audit_complete(text: str) -> bool:
-    for line in text.lower().splitlines():
+    for raw in text.lower().splitlines():
+        line = " ".join(raw.replace("*", "").replace("`", "").split())
+        line = line.replace(_DBR_CLOSURE_SENTENCE, " <dbr-closure-sentence> ")
+        line = line.replace(_DBR_V1_STATUS_SENTENCE, " <dbr-v1-status-sentence> ")
+        if _ROUTING_AUDIT_UNANCHORED_CLOSED_RE.search(line):
+            return True
         if "dbr-ar-2" not in line and "routing audit" not in line and "routing-audit" not in line:
             continue
         if _ROUTING_AUDIT_OPEN_RE.search(line):
@@ -807,15 +840,19 @@ def _claims_routing_audit_complete(text: str) -> bool:
     return False
 
 
-def test_b5d_09_routing_audit_open() -> None:
+def test_b5d_09_routing_audit_closure_exact() -> None:
     t = _gate_docs_text()
-    assert not _claims_routing_audit_complete(t), "the durable routing audit (DBR-AR-2) must not be claimed complete"
-    assert "DBR-AR-2" in t, "the durable routing audit DBR-AR-2 must be recorded as open"
-    # B5-E: DBR-AR-2's exact status sentence is pinned PER DOCUMENT — the B5-E
-    # closure of B5-BLK-4 must not absorb, drop, or downgrade the separate follow-on.
+    assert not _claims_routing_audit_complete(t), (
+        "outside the exact canonical closure sentence, no DBR-AR-2 closed/complete claim may appear in the gate docs"
+    )
+    assert "DBR-AR-2" in t, "the durable routing audit DBR-AR-2 must be recorded"
+    # Closure evolution: the exact canonical closure sentence is pinned PER DOCUMENT, and the
+    # superseded open/follow-on sentence must not be resurrected in any gate doc.
     for doc in _GATE_DOCS:
-        assert _DBR_SENTENCE in _normalized_doc(doc.read_text(encoding="utf-8")), (
-            f"the exact DBR-AR-2 open/separate-follow-on sentence must be present in {doc.name} itself"
+        norm_doc = _normalized_doc(doc.read_text(encoding="utf-8"))
+        assert _DBR_CLOSURE_SENTENCE in norm_doc, f"the exact canonical DBR-AR-2 closure sentence must be present in {doc.name} itself"
+        assert _DBR_SUPERSEDED_OPEN_SENTENCE not in norm_doc, (
+            f"{doc.name} must not resurrect the superseded DBR-AR-2 open/follow-on sentence"
         )
 
 
@@ -827,12 +864,43 @@ def test_b5d_09_routing_audit_nonvacuity() -> None:
     assert _claims_routing_audit_complete("The durable routing audit is wired and achieved")
     assert not _claims_routing_audit_complete("Durable routing audit (DBR-AR-2) remains OPEN, in-memory only")
     assert not _claims_routing_audit_complete("DBR-AR-2 not yet wired; still absent")
-    # B5-E: the per-document DBR-AR-2 sentence anchor is non-vacuous.
+    # Closure evolution: the exact canonical sentence is sanctioned; every required-reject
+    # variant trips even though it carries open-marker vocabulary.
+    assert not _claims_routing_audit_complete(_DBR_CLOSURE_SENTENCE)
+    assert not _claims_routing_audit_complete("**" + _DBR_CLOSURE_SENTENCE.upper() + "**")
+    assert _claims_routing_audit_complete("dbr-ar-2 — closed")  # bare
+    assert _claims_routing_audit_complete("DBR-AR-2 is CLOSED")  # short
+    assert _claims_routing_audit_complete(
+        "dbr-ar-2 — closed (dan-authorized governance decision); this closure closes zero b5 activation"
+        " blockers, the blocker census remains nine with 8 of 9 open, and production remains not ready /"
+        " do-not-activate."
+    )  # date-free
+    assert _claims_routing_audit_complete(
+        "dbr-ar-2 — closed (dan-authorized governance decision, 2026-07-16); production remains not ready / do-not-activate."
+    )  # count-free and zero-closure-free
+    assert _claims_routing_audit_complete(
+        "dbr-ar-2 — closed (dan-authorized governance decision, 2026-07-16); this closure closes zero b5"
+        " activation blockers, the blocker census remains nine with 8 of 9 open."
+    )  # production-posture-free
+    # References, cell boundaries, fail-closed vocabulary, and identifiers stay out of scope.
+    assert not _claims_routing_audit_complete("see the DBR-AR-2 closure record below (Dan-authorized governance decision, 2026-07-16)")
+    assert not _claims_routing_audit_complete(
+        "| durable routing audit (DBR-AR-2) — not a gate §5 activation condition | B5-BLK-4 — CLOSED (B5-E, 2026-07-12) |"
+    )
+    assert not _claims_routing_audit_complete("internal code routing_audit_unavailable; the request is denied fail closed")
+    assert not _claims_routing_audit_complete(_DBR_V1_STATUS_SENTENCE), "the exact V1 status sentence stays sanctioned"
+    assert _claims_routing_audit_complete("no durable routing-audit adapter is delivered by v1"), (
+        "a shortened V1-status variant stays unmasked"
+    )
+    # The per-document canonical anchor is non-vacuous; the superseded-sentence rejection fires.
     for doc in _GATE_DOCS:
         norm_doc = _normalized_doc(doc.read_text(encoding="utf-8"))
-        assert _DBR_SENTENCE in norm_doc, doc.name
-        assert _DBR_SENTENCE not in norm_doc.replace(_DBR_SENTENCE, ""), doc.name
-    assert _DBR_SENTENCE not in _normalized_doc("dbr-ar-2 is a separate follow-on with no recorded status")
+        assert _DBR_CLOSURE_SENTENCE in norm_doc, doc.name
+        assert _DBR_CLOSURE_SENTENCE not in norm_doc.replace(_DBR_CLOSURE_SENTENCE, ""), doc.name
+    assert _DBR_CLOSURE_SENTENCE not in _normalized_doc("dbr-ar-2 — closed.")
+    assert _DBR_SUPERSEDED_OPEN_SENTENCE in _normalized_doc(
+        "DBR-AR-2 (durable routing audit) remains OPEN — a separate Database Router follow-on."
+    ), "a resurrected superseded open sentence must be detectable"
 
 
 # --- G10: production deployment not complete --------------------------------
@@ -1297,7 +1365,7 @@ if __name__ == "__main__":
             test_b5d_07_mvp_nonvacuity,
             test_b5d_08_granularity_not_cluster,
             test_b5d_08_granularity_nonvacuity,
-            test_b5d_09_routing_audit_open,
+            test_b5d_09_routing_audit_closure_exact,
             test_b5d_09_routing_audit_nonvacuity,
             test_b5d_10_production_not_deployed,
             test_b5d_10_production_nonvacuity,

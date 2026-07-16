@@ -7,14 +7,18 @@ ordering, unique ids, non-empty bindings, and the bounded status/environment/rep
 vocabularies; the exact PAE-01..PAE-16 coverage and the canonical PASS / NOT_AVAILABLE
 dispositions; the exact nine-blocker census with exactly one CLOSED (B5-E-anchored) and eight OPEN;
 the no-invented-blocker rule (DBR-AR-2 carries NO register id — ``blocker_id: NONE`` rows carry the
-exact MC-1 note); DBR-AR-2 remains OPEN and Outcome A (REMAIN NOT READY / DO-NOT-ACTIVATE) is the
+exact MC-1 note); the exact canonical DBR-AR-2 closure sentence (Dan-authorized governance
+decision, 2026-07-16 — the index ``dbr_ar_2_status`` flip, the EV-CD-01 closure evidence record
+with ``blocker_id: NONE`` and the THIS-PR binding, and the evidence-record §13 closure record)
+while Outcome A (REMAIN NOT READY / DO-NOT-ACTIVATE) stays the
 only claimed outcome; no activation-ready/production-ready overclaim and no production access,
 mutation, or identity fabrication; DDL 010/011 blob identity, local-Control-only scope, and the
 001-009 automatic apply order; the hosted live-PG loop at exactly 14 with the standing harness
 MANUAL_ONLY; ATR-2B-1 and OBS-V3-PM-1 carried OPEN and separately governed; report-only sources
 classified attested; the exact contract/runbook lockstep sentences (2E status, zero-closure census,
 next governed step, truthful threshold posture, references-only incident-query discipline); and the
-byte-identity of the three B5 gate documents plus the B5 evidence template. Every detector carries
+blob-pinned identity of the three B5 gate documents (re-stamped at the closure decision) plus the
+untouched B5 evidence template. Every detector carries
 a planted non-vacuity companion; every planted secret-shaped sample is BUILT dynamically from
 low-entropy fragments. Pure stdlib; standalone-runnable:
   python tests/architecture/test_dbr_ar_2e_activation_evidence_boundaries.py
@@ -119,11 +123,21 @@ _BASELINE_TREE = "45d0680947669eb8d53f57dc373f9373955c1aac"
 
 # Contract/runbook lockstep pins (normalized).
 _2E_STATUS_PIN = "dbr-ar-2e — production-activation evidence consolidated; outcome a is remain not ready / do-not-activate."
-_2E_CENSUS_PIN = "dbr-ar-2e closes zero b5 activation blockers; the activation-blocker census remains nine; dbr-ar-2 remains open."
-_NEXT_STEP_PIN = (
-    "the next governed step is a separate dan-authorized dbr-ar-2 closure decision."
-    " production activation remains a separate human-governed decision and is not authorized by dbr-ar-2e."
+_2E_CENSUS_PIN = (
+    "dbr-ar-2e closes zero b5 activation blockers; the activation-blocker census remains nine; dbr-ar-2 remained open at 2e delivery."
 )
+_NEXT_STEP_PIN = (
+    "the next governed step is the next dan-authorized governed slice; production activation remains"
+    " a separate human-governed decision and is not authorized by dbr-ar-2e or by the dbr-ar-2 closure."
+)
+# The ONLY sanctioned DBR-AR-2 closure claim (PRD DBR-AR-2 Closure Decision V2 START-GATE §7) and
+# the exact index status value (MC-CD-2; the raw index bytes stay pure ASCII via the \\u2014 escape).
+_CLOSURE_PIN = (
+    "dbr-ar-2 — closed (dan-authorized governance decision, 2026-07-16); this closure closes zero b5"
+    " activation blockers, the blocker census remains nine with 8 of 9 open, and production remains"
+    " not ready / do-not-activate."
+)
+_INDEX_CLOSED_STATUS = "CLOSED — DAN-AUTHORIZED GOVERNANCE DECISION"
 _THRESHOLD_TRUTH_PINS = (
     "a production alert threshold, monitoring owner, and escalation chain are not defined",
     "pae-10 remains not available",
@@ -137,22 +151,22 @@ _INCIDENT_QUERY_PINS = (
     "production enablement remains unauthorized",
 )
 
-# The §14 required evidence-record statements (normalized).
+# The §14 required evidence-record statements (normalized; closure evolution 2026-07-16).
 _REQUIRED_DOC_STATEMENTS = (
     "outcome a — remain not ready / do-not-activate",
     "dbr-ar-2e evidence consolidation is delivered when this pr merges.",
-    "dbr-ar-2 remains open.",
+    _CLOSURE_PIN,
     "dbr-ar-2e closes zero activation blockers.",
     "the b5 activation-blocker census remains nine.",
     "eight of nine blockers remain open.",
     "no production activation decision is made.",
     "no production access or production mutation occurred.",
-    "a separate dan-authorized dbr-ar-2 closure decision would still be required.",
+    "the separate dan-authorized dbr-ar-2 closure decision is recorded in §13 (2026-07-16).",
     "a separate production activation decision would still be required.",
 )
 _MC1_BLOCK_PIN = (
     "dbr-ar-2e closes zero b5 activation blockers. the activation-blocker census remains nine. the"
-    " open-blocker count remains 8 of 9. dbr-ar-2 remains open. production remains not ready / do-not-activate."
+    " open-blocker count remains 8 of 9. production remains not ready / do-not-activate."
 )
 _OBS_DESCRIPTION_PIN = (
     "obs-v3-pm-1 proposes stronger ast-level and reviewed-blob pinning for the already-executed"
@@ -169,11 +183,13 @@ _FORBIDDEN_CLAIM_PHRASES = (
     "evidence sufficient for separate activation decision",
 )
 
-# Byte-identity pins: the three B5 gate documents + the B5 evidence template are untouched by 2E.
+# Byte-identity pins: the three B5 gate documents were re-stamped by the Dan-authorized DBR-AR-2
+# closure decision (2026-07-16 — MC-CD-4, exactly the edited documents); the B5 evidence template
+# stays at its pre-closure blob (untouched by 2E and by the closure).
 _B5_GATE_BLOBS = {
-    "docs/runtime/b5_production_runtime_activation_gate.md": "7032f230c65a145fb5a49b34371a9b8998479070",
-    "docs/runtime/b5_activation_blockers.md": "8d525925ed37ba6e2f442eaf909d48867ab7752c",
-    "docs/runtime/b5_runtime_readiness_matrix.md": "b489378d10829b687acf90319658994e24cdda36",
+    "docs/runtime/b5_production_runtime_activation_gate.md": "a4b59230120716c408d86dd4608a05cdb058d06e",
+    "docs/runtime/b5_activation_blockers.md": "b050e323e16dc391a63f5f9a91680b99cec1cfe7",
+    "docs/runtime/b5_runtime_readiness_matrix.md": "9fd007d30622ff03f616eb283a503d17a79b5a2c",
     "docs/runtime/b5_activation_evidence_template.md": "be6ac381feb074741c33ae77511c8aba7b768e60",
 }
 _DDL_BLOBS = {
@@ -269,13 +285,18 @@ def test_2e_index_top_shape() -> None:
     assert (top["blocker_census"], top["blockers_open"], top["blockers_closed"]) == (9, 8, 1), (
         "the blocker census must remain exactly nine with eight OPEN and one CLOSED"
     )
-    assert top["dbr_ar_2_status"] == "OPEN", "DBR-AR-2 must remain OPEN in the index"
+    assert top["dbr_ar_2_status"] == _INDEX_CLOSED_STATUS, "the index dbr_ar_2_status must be exactly the MC-CD-2 closed value"
 
 
 def test_2e_index_top_nonvacuity() -> None:
     assert (10, 8, 1) != (9, 8, 1), "a census-10 mutation must be detectable"
     assert (9, 7, 2) != (9, 8, 1), "an extra-closure mutation must be detectable"
     assert "EVIDENCE SUFFICIENT FOR SEPARATE ACTIVATION DECISION" != _OUTCOME, "an Outcome-B swap must be detectable"
+    assert "OPEN" != _INDEX_CLOSED_STATUS, "a reverted-OPEN index status must be detectable"
+    assert "CLOSED" != _INDEX_CLOSED_STATUS, "a bare-CLOSED index status must be detectable"
+    assert "CLOSED - DAN-AUTHORIZED GOVERNANCE DECISION" != _INDEX_CLOSED_STATUS, (
+        "a wrong-dash index status must be detectable (the value carries the em dash via the JSON escape)"
+    )
 
 
 def test_2e_index_record_schema() -> None:
@@ -385,6 +406,105 @@ def test_2e_no_invented_blocker_and_mc1_note() -> None:
     for token in ("SEPARATELY GOVERNED", "NON-BLOCKING FOR THE DELIVERED STANDING EVIDENCE", "NOT IMPLEMENTED BY DBR-AR-2E"):
         assert token in str(obs["notes"]), f"OBS-V3-PM-1 must carry the exact classification token {token!r}"
     assert obs["source_type"] == "report" and obs["reproducibility"] == "attested", "OBS-V3-PM-1 is an attested report record"
+
+
+def test_cd_closure_record_shape() -> None:
+    """MC-CD-2: the EV-CD-01 closure evidence record — blocker_id NONE, THIS-PR binding pattern,
+    zero-blockers statement, not-ready posture preserved, references-only, re-carry statement."""
+    cd = _record("EV-CD-01")
+    assert cd["blocker_id"] == "NONE", "the closure record must use blocker_id NONE (DBR-AR-2 is outside the register)"
+    assert cd["requirement_id"] == "DBR-AR-2-CLOSURE", "the closure record must carry its own unique requirement id"
+    assert cd["status"] == "PASS", "the closure record status is PASS (CLOSED stays reserved for the B5-E register row)"
+    assert cd["source_commit"].startswith("THIS-PR (docs/dbr-ar-2-closure-decision"), (
+        "the closure record must use the established THIS-PR binding pattern"
+    )
+    assert cd["source_tree"].startswith("THIS-PR (docs/dbr-ar-2-closure-decision"), (
+        "the closure record must use the established THIS-PR binding pattern"
+    )
+    assert cd["sensitivity"] == "references-only" and cd["environment"] == "repository"
+    notes = str(cd["notes"])
+    for needle in (
+        "Dan-authorized DBR-AR-2 closure decision (2026-07-16)",
+        "DBR-AR-2 is outside the B5 activation-blocker register",
+        "this closure closes zero B5 activation blockers",
+        "the blocker census remains nine with 8 of 9 OPEN",
+        "production remains NOT READY / DO-NOT-ACTIVATE",
+        "the Lovable cutover remains OPEN",
+        "re-carried, not resolved",
+        _MC1_NOTE,
+    ):
+        assert needle in notes, f"the closure record notes must state: {needle!r}"
+
+
+def test_cd_closure_record_nonvacuity() -> None:
+    assert "NONE" != "B5-BLK-4", "a register-id hijack must be detectable"
+    assert "this closure closes zero B5 activation blockers" not in "this closure closes one B5 activation blocker", (
+        "a nonzero-closure rewrite must be detectable"
+    )
+    assert not "attested".startswith("THIS-PR ("), "a non-THIS-PR binding must be detectable"
+    assert "production remains NOT READY / DO-NOT-ACTIVATE" not in "production is READY", "a production-ready rewrite must be detectable"
+
+
+# The MC-CD-10 re-carry inventory and the MC-CD-5 §18 dispositions, pinned in the evidence
+# record's §13 closure record: every carried item must remain present, every §18 item must
+# remain open/separate, the OBS-2E-POST-1 sequencing note must survive, and the §3 backup
+# redaction pledge must hold (the sha256-plus-redacted-reference discipline; the OBS-2E-POST-2
+# general raw-path detector itself remains a separately governed, unimplemented follow-up).
+_CD_RECARRY_TOKENS = (
+    "atr-2b-1",
+    "obs-v3-pm-1",
+    "obs-2e-pm-1 through obs-2e-pm-6",
+    "obs-2e-post-1",
+    "obs-2e-post-2",
+    "obs-2e-post-3",
+    "writer-role ddl (§18.4)",
+    "retention/legal-hold/deletion values (§18.2)",
+    "the §18.3 gate-condition decision",
+    "§18.6 api gateway class-3 wiring",
+    "§18.7 optional admin events",
+    "older-handover regeneration (folders 43/45)",
+    "commit-graph maintenance",
+)
+_CD_SEQUENCING_NOTE = (
+    "any future closure-vocabulary hardening must target the new post-closure canonical sentence and must not reopen dbr-ar-2."
+)
+_CD_S18_DISPOSITIONS = (
+    "§18.2 retention/legal hold/deletion values — open, separately governed under the d-08 process",
+    "§18.3 gate-condition decision — open; durable routing audit is not a gate §5 activation condition today",
+    "§18.4 writer-role ddl — open, separately governed deployment-era scope (pae-05 not available)",
+    "§18.6 api gateway class-3 durable wiring — open, separately governed, not in the contract §16 matrix",
+    "§18.7 optional sink-availability administrative events — open, optional, separately governed, not required for closure",
+)
+_CD_BACKUP_PLEDGE = "no path, dsn, credential, or dump content is recorded"
+
+
+def test_cd_recarry_and_dispositions() -> None:
+    doc = _norm(_text(_EVIDENCE_DOC))
+    for token in _CD_RECARRY_TOKENS:
+        assert token in doc, f"the closure record must re-carry (not resolve): {token!r}"
+    assert "re-carried, not resolved" in doc, "the re-carry framing sentence must be present"
+    assert _CD_SEQUENCING_NOTE in doc, "the OBS-2E-POST-1 sequencing note must be present"
+    for disposition in _CD_S18_DISPOSITIONS:
+        assert disposition in doc, f"the §18 disposition must remain open/separate: {disposition!r}"
+    assert _CD_BACKUP_PLEDGE in doc, "the §3 backup redaction pledge (sha256 + redacted reference only) must hold"
+
+
+def test_cd_recarry_nonvacuity() -> None:
+    doc = _norm(_text(_EVIDENCE_DOC))
+    for token in _CD_RECARRY_TOKENS:
+        assert token not in doc.replace(token, ""), token
+    assert _CD_SEQUENCING_NOTE not in _norm("any future closure-vocabulary hardening may reopen DBR-AR-2."), (
+        "a reopening-permitting sequencing rewrite must be detectable"
+    )
+    assert _CD_S18_DISPOSITIONS[3] not in _norm("§18.6 API Gateway class-3 durable wiring — IMPLEMENTED by this closure"), (
+        "a §18.6 claimed-implemented rewrite must be detectable"
+    )
+    assert _CD_S18_DISPOSITIONS[0] not in _norm("§18.2 retention/legal hold/deletion values — APPROVED (30 days)"), (
+        "a retention-approved rewrite must be detectable"
+    )
+    assert _CD_BACKUP_PLEDGE not in _norm("the backup is at /var/backups/control.dump"), (
+        "a raw-backup-path replacement of the redaction pledge must be detectable"
+    )
 
 
 def test_2e_blocker_mapping_nonvacuity() -> None:
@@ -525,7 +645,7 @@ def test_2e_contract_lockstep() -> None:
     assert _2E_STATUS_PIN in doc, "the truthful 2E status must be recorded in the contract"
     assert _2E_CENSUS_PIN in doc, "the zero-closure census line must be recorded in the contract"
     assert _NEXT_STEP_PIN in doc, "the exact next governed step must be recorded in the contract"
-    assert "dbr-ar-2 — remains open." in doc, "DBR-AR-2 must remain OPEN in the contract"
+    assert _CLOSURE_PIN in doc, "the exact canonical DBR-AR-2 closure sentence must be recorded in the contract"
     for pin in _THRESHOLD_TRUTH_PINS:
         assert pin in doc, f"the contract must carry the truthful threshold posture: {pin!r}"
 
@@ -547,6 +667,16 @@ def test_2e_lockstep_nonvacuity() -> None:
     assert _NEXT_STEP_PIN not in _norm("the next governed step is production activation"), (
         "an activation-authorizing next step must be detectable"
     )
+    assert _NEXT_STEP_PIN not in _norm(
+        "the next governed step is a separate dan-authorized dbr-ar-2 closure decision."
+        " production activation remains a separate human-governed decision and is not authorized by dbr-ar-2e."
+    ), "the superseded pre-closure next-step sentence must no longer satisfy"
+    assert _CLOSURE_PIN not in _norm("dbr-ar-2 — closed."), "a bare closure claim must not satisfy the exact closure pin"
+    assert _CLOSURE_PIN not in _norm(
+        "dbr-ar-2 — closed (dan-authorized governance decision); this closure closes zero b5 activation"
+        " blockers, the blocker census remains nine with 8 of 9 open, and production remains not ready /"
+        " do-not-activate."
+    ), "a date-free closure variant must not satisfy the exact closure pin"
     assert _THRESHOLD_TRUTH_PINS[0] not in _norm("the production alert threshold is 5 per minute"), (
         "an invented numeric threshold must be detectable (the not-defined sentence disappears)"
     )
@@ -676,6 +806,10 @@ if __name__ == "__main__":
             test_2e_pae_dispositions_nonvacuity,
             test_2e_register_census_pins,
             test_2e_no_invented_blocker_and_mc1_note,
+            test_cd_closure_record_shape,
+            test_cd_closure_record_nonvacuity,
+            test_cd_recarry_and_dispositions,
+            test_cd_recarry_nonvacuity,
             test_2e_blocker_mapping_nonvacuity,
             test_2e_report_sources_attested,
             test_2e_report_attested_nonvacuity,

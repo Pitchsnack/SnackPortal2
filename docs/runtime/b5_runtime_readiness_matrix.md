@@ -24,15 +24,16 @@ Decision baseline: `origin/main @ 84882c77cfe409bab0af454b4411cf65795bcbfd` (B5-
 MVP acceptance at database granularity is not cluster-level proof, not production deployment, not production activation, not Lovable cutover, not billing completion, and not AI Agent completion.
 The Physical Multi-Database MVP mandate (IC-010 §O) remains mandatory and binding; acceptance at database granularity does not weaken it.
 Cluster-level distinctness remains deployment scope (AT-D15T1-4; held by B5-BLK-2).
-DBR-AR-2 (durable routing audit) remains OPEN — a separate Database Router follow-on; it was not part of the B5-BLK-4 closure evidence bar (see the B5-E record) and its status is unchanged by this decision.
+DBR-AR-2 — CLOSED (Dan-authorized governance decision, 2026-07-16); this closure closes zero B5 activation blockers, the blocker census remains nine with 8 of 9 OPEN, and production remains NOT READY / DO-NOT-ACTIVATE.
+DBR-AR-2 (durable routing audit) was a separate Database Router follow-on; it was not part of the B5-BLK-4 closure evidence bar (see the B5-E record) and its status was unchanged by the B5-E decision.
 Production runtime activation remains NOT READY / DO-NOT-ACTIVATE — 8 of 9 activation blockers remain OPEN; the B5-E closure of B5-BLK-4 changes no other blocker and does not make the gate ready.
 The gate §5 activation condition "provisioning audit sink available (B-6) — or an explicit, approved waiver" remains binding at activation time and is not waived by the B5-E closure.
-Next step: the next Dan-authorized governed slice; every remaining activation blocker is deployment-scope (B5-BLK-2/3/7/8/9) or product/integration-track (B5-BLK-5/6), and DBR-AR-2 is the named Database Router follow-on PRD.
+Next step: the next Dan-authorized governed slice; every remaining activation blocker is deployment-scope (B5-BLK-2/3/7/8/9) or product/integration-track (B5-BLK-5/6), and the DBR-AR-2 durable-routing-audit follow-on is governed by its closure record (Dan-authorized governance decision, 2026-07-16) — no further DBR-AR-2 slice is authorized.
 
 **DBR-AR-2 V1 contract-capture record (2026-07-12).**
 
-DBR-AR-2 (durable routing audit) remains OPEN — a separate Database Router follow-on; its implementation contract is now recorded in `dbr_ar_2_durable_routing_audit_contract.md` (V1 contract capture, baseline `ac6ca9da48837b5c06cf6a9f1663af73fedf1b74`, selected architecture Option B — a Control-Plane-owned durable routing-audit store behind a service boundary), pinned by `backend/tests/architecture/test_dbr_ar_2_readiness_contract.py`.
-DBR-AR-2 remains OPEN. This V1 records the implementation contract only. No durable routing-audit adapter, schema, production wiring or activation change is delivered by V1.
+DBR-AR-2 (durable routing audit) was a separate Database Router follow-on; its implementation contract is recorded in `dbr_ar_2_durable_routing_audit_contract.md` (V1 contract capture, baseline `ac6ca9da48837b5c06cf6a9f1663af73fedf1b74`, selected architecture Option B — a Control-Plane-owned durable routing-audit store behind a service boundary), pinned by `backend/tests/architecture/test_dbr_ar_2_readiness_contract.py`; see the DBR-AR-2 closure record above (Dan-authorized governance decision, 2026-07-16) and the contract §1.
+This V1 records the implementation contract only. No durable routing-audit adapter, schema, production wiring or activation change is delivered by V1.
 
 IC-002 is the **eight-state** lifecycle (see
 `b5_production_runtime_activation_gate.md` §0 and `contracts/IC-002-Tenant-Startup-Contract.md`).
@@ -48,7 +49,7 @@ IC-002 is the **eight-state** lifecycle (see
 | One request → one active tenant → one DB | **D-07 / D-30**; Database Router = sole selector (IC-010 §H/§M) | Proven end-to-end locally at database granularity (Smoke C V2); `main.py` runtime deferral intact | B5-BLK-1 |
 | Sole ingress | **IC-010 §I**; API Gateway | Sole ingress in Smoke C V2 (local, database granularity); production runtime routing deferred | B5-BLK-1 |
 | Schema / migration readiness | **D-17** expand/contract + version-gated readiness | No prod migration evidence | B5-BLK-7 |
-| Provisioning audit sink | B-6 (now built) | Built on `main` (B-6 #21 / B-7 #23 / B-7B #25); standing-environment wiring exercised (B5-4 / B5-4A / Smoke C V2); production-environment availability stays a gate §5 activation condition; durable routing audit (DBR-AR-2) remains open — separate follow-on | B5-BLK-4 — CLOSED (B5-E, 2026-07-12) |
+| Provisioning audit sink | B-6 (now built) | Built on `main` (B-6 #21 / B-7 #23 / B-7B #25); standing-environment wiring exercised (B5-4 / B5-4A / Smoke C V2); production-environment availability stays a gate §5 activation condition; durable routing audit (DBR-AR-2) — not a gate §5 activation condition; see the DBR-AR-2 closure record above | B5-BLK-4 — CLOSED (B5-E, 2026-07-12) |
 | Rollback | isolated, non-destructive (D-30 / D-24) | No prod rollback evidence | B5-BLK-8 |
 | Frontend integrates only via Gateway | IC-009 portals; Lovable UI-only | Interim Supabase/RLS (DRIFT-01) | B5-BLK-5, B5-BLK-6 |
 | Monitoring / alerting | Ops | Not evidenced | B5-BLK-9 |
