@@ -1,7 +1,7 @@
 # DBR-AR-2 V1 — Durable Routing Audit Contract (contract capture only)
 
 **Phase:** DBR-AR-2 V1 — contract capture and readiness. **This V1 phase records a documented contract and a
-guard test only.** DBR-AR-2 remains OPEN. This V1 records the implementation contract only. No durable routing-audit adapter, schema, production wiring or activation change is delivered by V1.
+guard test only.** This V1 records the implementation contract only. No durable routing-audit adapter, schema, production wiring or activation change is delivered by V1. The workstream's closure record is in §1 (Dan-authorized governance decision, 2026-07-16).
 
 ---
 
@@ -14,7 +14,8 @@ Authoritative standing status (unchanged by this document):
 - **Decision A (B5-E, 2026-07-12, Dan-authorized): B5-BLK-4 — CLOSED — EVIDENCE-BOUND GOVERNANCE DECISION.**
 - **Decision B (B5-E, 2026-07-12, Dan-authorized): Physical Multi-Database MVP — ACCEPTED AT DATABASE GRANULARITY.**
 - Production runtime activation remains NOT READY / DO-NOT-ACTIVATE — 8 of 9 activation blockers remain OPEN.
-- DBR-AR-2 (durable routing audit) remains OPEN — a separate Database Router follow-on.
+- DBR-AR-2 — CLOSED (Dan-authorized governance decision, 2026-07-16); this closure closes zero B5 activation blockers, the blocker census remains nine with 8 of 9 OPEN, and production remains NOT READY / DO-NOT-ACTIVATE.
+- DBR-AR-2 (durable routing audit) was a separate Database Router follow-on; its closure record is at the end of this §1.
 - The Lovable cutover remains OPEN (B5-BLK-5 / B5-BLK-6; separate track).
 - The gate §5 activation condition "provisioning audit sink available (B-6) — or an explicit, approved waiver" remains binding at activation time and is not waived by anything in this document.
 
@@ -23,15 +24,26 @@ Authoritative standing status (unchanged by this document):
 - DBR-AR-2A — implemented.
 - DBR-AR-2B — storage capability implemented when this PR merges: created-not-applied DDL, append-only enforcement, Control Plane store, internal ingest adapter, and uncomposed Database Router client.
 - DBR-AR-2C — composition and failure semantics implemented when this PR merges: explicit opt-in environment-selected composition (C2; selector unset preserves the prior in-memory composition byte-for-byte), audit-before-hand-back with connection discard and the bounded condition-1 denial, one bounded synchronous idempotent retry for transient unavailability only, and fixed-key degradation counters for denial/anomaly record loss (the §11 condition-3 witness, covering the isolation-anomaly path in the same explicitly authorized degraded mode).
-- DBR-AR-2 — remains OPEN.
-- DBR-AR-2D — disposable/hosted PostgreSQL proof delivered (V2) and retained standing-environment witnesses delivered (V3, this PR); DBR-AR-2D is delivered only after this evidence is accepted; DBR-AR-2 remains OPEN.
+- DBR-AR-2D — disposable/hosted PostgreSQL proof delivered (V2) and retained standing-environment witnesses delivered (V3, this PR); DBR-AR-2D is delivered only after this evidence is accepted; DBR-AR-2 remained OPEN at 2D delivery.
 - DBR-AR-2E — production-activation evidence consolidated; Outcome A is REMAIN NOT READY / DO-NOT-ACTIVATE.
-- DBR-AR-2E closes zero B5 activation blockers; the activation-blocker census remains nine; DBR-AR-2 remains OPEN.
+- DBR-AR-2E closes zero B5 activation blockers; the activation-blocker census remains nine; DBR-AR-2 remained OPEN at 2E delivery.
 - The DDL is applied only to the retained local standing Control database, by the Dan-authorized DBR-AR-2D V3 manual operator apply (backup-first, blob-verified, 010 then 011, each exactly once); it is not applied to any tenant, staging, or production database and is not enrolled in the automatic standing apply order (001–009).
 - Production composition is implemented as an explicit opt-in environment seam and stays dormant unless selected; no production environment selects it and the activation gate is unchanged.
 - Live durability evidence exists for the disposable PostgreSQL proof and for the retained local standing environment (DBR-AR-2D V3); production-environment durability evidence remains not delivered — the DBR-AR-2E consolidation records it as NOT AVAILABLE (PAE-02/PAE-08) and it remains deployment-era scope (B5-BLK-2/3-era work).
 - Least-privilege routing-audit writer-role DDL remains separately governed and is not delivered by DBR-AR-2B.
 - Production activation remains NOT READY / DO-NOT-ACTIVATE.
+
+**DBR-AR-2 closure record (Dan-authorized governance decision, 2026-07-16).**
+
+- DBR-AR-2A — CLOSED (event contract and port; PR #79, human-merged 2026-07-12).
+- DBR-AR-2B — CLOSED (durable storage capability; PR #80, human-merged 2026-07-12).
+- DBR-AR-2C — CLOSED (composition and failure semantics; PR #81, human-merged 2026-07-14).
+- DBR-AR-2D — CLOSED (disposable/hosted proof V2 + retained standing witnesses V3; PRs #82/#83, human-merged 2026-07-14 and 2026-07-16).
+- DBR-AR-2E — CLOSED (production-activation evidence consolidation; PR #84, human-merged 2026-07-16; Outcome A — REMAIN NOT READY / DO-NOT-ACTIVATE).
+- DBR-AR-2 — CLOSED (Dan-authorized governance decision, 2026-07-16); this closure closes zero B5 activation blockers, the blocker census remains nine with 8 of 9 OPEN, and production remains NOT READY / DO-NOT-ACTIVATE.
+- The closure resolves no separately governed item: ATR-2B-1, OBS-V3-PM-1, OBS-2E-PM-1 through OBS-2E-PM-6, OBS-2E-POST-1, OBS-2E-POST-2, OBS-2E-POST-3, the §18.2 retention values, the §18.3 gate-condition decision, the §18.4 writer-role DDL, the §18.6 gateway class-3 wiring, the §18.7 optional admin events, the older-handover regeneration, and the commit-graph maintenance are all re-carried, not resolved (the full re-carry record is `docs/runtime/dbr_ar_2_production_activation_evidence.md` §13).
+- The §17 2E-row objective is superseded by the merged 2E status above: 2E consolidated the evidence, recorded production-environment durability as NOT AVAILABLE (PAE-02/PAE-08), and re-deferred the §18.3 gate-condition question to the separate activation review.
+- Stale authoring-time prose carve-out: `backend/database_router/main.py` (the module docstring's authoring-time DBR-AR-2 status parenthetical) and `backend/control_plane/main.py` (the routing-audit seam comment's authoring-time DBR-AR-2 status sentence) retain their authoring-time wording by design — non-authoritative for governance, non-executable comment/docstring prose, unpinned by any guard; their hygiene edit is separately governed (the `b5_activation_blockers.md` authoring-time-wording idiom, extended to these two locations by name). This closure PR does not edit them.
 
 This document changes no blocker, no blocker count, no decision, no gate posture, and no routing semantics. It is
 the readiness-reviewed implementation contract that the DBR-AR-2 implementation slices (§16) must satisfy.
@@ -89,9 +101,9 @@ request was denied. DBR-AR-2 defines the durable, vendor-neutral, references-onl
   `control_plane/adapters/providers/**`; every server is a plain single-threaded `HTTPServer`
   (AT-D15T1-10 — no threading anywhere); no runtime DDL on any path; the audit-class taxonomy is closed and
   CI-enforced (`backend/tests/architecture/test_audit_class_homes.py`).
-- **Guard pins:** the three B5 gate documents each pin the sentence "DBR-AR-2 (durable routing audit) remains
-  OPEN — a separate Database Router follow-on" (guard G9), and SMOKE-C-SPEC-01 §6/§7 pin the in-memory
-  disclosure.
+- **Guard pins:** the three B5 gate documents each pin the exact DBR-AR-2 closure sentence of §1 (Dan-authorized
+  governance decision, 2026-07-16 — guard G9; before the closure they pinned the open/follow-on status
+  sentence), and SMOKE-C-SPEC-01 §6/§7 pin the in-memory disclosure.
 
 ## 4. Selected architecture
 
@@ -287,8 +299,9 @@ the wire carries the sanitized status bucket only).
   no UPDATE path, no DELETE path in any adapter port (append/list only), plus a portable PL/pgSQL trigger
   rejecting UPDATE, DELETE, and TRUNCATE (the 003 append-only precedent). Corrections, failures, and reversals
   are NEW rows.
-- **Tamper evidence:** the DB-level trigger plus the forward least-privilege writer role (INSERT+SELECT only —
-  the B-7 policy forward proposal) are the MVP tamper controls. **No hash chain:** any hash policy is an
+- **Tamper evidence:** the DB-level trigger is the delivered tamper control; the forward least-privilege writer
+  role (INSERT+SELECT only — the B-7 policy forward proposal) remains separately governed and undelivered
+  (PAE-05 NOT AVAILABLE). **No hash chain:** any hash policy is an
   optional forward-contract extension and is never conflated with IC-004/D-23 lineage.
 - **Retention:** governed by the IC-001 platform retention policy for Control-DB-resident audit (D-24-segmented
   pattern; policy-driven expiry is the only sanctioned removal and is itself audited; per-tenant D-08 parameters
@@ -365,7 +378,7 @@ plan → backup-first apply → run-exactly-once → status), producing exactly 
 (Route alpha; Route beta; RouteDenied dormant `not_ready`; IsolationAnomaly alpha→beta) with the dormant Auth-edge
 denial (`tenant_not_ready`) adding zero routing-audit rows, one request → one active tenant → one physical database
 holding with the durable sink composed, and the retained standing topology unchanged outside the exact authorized
-delta; DBR-AR-2 remains OPEN.
+delta; DBR-AR-2 remained OPEN at V3 delivery.
 
 ## 17. Implementation slice sequence (smallest safe follow-up PRs; none begin in V1)
 
@@ -387,7 +400,9 @@ under a GPT-authored PRD with a Dan START-GATE and independent pre-merge verific
 2. **Retention values:** concrete durations under the D-08 process (IC-001 default retain-all until named).
 3. **Gate condition:** whether durable routing audit becomes a formal gate §5 activation condition (it is not
    one today, and this document does not add one) — decided at the DBR-AR-2E / activation review.
-4. **Least-privilege writer role DDL:** the INSERT+SELECT-only role (B-7 forward proposal) — 2B scope.
+4. **Least-privilege writer role DDL:** the INSERT+SELECT-only role (B-7 forward proposal) — separately governed
+   deployment-era scope (the original authoring-time "2B scope" tag is superseded; §1 records the writer-role DDL
+   as not delivered by DBR-AR-2B).
 5. **Tenant-facing read surface:** none exists and none is authorized; any future one needs its own amendment.
 6. **Gateway class-3 durable wiring:** which slice wires the gateway emitter to the same sink (2C or a sibling).
 7. **Sink-availability administrative events:** whether the Control Plane records `AuditSink*` transitions in
@@ -411,12 +426,12 @@ explicitly authorized runbook step.
 
 ## 21. Next governed step
 
-**The next governed step is a separate Dan-authorized DBR-AR-2 closure decision. Production activation remains a separate human-governed decision and is not authorized by DBR-AR-2E.**
+**DBR-AR-2 — CLOSED (Dan-authorized governance decision, 2026-07-16); this closure closes zero B5 activation blockers, the blocker census remains nine with 8 of 9 OPEN, and production remains NOT READY / DO-NOT-ACTIVATE. The next governed step is the next Dan-authorized governed slice; production activation remains a separate human-governed decision and is not authorized by DBR-AR-2E or by the DBR-AR-2 closure.**
 
 The DBR-AR-2D disposable/hosted sub-slice (disposable PostgreSQL proof + hosted ephemeral PostgreSQL CI +
-operator runbook) was Dan-authorized and delivered under PRD DBR-AR-2D V2 while DBR-AR-2 remains OPEN, and the
+operator runbook) was Dan-authorized and delivered under PRD DBR-AR-2D V2 while DBR-AR-2 remained OPEN, and the
 retained standing-environment witnesses (§16 proofs 1/2 standing halves, 4, 8, and 12 over the retained standing
-topology) were Dan-authorized and delivered under PRD DBR-AR-2D V3 while DBR-AR-2 remains OPEN; the
+topology) were Dan-authorized and delivered under PRD DBR-AR-2D V3 while DBR-AR-2 remained OPEN; the
 standard loop applies (independent pre-merge verify → Dan human merge → post-merge verify → target-only cleanup).
 
-The DBR-AR-2E V1 production-activation evidence consolidation was Dan-authorized (START-GATE, 2026-07-16) and is recorded by `docs/runtime/dbr_ar_2_production_activation_evidence.md` plus the machine-readable index `docs/runtime/dbr_ar_2_production_activation_evidence_index.json` while DBR-AR-2 remains OPEN: it consolidates the DBR-AR-2A→2D evidence, closes zero B5 activation blockers, keeps the activation-blocker census at nine, records the contract §18.3 gate-condition question as still open for the separate activation decision, and concludes Outcome A — REMAIN NOT READY / DO-NOT-ACTIVATE. DBR-AR-2 remains OPEN.
+The DBR-AR-2E V1 production-activation evidence consolidation was Dan-authorized (START-GATE, 2026-07-16) and is recorded by `docs/runtime/dbr_ar_2_production_activation_evidence.md` plus the machine-readable index `docs/runtime/dbr_ar_2_production_activation_evidence_index.json` while DBR-AR-2 remained OPEN: it consolidates the DBR-AR-2A→2D evidence, closes zero B5 activation blockers, keeps the activation-blocker census at nine, records the contract §18.3 gate-condition question as still open for the separate activation decision, and concludes Outcome A — REMAIN NOT READY / DO-NOT-ACTIVATE. The subsequent Dan-authorized DBR-AR-2 closure decision (2026-07-16) is recorded in §1 and in `docs/runtime/dbr_ar_2_production_activation_evidence.md` §13.

@@ -21,17 +21,17 @@ Outcome A — REMAIN NOT READY / DO-NOT-ACTIVATE
 ```
 
 DBR-AR-2E evidence consolidation is delivered when this PR merges.
-DBR-AR-2 remains OPEN.
+DBR-AR-2 — CLOSED (Dan-authorized governance decision, 2026-07-16); this closure closes zero B5 activation blockers, the blocker census remains nine with 8 of 9 OPEN, and production remains NOT READY / DO-NOT-ACTIVATE.
 DBR-AR-2E closes zero activation blockers.
 The B5 activation-blocker census remains nine.
 Eight of nine blockers remain OPEN.
 No production activation decision is made.
 No production access or production mutation occurred.
-A separate Dan-authorized DBR-AR-2 closure decision would still be required.
+The separate Dan-authorized DBR-AR-2 closure decision is recorded in §13 (2026-07-16).
 A separate production activation decision would still be required.
 
 DBR-AR-2E closes zero B5 activation blockers. The activation-blocker census remains nine. The
-open-blocker count remains 8 of 9. DBR-AR-2 remains OPEN. Production remains NOT READY /
+open-blocker count remains 8 of 9. Production remains NOT READY /
 DO-NOT-ACTIVATE.
 
 ## 2. Scope — the exact nine-file implementation surface
@@ -47,7 +47,9 @@ Narrow edits: `docs/runtime/dbr_ar_2_durable_routing_audit_contract.md` ·
 `backend/tests/architecture/test_dbr_ar_2d_standing_witness_boundaries.py`.
 No other tracked file changes. The three B5 gate documents, the blocker register, and the B5
 evidence template are byte-identical (guard-pinned by blob identity); no runtime source, DDL,
-environment selector, workflow, or deployment file changes.
+environment selector, workflow, or deployment file changes. (The subsequent DBR-AR-2 closure
+decision — §13 — later edited the three B5 gate documents and the coupled guards within its own
+sixteen-file documentation + architecture-guard surface; the blob pins were re-stamped there.)
 
 ## 3. Commit and environment binding
 
@@ -100,11 +102,13 @@ this consolidation.
 DBR-AR-2 is not an entry in the B5 activation-blocker register; DBR-AR-2E closes zero blockers.
 The register census is exactly `B5-BLK-1` through `B5-BLK-9`; DBR-AR-2 (durable routing audit) is a
 separately tracked Database Router follow-on outside that census ("it was not part of the B5-BLK-4
-closure evidence bar" — the B5-E record), governed by `dbr_ar_2_durable_routing_audit_contract.md`
-and pinned OPEN by CI guards. Closing DBR-AR-2 would not change the blocker census or the open
-count; it requires its own separate Dan-authorized closure decision. Durable routing audit is not a
+closure evidence bar" — the B5-E record), governed by `dbr_ar_2_durable_routing_audit_contract.md`.
+The separate Dan-authorized DBR-AR-2 closure decision (2026-07-16 — §13) changed neither the
+blocker census nor the open count; the CI guards now pin the exact closure record. Durable routing
+audit is not a
 gate §5 activation condition today (contract §18.3); whether it becomes one is decided at the
-separate activation review — that question remains open and is NOT decided by this consolidation.
+separate activation review — that question remains open and is NOT decided by this consolidation
+nor by the closure decision (§13).
 
 ## 7. PAE-01 … PAE-16 dispositions (canonical; truthful; nothing inferred)
 
@@ -192,5 +196,100 @@ conclusion is Outcome A — REMAIN NOT READY / DO-NOT-ACTIVATE.
 
 ## 12. Next governed step
 
-The next governed step is a separate Dan-authorized DBR-AR-2 closure decision. Production activation
-remains a separate human-governed decision and is not authorized by DBR-AR-2E.
+The next governed step is the next Dan-authorized governed slice; production activation remains a separate human-governed decision and is not authorized by DBR-AR-2E or by the DBR-AR-2 closure. The closure record is §13.
+
+## 13. DBR-AR-2 closure record (Dan-authorized governance decision, 2026-07-16)
+
+**Authorization:** Dan explicitly authorized DBR-AR-2 Closure Decision V1 execution (V2 execution
+START-GATE, 2026-07-16), on the accepted readiness verdict `ACCEPT WITH MECHANICS CLARIFICATIONS`
+and the authorized candidate outcome `Outcome A — CLOSE DBR-AR-2`, at the proven baseline
+`f5420cce004bee93126449b94ec7e9b68f3a3822` (the PR #84 merge).
+
+**Decision (the only sanctioned closure sentence):**
+
+DBR-AR-2 — CLOSED (Dan-authorized governance decision, 2026-07-16); this closure closes zero B5 activation blockers, the blocker census remains nine with 8 of 9 OPEN, and production remains NOT READY / DO-NOT-ACTIVATE.
+
+**Slice ladder (all delivered, human-merged, arc-closed):**
+
+- DBR-AR-2A — CLOSED (event contract and port; PR #79, human-merged 2026-07-12).
+- DBR-AR-2B — CLOSED (durable storage capability; PR #80, human-merged 2026-07-12).
+- DBR-AR-2C — CLOSED (composition and failure semantics; PR #81, human-merged 2026-07-14).
+- DBR-AR-2D — CLOSED (disposable/hosted proof V2 + retained standing witnesses V3; PRs #82/#83, human-merged 2026-07-14 and 2026-07-16).
+- DBR-AR-2E — CLOSED (production-activation evidence consolidation; PR #84, human-merged 2026-07-16; Outcome A — REMAIN NOT READY / DO-NOT-ACTIVATE).
+
+**Preserved state:** Physical Multi-Database MVP — ACCEPTED AT DATABASE GRANULARITY (B5-E,
+2026-07-12). B5-BLK-4 remains the only closed activation blocker. The B5 blocker census remains 9;
+activation blockers OPEN remain 8 of 9. Production remains NOT READY / DO-NOT-ACTIVATE. The Lovable
+cutover remains OPEN. DDL 010/011 remain created-not-applied outside the retained local standing
+Control database and un-enrolled from the automatic apply order (001–009). The hosted live-PG loop
+remains exactly 14 harnesses; the standing witness harness remains a MANUAL_ONLY exception. No
+DBR-AR-2 successor slice exists or is authorized. The PAE dispositions are unchanged (7 PASS /
+9 NOT_AVAILABLE; zero FAIL).
+
+**Closure surface:** exactly sixteen tracked files (nine documentation files + six architecture
+guards + the standing operator harness), documentation + architecture-guard change only — zero
+runtime, DDL, workflow, deployment, database, production, or staging changes; the B5
+gate-document blob pins are re-stamped to the closure-updated texts and the DDL 010/011 blob pins
+are unchanged.
+
+**§18 dispositions (preserved open; none resolved by this closure):**
+
+- §18.2 retention/legal hold/deletion values — OPEN, separately governed under the D-08 process (the IC-001 retain-all default is operative).
+- §18.3 gate-condition decision — OPEN; durable routing audit is not a gate §5 activation condition today; decided at the separate activation review.
+- §18.4 writer-role DDL — OPEN, separately governed deployment-era scope (PAE-05 NOT AVAILABLE); the contract's original authoring-time "2B scope" tag is corrected in the contract §18.
+- §18.6 API Gateway class-3 durable wiring — OPEN, separately governed, not in the contract §16 matrix, not implemented by this closure; the `source_service` CHECK rejects `api_gateway` by design until that wiring's own governed slice.
+- §18.7 optional sink-availability administrative events — OPEN, optional, separately governed, not required for closure.
+
+Reconciled wording tensions (no production evidence invented): the contract §13 tamper-control
+sentence now scopes the delivered control to the DB-level trigger (the writer role remains
+undelivered — PAE-05 NOT AVAILABLE); the contract §18.4 authoring-time "2B scope" tag is corrected
+to separately governed; the contract §17 2E-row objective is superseded by the merged 2E status
+(contract §1/§21 — evidence consolidated, production-environment durability NOT AVAILABLE
+(PAE-02/PAE-08), gate-condition question re-deferred to the separate activation review).
+
+**Closure-proof composition (MC-CD-6):**
+
+- Proof 3 (unknown tenant; zero dispatch): the live durable `not_found` denial row
+  (`backend/tests/control_plane/requires_pg/test_dbr_ar_2d_routing_audit_live_pg.py`), PLUS the
+  unit proof of zero connection-factory opens
+  (`backend/tests/database_router/test_dbr_ar_2a_event_contract.py` — `factory.opens == []`), PLUS
+  the structural resolve-before-acquire proof (`backend/database_router/router.py` — the
+  resolve-stage denial precedes `_acquire`), PLUS the standing S4 `pool_view()` before==after
+  equality (`backend/tests/control_plane/requires_pg/dbr_ar_2d_standing_witnesses.py`).
+- Proof 5 (restart survival): a fresh `PostgresRoutingAuditStore` and a fresh ingest server over
+  the same PostgreSQL database re-read the full rows and answer `DUPLICATE_MATCH` on replay (the
+  2D V2 harness); PostgreSQL itself was not restarted; the 2026-07-14 → 2026-07-16 cross-session
+  standing re-read with the exact frozen full-row digest is the cross-session durability witness.
+- Proof 11 (cross-tenant reads denied): structural absence of any read surface
+  (`__abstractmethods__` is exactly the append method —
+  `backend/tests/database_router/test_dbr_ar_2b_routing_audit_store.py`) plus the ingest 405
+  refusal of GET/PUT/DELETE/PATCH/OPTIONS
+  (`backend/tests/control_plane/test_dbr_ar_2b_routing_audit_ingest.py`).
+
+**Stale authoring-time prose carve-out (MC-CD-7):** `backend/database_router/main.py` (the module
+docstring's authoring-time DBR-AR-2 status parenthetical) and `backend/control_plane/main.py` (the
+routing-audit seam comment's authoring-time DBR-AR-2 status sentence) retain their authoring-time
+wording by design: they are non-authoritative for governance, non-executable comment/docstring
+prose, unpinned by any guard, and their hygiene edit is separately governed (the
+`b5_activation_blockers.md` authoring-time-wording idiom, extended to these two locations by
+name). This closure PR does not edit them.
+
+**Standing-witness harness lockstep (MC-CD-8):** the operator harness
+`backend/tests/control_plane/requires_pg/dbr_ar_2d_standing_witnesses.py` evolves ONLY its
+status/verdict text to the post-closure contract sentences; it remains MANUAL_ONLY, is not
+enrolled in any CI loop, was not executed during this arc, and every frozen expectation is
+preserved (four rows, zero S3 rows, no fifth row, 20 columns, 3 CHECK constraints, 2 append-only
+triggers, apply order 001–009, local-Control-only DDL 010/011, frozen digest and recorded_at
+batch). The read-only wrapper `test_pg_dbr_ar_2d_standing_witnesses.py` is outside this closure's
+authorized surface; its V3W-4 posture-line expectation (which already required lockstep
+maintenance after the 2E contract evolution) remains separately governed verification hygiene.
+
+**Re-carry list (MC-CD-10 — re-carried, not resolved):** ATR-2B-1 · OBS-V3-PM-1 · OBS-2E-PM-1
+through OBS-2E-PM-6 · OBS-2E-POST-1 · OBS-2E-POST-2 · OBS-2E-POST-3 · writer-role DDL (§18.4) ·
+retention/legal-hold/deletion values (§18.2) · the §18.3 gate-condition decision · §18.6 API
+Gateway class-3 wiring · §18.7 optional admin events · older-handover regeneration (folders
+43/45) · commit-graph maintenance. OBS-2E-POST-1 sequencing note: any future closure-vocabulary
+hardening must target the new post-closure canonical sentence and must not reopen DBR-AR-2.
+External stale wording outside the authorized surface (the two carved-out `main.py` prose
+locations above and the read-only wrapper's posture-line pin) is separately governed
+documentation hygiene.

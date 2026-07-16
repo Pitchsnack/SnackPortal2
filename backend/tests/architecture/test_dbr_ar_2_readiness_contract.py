@@ -3,23 +3,23 @@
 Pins the DBR-AR-2 V1 contract-capture record (PRD DBR-AR-2 V1, 2026-07-12, baseline
 ac6ca9da48837b5c06cf6a9f1663af73fedf1b74) as evolved by DBR-AR-2A (2026-07-13), DBR-AR-2B (2026-07-13),
 DBR-AR-2C (2026-07-14), the DBR-AR-2D disposable/hosted sub-slice (2026-07-14), and the DBR-AR-2D V3
-standing witnesses (2026-07-14), and the DBR-AR-2E V1 evidence consolidation (2026-07-16 — status anchors
-only: the 2D status records the V2 disposable proof AND the V3 retained standing witnesses as delivered
-only after evidence acceptance, the DDL-scope sentence records the Dan-authorized manual apply to the
-retained local standing Control DB ONLY (never enrolled, never tenant/staging/production), the durability
-sentence records production-environment durability evidence as not delivered / NOT AVAILABLE and
-deployment-era scope, the 2E status records the consolidated production-activation evidence with
-Outcome A — REMAIN NOT READY / DO-NOT-ACTIVATE and a zero-blocker-closure census line, and the next
-governed step is a separate Dan-authorized DBR-AR-2 closure decision; DBR-AR-2 remains OPEN and every
-other pin is unchanged): the
-dedicated contract document and the readiness-matrix cross-reference must keep DBR-AR-2 OPEN, keep every B5-E
+standing witnesses (2026-07-14), the DBR-AR-2E V1 evidence consolidation (2026-07-16), and the Dan-authorized
+DBR-AR-2 closure decision (2026-07-16 — the CLOSURE evolution: both documents must carry the EXACT canonical
+closure sentence — anchored full sentence, including the date, the Dan-authorized governance-decision label,
+the zero-blocker-closure statement, the nine-census/8-of-9 count, and the NOT READY / DO-NOT-ACTIVATE
+posture — while every bare, shortened, date-free, count-free, zero-closure-free, or production-posture-free
+closure variant is rejected by the m01b unanchored-closure detector; the superseded open/follow-on sentence
+must not be resurrected; the 2D status and 2E census sentences carry their truthful remained-OPEN-at-delivery
+historical tails; the slice-ladder CLOSED sentences are pinned exactly and masked exactly; and the next
+governed step is the next Dan-authorized governed slice — production activation stays a separate
+human-governed decision not authorized by DBR-AR-2E or by the DBR-AR-2 closure): the
+dedicated contract document and the readiness-matrix cross-reference must carry the exact closure record, keep every B5-E
 decision sentence intact, commit to the selected architecture (Option B — Control-Plane-owned durable
 routing-audit store behind a service boundary), carry the event-schema minimums and the forbidden-data list,
 state explicit failure semantics with no silent fail-open, claim no cross-database atomicity, authorize no
 cross-service import, keep the Control Plane the sole Control-DB writer with no router credential, claim no
 schema or durability beyond the sanctioned V3 standing scope, keep the blocker count at 8 of 9, record the
-implementation-slice sequence and the exact next governed step (a separate Dan-authorized DBR-AR-2 closure
-decision), and carry the exact DBR-AR-2A/2B/2C
+implementation-slice sequence and the exact next governed step, and carry the exact DBR-AR-2A/2B/2C
 status block (2A implemented; 2B storage capability implemented when its PR merges — created-not-applied DDL,
 append-only enforcement, Control Plane store, internal ingest adapter, uncomposed Database Router client;
 2C composition and failure semantics implemented when its PR merges — explicit opt-in C2 composition,
@@ -49,9 +49,18 @@ _BOTH_DOCS = (_CONTRACT_DOC, _MATRIX_DOC)
 _BASELINE = "ac6ca9da48837b5c06cf6a9f1663af73fedf1b74"
 
 # --- exact normalized anchors (lower-case; '*' and '`' stripped; whitespace collapsed) ---
-_DBR_OPEN_SENTENCE = "dbr-ar-2 (durable routing audit) remains open — a separate database router follow-on"
+# The ONLY sanctioned DBR-AR-2 closure claim (PRD DBR-AR-2 Closure Decision V2 START-GATE §7 — MC-CD-3):
+# the exact full anchored sentence, never a bare/shortened/date-free/count-free/zero-closure-free/
+# production-posture-free variant.
+_CLOSURE_SENTENCE = (
+    "dbr-ar-2 — closed (dan-authorized governance decision, 2026-07-16); this closure closes zero b5"
+    " activation blockers, the blocker census remains nine with 8 of 9 open, and production remains"
+    " not ready / do-not-activate."
+)
+# The superseded pre-closure status sentence — it must NOT be resurrected in either document.
+_SUPERSEDED_OPEN_SENTENCE = "dbr-ar-2 (durable routing audit) remains open — a separate database router follow-on"
 _V1_STATUS_SENTENCE = (
-    "dbr-ar-2 remains open. this v1 records the implementation contract only. no durable routing-audit adapter,"
+    "this v1 records the implementation contract only. no durable routing-audit adapter,"
     " schema, production wiring or activation change is delivered by v1."
 )
 _DECISION_A_SENTENCE = "decision a (b5-e, 2026-07-12, dan-authorized): b5-blk-4 — closed — evidence-bound governance decision"
@@ -65,8 +74,8 @@ _NO_ATOMICITY_SENTENCE = (
 )
 _NO_IMPORT_SENTENCE = "no cross-service import is authorized"
 _NEXT_STEP_SENTENCE = (
-    "the next governed step is a separate dan-authorized dbr-ar-2 closure decision."
-    " production activation remains a separate human-governed decision and is not authorized by dbr-ar-2e."
+    "the next governed step is the next dan-authorized governed slice; production activation remains"
+    " a separate human-governed decision and is not authorized by dbr-ar-2e or by the dbr-ar-2 closure."
 )
 _SOLE_WRITER_SENTENCE = "the control plane remains the sole writer of the control database"
 _NO_ROUTER_CREDENTIAL_SENTENCE = "it gains no control-db credential under option b"
@@ -86,16 +95,37 @@ _2C_STATUS_SENTENCE = (
     " counters for denial/anomaly record loss (the §11 condition-3 witness, covering the isolation-anomaly"
     " path in the same explicitly authorized degraded mode)."
 )
-_2A_OPEN_SENTENCE = "dbr-ar-2 — remains open."
-# PRD DBR-AR-2D V2 recorded the disposable/hosted proof; PRD DBR-AR-2D V3 supersedes that status
-# with the truthful full-2D record (V2 disposable proof + V3 standing witnesses; delivered only
-# after evidence acceptance; DBR-AR-2 still OPEN; 2E not started).
+# PRD DBR-AR-2D V2 recorded the disposable/hosted proof; PRD DBR-AR-2D V3 superseded that status
+# with the truthful full-2D record; the closure decision (2026-07-16) evolved the tail to the
+# truthful historical form (DBR-AR-2 remained OPEN at 2D delivery).
 _2D_STATUS_SENTENCE = (
     "dbr-ar-2d — disposable/hosted postgresql proof delivered (v2) and retained standing-environment witnesses"
-    " delivered (v3, this pr); dbr-ar-2d is delivered only after this evidence is accepted; dbr-ar-2 remains open."
+    " delivered (v3, this pr); dbr-ar-2d is delivered only after this evidence is accepted;"
+    " dbr-ar-2 remained open at 2d delivery."
 )
 _2E_STATUS_SENTENCE = "dbr-ar-2e — production-activation evidence consolidated; outcome a is remain not ready / do-not-activate."
-_2E_CENSUS_SENTENCE = "dbr-ar-2e closes zero b5 activation blockers; the activation-blocker census remains nine; dbr-ar-2 remains open."
+_2E_CENSUS_SENTENCE = (
+    "dbr-ar-2e closes zero b5 activation blockers; the activation-blocker census remains nine; dbr-ar-2 remained open at 2e delivery."
+)
+# The exact closure-ladder sentences (PRD DBR-AR-2 Closure Decision V2 START-GATE §15) — pinned
+# exactly and masked exactly; any shortened slice-closure variant stays unmasked and trips m01.
+_2A_CLOSED_SENTENCE = "dbr-ar-2a — closed (event contract and port; pr #79, human-merged 2026-07-12)."
+_2B_CLOSED_SENTENCE = "dbr-ar-2b — closed (durable storage capability; pr #80, human-merged 2026-07-12)."
+_2C_CLOSED_SENTENCE = "dbr-ar-2c — closed (composition and failure semantics; pr #81, human-merged 2026-07-14)."
+_2D_CLOSED_SENTENCE = (
+    "dbr-ar-2d — closed (disposable/hosted proof v2 + retained standing witnesses v3; prs #82/#83, human-merged 2026-07-14 and 2026-07-16)."
+)
+_2E_CLOSED_SENTENCE = (
+    "dbr-ar-2e — closed (production-activation evidence consolidation; pr #84, human-merged 2026-07-16;"
+    " outcome a — remain not ready / do-not-activate)."
+)
+_LADDER_SENTENCES = (
+    _2A_CLOSED_SENTENCE,
+    _2B_CLOSED_SENTENCE,
+    _2C_CLOSED_SENTENCE,
+    _2D_CLOSED_SENTENCE,
+    _2E_CLOSED_SENTENCE,
+)
 # PRD DBR-AR-2D V3 §4: the DDL is manually applied ONLY to the retained local standing Control DB
 # (Dan-authorized, backup-first, blob-verified, 010→011); every other environment stays unapplied
 # and the automatic standing apply order stays 001–009.
@@ -119,19 +149,22 @@ _DURABILITY_SENTENCE = (
     " consolidation records it as not available (pae-02/pae-08) and it remains deployment-era scope (b5-blk-2/3-era work)."
 )
 _2A_ANCHORS = (
-    _2A_STATUS_SENTENCE,
-    _2B_STATUS_SENTENCE,
-    _2C_STATUS_SENTENCE,
-    _2A_OPEN_SENTENCE,
-    _2D_STATUS_SENTENCE,
-    _2E_STATUS_SENTENCE,
-    _2E_CENSUS_SENTENCE,
-    _DDL_APPLIED_SCOPE_SENTENCE,
-    _2C_COMPOSITION_SENTENCE,
-    _WRITER_ROLE_SENTENCE,
-    _BEFORE_2A_SENTENCE,
-    _AFTER_2A_SENTENCE,
-    _DURABILITY_SENTENCE,
+    (
+        _2A_STATUS_SENTENCE,
+        _2B_STATUS_SENTENCE,
+        _2C_STATUS_SENTENCE,
+        _2D_STATUS_SENTENCE,
+        _2E_STATUS_SENTENCE,
+        _2E_CENSUS_SENTENCE,
+        _DDL_APPLIED_SCOPE_SENTENCE,
+        _2C_COMPOSITION_SENTENCE,
+        _WRITER_ROLE_SENTENCE,
+        _BEFORE_2A_SENTENCE,
+        _AFTER_2A_SENTENCE,
+        _DURABILITY_SENTENCE,
+    )
+    + _LADDER_SENTENCES
+    + (_CLOSURE_SENTENCE,)
 )
 
 _REQUIRED_SCHEMA_FIELDS = (
@@ -224,19 +257,33 @@ def test_dbr2_baseline_nonvacuity() -> None:
     assert _BASELINE not in _contract().replace(_BASELINE, "ffffffff"), "baseline pin must detect removal"
 
 
-def test_dbr2_open_status_pinned_per_document() -> None:
+def test_dbr2_closure_status_pinned_per_document() -> None:
     for doc in _BOTH_DOCS:
         norm = _norm(doc.read_text(encoding="utf-8"))
-        assert _DBR_OPEN_SENTENCE in norm, f"{doc.name} must carry the exact DBR-AR-2 open/follow-on sentence"
+        assert _CLOSURE_SENTENCE in norm, f"{doc.name} must carry the exact canonical DBR-AR-2 closure sentence"
         assert _V1_STATUS_SENTENCE in norm, f"{doc.name} must carry the exact V1 status sentence"
+        assert _SUPERSEDED_OPEN_SENTENCE not in norm, f"{doc.name} must not resurrect the superseded DBR-AR-2 open/follow-on sentence"
 
 
-def test_dbr2_open_status_nonvacuity() -> None:
+def test_dbr2_closure_status_nonvacuity() -> None:
     for doc in _BOTH_DOCS:
         norm = _norm(doc.read_text(encoding="utf-8"))
-        assert _DBR_OPEN_SENTENCE not in norm.replace(_DBR_OPEN_SENTENCE, ""), doc.name
+        assert _CLOSURE_SENTENCE not in norm.replace(_CLOSURE_SENTENCE, ""), doc.name
         assert _V1_STATUS_SENTENCE not in norm.replace(_V1_STATUS_SENTENCE, ""), doc.name
-    assert _V1_STATUS_SENTENCE not in _norm("dbr-ar-2 remains open. v1 records a contract."), "shortened status must not satisfy"
+    assert _V1_STATUS_SENTENCE not in _norm("v1 records a contract."), "shortened status must not satisfy"
+    assert _SUPERSEDED_OPEN_SENTENCE in _norm("DBR-AR-2 (durable routing audit) remains OPEN — a separate Database Router follow-on."), (
+        "a resurrected superseded open sentence must be detectable"
+    )
+    # The canonical pin is exact: every shortened/unanchored closure variant fails the pin.
+    assert _CLOSURE_SENTENCE not in _norm("dbr-ar-2 — closed.")
+    assert _CLOSURE_SENTENCE not in _norm(
+        "dbr-ar-2 — closed (dan-authorized governance decision); this closure closes zero b5 activation"
+        " blockers, the blocker census remains nine with 8 of 9 open, and production remains not ready /"
+        " do-not-activate."
+    ), "a date-free closure variant must not satisfy the exact pin"
+    assert _CLOSURE_SENTENCE not in _norm(
+        "dbr-ar-2 — closed (dan-authorized governance decision, 2026-07-16); production remains not ready / do-not-activate."
+    ), "a count-free/zero-closure-free closure variant must not satisfy the exact pin"
 
 
 def test_dbr2_standing_decisions_restated_intact() -> None:
@@ -402,8 +449,13 @@ _OPEN_MARKER_RE = re.compile(r"\b(?:open|in-memory|follow-on|not|pending|remains
 
 
 def _mask_v1_status(norm_text: str) -> str:
-    # Exact-sentence masks only: any variant of a closure claim still trips m01/m21.
-    masked = norm_text.replace(_V1_STATUS_SENTENCE, " <v1-status-sentence> ")
+    # Exact-sentence masks only (B5-E G6 anchor idiom, full-decision-phrase width): the canonical
+    # closure sentence and the exact ladder sentences are the ONLY sanctioned closure wordings;
+    # any other variant of a closure claim still trips m01/m01b/m21.
+    masked = norm_text.replace(_CLOSURE_SENTENCE, " <closure-sentence> ")
+    for index, ladder in enumerate(_LADDER_SENTENCES):
+        masked = masked.replace(ladder, f" <ladder-sentence-{index}> ")
+    masked = masked.replace(_V1_STATUS_SENTENCE, " <v1-status-sentence> ")
     masked = masked.replace(_2D_STATUS_SENTENCE, " <2d-status-sentence> ")
     masked = masked.replace(_DDL_APPLIED_SCOPE_SENTENCE, " <ddl-applied-scope-sentence> ")
     masked = masked.replace(_DURABILITY_SENTENCE, " <durability-sentence> ")
@@ -412,7 +464,9 @@ def _mask_v1_status(norm_text: str) -> str:
     return masked.replace(_2A_STATUS_SENTENCE, " <2a-status-sentence> ")
 
 
-# Mutation 1 — DBR-AR-2 marked closed (G9-shaped, scoped to routing-audit lines).
+# Mutation 1 — DBR-AR-2 marked closed/complete outside the sanctioned exact sentences
+# (G9-shaped, scoped to routing-audit lines; the canonical closure sentence and the exact
+# ladder sentences are masked per occurrence and are the only sanctioned closure wordings).
 def _claims_dbr2_complete(text: str) -> bool:
     for raw_line in text.lower().splitlines():
         line = _mask_v1_status(" ".join(raw_line.replace("*", "").replace("`", "").split()))
@@ -425,8 +479,38 @@ def _claims_dbr2_complete(text: str) -> bool:
     return False
 
 
+# Mutation 1b — an UNANCHORED closure claim (bare / shortened / date-free / count-free /
+# zero-closure-free / production-posture-free "CLOSED" variant) rejects even when the line
+# also carries open-marker vocabulary (the canonical sentence itself carries "OPEN" and
+# "NOT READY", so the m01 open-marker skip alone cannot police closure variants). The
+# bounded [^.;|] window never crosses a sentence boundary or a table-cell pipe, so a
+# different subject's CLOSED cell (e.g. the B5-BLK-4 register cell) can never bind to a
+# DBR-AR-2 token in a neighboring cell. Underscored identifiers (routing_audit_unavailable),
+# the §11 "fail closed"/"fail-closed" posture vocabulary, and the §2 "record that closes
+# this gap" purpose sentence are deliberately out of detection scope — the status-claim
+# token is the word CLOSED (every required-reject battery variant carries it).
+_DBR2_UNANCHORED_CLOSED_RE = re.compile(
+    r"\b(?:dbr-ar-2\b|durable routing audit\b|routing[ -]audit\b)[^.;|]{0,80}?(?<!fail )(?<!fail-)\bclosed\b"
+)
+
+
+def _claims_dbr2_closed_unanchored(text: str) -> bool:
+    for raw_line in text.lower().splitlines():
+        line = _mask_v1_status(" ".join(raw_line.replace("*", "").replace("`", "").split()))
+        if _DBR2_UNANCHORED_CLOSED_RE.search(line):
+            return True
+    return False
+
+
 def test_dbr2_m01_not_marked_closed() -> None:
-    assert not _claims_dbr2_complete(_both()), "DBR-AR-2 must not be claimed closed/complete anywhere in the two documents"
+    assert not _claims_dbr2_complete(_both()), "no DBR-AR-2 closed/complete claim may appear outside the sanctioned exact closure sentences"
+
+
+def test_dbr2_m01b_no_unanchored_closure_claim() -> None:
+    assert not _claims_dbr2_closed_unanchored(_both()), (
+        "every DBR-AR-2 closure claim must be the exact canonical sentence (or an exact ladder sentence);"
+        " bare/shortened/date-free/count-free/zero-closure-free/posture-free variants are forbidden"
+    )
 
 
 def test_dbr2_m01_nonvacuity() -> None:
@@ -435,6 +519,47 @@ def test_dbr2_m01_nonvacuity() -> None:
         assert _claims_dbr2_complete(f"the durable routing audit is {word}"), word
     assert not _claims_dbr2_complete("DBR-AR-2 (durable routing audit) remains OPEN")
     assert not _claims_dbr2_complete(_V1_STATUS_SENTENCE)
+    assert not _claims_dbr2_complete(_CLOSURE_SENTENCE), "the exact canonical closure sentence is sanctioned"
+    for ladder in _LADDER_SENTENCES:
+        assert not _claims_dbr2_complete("- " + ladder), ladder
+    assert _claims_dbr2_complete("dbr-ar-2a — closed."), "a shortened ladder closure claim stays unmasked"
+    assert _claims_dbr2_complete("dbr-ar-2e — closed (production-activation evidence consolidation)."), (
+        "a truncated ladder sentence stays unmasked"
+    )
+
+
+def test_dbr2_m01b_nonvacuity() -> None:
+    # The canonical sentence (and only it) is masked; every required-reject variant trips.
+    assert not _claims_dbr2_closed_unanchored(_CLOSURE_SENTENCE)
+    assert not _claims_dbr2_closed_unanchored("- " + _CLOSURE_SENTENCE + " dbr-ar-2 (durable routing audit) was a follow-on.")
+    for ladder in _LADDER_SENTENCES:
+        assert not _claims_dbr2_closed_unanchored("- " + ladder), ladder
+    assert _claims_dbr2_closed_unanchored("dbr-ar-2 — closed")  # bare
+    assert _claims_dbr2_closed_unanchored("DBR-AR-2 is CLOSED")  # short
+    assert _claims_dbr2_closed_unanchored(
+        "dbr-ar-2 — closed (dan-authorized governance decision); this closure closes zero b5 activation"
+        " blockers, the blocker census remains nine with 8 of 9 open, and production remains not ready /"
+        " do-not-activate."
+    )  # date-free
+    assert _claims_dbr2_closed_unanchored(
+        "dbr-ar-2 — closed (dan-authorized governance decision, 2026-07-16); production remains not ready / do-not-activate."
+    )  # count-free and zero-closure-free
+    assert _claims_dbr2_closed_unanchored(
+        "dbr-ar-2 — closed (dan-authorized governance decision, 2026-07-16); this closure closes zero b5"
+        " activation blockers, the blocker census remains nine with 8 of 9 open."
+    )  # production-posture-free
+    assert _claims_dbr2_closed_unanchored("the durable routing audit workstream is closed")
+    assert _claims_dbr2_closed_unanchored("routing-audit follow-on — closed")
+    # References to the closure decision/record are not closure claims; cell/sentence
+    # boundaries stop the window; underscored identifiers, the fail-closed posture
+    # vocabulary, and the §2 purpose sentence stay out of scope.
+    assert not _claims_dbr2_closed_unanchored("a separate dan-authorized dbr-ar-2 closure decision")
+    assert not _claims_dbr2_closed_unanchored("see the dbr-ar-2 closure record above")
+    assert not _claims_dbr2_closed_unanchored("| durable routing audit (dbr-ar-2) — see the closure record | b5-blk-4 — closed (b5-e) |")
+    assert not _claims_dbr2_closed_unanchored("internal code routing_audit_unavailable; the request is denied fail closed")
+    assert not _claims_dbr2_closed_unanchored("dbr-ar-2 defines the durable, vendor-neutral, references-only record that closes this gap")
+    assert not _claims_dbr2_closed_unanchored("the routing audit path stays fail closed on sink unavailability")
+    assert not _claims_dbr2_closed_unanchored("the routing audit gate is fail-closed by default")
 
 
 # DBR-AR-2A recognized as implemented — exact status/coverage anchors (contract doc only;
@@ -897,8 +1022,8 @@ if __name__ == "__main__":
             test_dbr2_docs_exist,
             test_dbr2_baseline_pinned,
             test_dbr2_baseline_nonvacuity,
-            test_dbr2_open_status_pinned_per_document,
-            test_dbr2_open_status_nonvacuity,
+            test_dbr2_closure_status_pinned_per_document,
+            test_dbr2_closure_status_nonvacuity,
             test_dbr2_2a_status_pinned,
             test_dbr2_2a_status_nonvacuity,
             test_dbr2_standing_decisions_restated_intact,
@@ -921,7 +1046,9 @@ if __name__ == "__main__":
             test_dbr2_slice_sequence_recorded,
             test_dbr2_slice_sequence_nonvacuity,
             test_dbr2_m01_not_marked_closed,
+            test_dbr2_m01b_no_unanchored_closure_claim,
             test_dbr2_m01_nonvacuity,
+            test_dbr2_m01b_nonvacuity,
             test_dbr2_m02_blk4_not_reopened,
             test_dbr2_m02_nonvacuity,
             test_dbr2_m03_mvp_acceptance_intact,

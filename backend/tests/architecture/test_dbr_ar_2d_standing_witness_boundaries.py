@@ -18,7 +18,9 @@ and environment restoration; the durable cross-process rerun refusal; the no-ove
 posture; the hosted live-PG loop UNCHANGED at exactly 14 with the new standing harness a justified
 MANUAL_ONLY exception; the subprocess census (status-only standing delegation + the read-only
 commit witness + pg_dump/pg_restore only); the evolved locked-state record (DBR-AR-2D delivered
-only after evidence acceptance; DBR-AR-2 remains OPEN; DBR-AR-2E production-activation evidence
+only after evidence acceptance with the remained-OPEN-at-delivery historical tail; the exact
+canonical DBR-AR-2 closure sentence — Dan-authorized governance decision, 2026-07-16 — in the
+contract doc and the evidence template; DBR-AR-2E production-activation evidence
 consolidated with Outcome A — REMAIN NOT READY / DO-NOT-ACTIVATE; production NOT
 READY; ATR-2B-1 separate); and the exact authorized backend 2D/2E file census. Every detector
 carries a planted non-vacuity companion. Pure stdlib; standalone-runnable:
@@ -68,6 +70,13 @@ _AUTHORIZED_2D_BACKEND = (
 )
 
 _EXPECTED_HARNESS_COUNT = 14  # the hosted loop is UNCHANGED by this slice (manual-only standing harness)
+
+# The ONLY sanctioned DBR-AR-2 closure claim (PRD DBR-AR-2 Closure Decision V2 START-GATE §7).
+_CLOSURE_PIN = (
+    "dbr-ar-2 — closed (dan-authorized governance decision, 2026-07-16); this closure closes zero b5"
+    " activation blockers, the blocker census remains nine with 8 of 9 open, and production remains"
+    " not ready / do-not-activate."
+)
 
 _LOOP_RE = re.compile(r"for\s+h\s+in\s+(?P<loop>.+?);\s*do", re.DOTALL)
 _ENTRY_RE = re.compile(r"\S+\.py")
@@ -635,7 +644,12 @@ def test_v3_no_status_overclaim() -> None:
     status_seg = _func_segment(source, "cmd_status")
     assert "NEVER constitute the witness" in status_seg, "status must state the fail-closed no-overclaim rule"
     assert "evaluate_evidence_rows" in _func_segment(source, "cmd_status"), "status must verify the DURABLE evidence directly"
-    assert "DBR-AR-2 remains OPEN" in status_seg, "status must keep DBR-AR-2 OPEN in its verdict line"
+    assert "the DBR-AR-2 closure record is intact" in status_seg, (
+        "the status verdict line must reference the intact DBR-AR-2 closure record (Dan-authorized governance decision, 2026-07-16)"
+    )
+    assert "(Dan-authorized governance decision, 2026-07-16)" in status_seg, "the verdict must carry the full closure anchor"
+    assert "production activation remains blocked" in status_seg, "the verdict must keep production activation blocked"
+    assert "DBR-AR-2 remains OPEN" not in status_seg, "the superseded remains-OPEN verdict text must not survive in cmd_status"
 
 
 def test_v3_hosted_loop_unchanged_and_manual_only() -> None:
@@ -692,10 +706,11 @@ def test_v3_no_automatic_enrollment_nonvacuity() -> None:
 # ---------------------------------------------------------------------------
 def test_v3_locked_state_lockstep() -> None:
     doc = _norm(_text(_CONTRACT_DOC))
-    assert "dbr-ar-2 — remains open." in doc, "DBR-AR-2 must remain OPEN"
+    assert _CLOSURE_PIN in doc, "the exact canonical DBR-AR-2 closure sentence must be recorded in the contract doc"
     assert (
         "dbr-ar-2d — disposable/hosted postgresql proof delivered (v2) and retained standing-environment witnesses"
-        " delivered (v3, this pr); dbr-ar-2d is delivered only after this evidence is accepted; dbr-ar-2 remains open." in doc
+        " delivered (v3, this pr); dbr-ar-2d is delivered only after this evidence is accepted;"
+        " dbr-ar-2 remained open at 2d delivery." in doc
     ), "the truthful evolved 2D status sentence must be recorded"
     assert "dbr-ar-2e — production-activation evidence consolidated; outcome a is remain not ready / do-not-activate." in doc, (
         "the truthful 2E status (evidence consolidated; Outcome A — REMAIN NOT READY) must be recorded"
@@ -721,10 +736,11 @@ def test_v3_locked_state_lockstep() -> None:
         "references only",
         "backup sha256",
         "exactly four evidence rows",
-        "dbr-ar-2 remains open",
+        _CLOSURE_PIN,
         "production activation remains not ready / do-not-activate",
     ):
         assert needle in template, f"the standing evidence template must carry {needle!r}"
+    assert "dbr-ar-2 remains open" not in template, "the superseded remains-OPEN status must not survive in the template"
     for banned in ("eyj", "-----begin", "postgresql://"):
         assert banned not in template, f"the evidence template must never carry secret-shaped material ({banned!r})"
 
@@ -732,18 +748,25 @@ def test_v3_locked_state_lockstep() -> None:
 def test_v3_locked_state_nonvacuity() -> None:
     evolved = (
         "dbr-ar-2d — disposable/hosted postgresql proof delivered (v2) and retained standing-environment witnesses"
-        " delivered (v3, this pr); dbr-ar-2d is delivered only after this evidence is accepted; dbr-ar-2 remains open."
+        " delivered (v3, this pr); dbr-ar-2d is delivered only after this evidence is accepted;"
+        " dbr-ar-2 remained open at 2d delivery."
     )
     assert evolved not in evolved.replace("only after this evidence is accepted", "unconditionally"), (
         "an unconditional 2D delivery claim must be detectable"
     )
-    assert "dbr-ar-2 — remains open." not in "dbr-ar-2 — closed.", "a closed-2 claim must be detectable"
+    assert _CLOSURE_PIN not in "dbr-ar-2 — closed.", "a bare closure claim must not satisfy the exact closure pin"
+    assert _CLOSURE_PIN not in _norm(
+        "dbr-ar-2 — closed (dan-authorized governance decision, 2026-07-16); production remains not ready / do-not-activate."
+    ), "a count-free/zero-closure-free closure variant must not satisfy the exact closure pin"
     assert "dbr-ar-2e — production-activation evidence consolidated; outcome a is remain not ready / do-not-activate." not in (
         "dbr-ar-2e — production-activation evidence consolidated."
     ), "a shortened 2E status (without the Outcome A / not-ready posture) must not satisfy"
     assert "not enrolled in the automatic standing apply order (001–009)" not in _norm(
         "010/011 are now enrolled in the automatic standing apply order"
     ), "an enrollment claim must be detectable"
+    assert "dbr-ar-2 remains open" in _norm("locked state: DBR-AR-2 remains OPEN."), (
+        "a resurrected remains-OPEN template status must be detectable"
+    )
 
 
 def test_v3_no_durable_fallback_in_composition() -> None:

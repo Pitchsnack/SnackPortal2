@@ -62,7 +62,10 @@ MVP-completion claim. The following remain **OPEN** and separate:
   and `b5_activation_blockers.md`); the §5 audit-sink availability condition remains binding at activation time.
 - **Physical Multi-Database MVP** — **ACCEPTED AT DATABASE GRANULARITY (B5-E, 2026-07-12, Dan-authorized)**;
   the IC-010 §O mandate remains mandatory and binding, and acceptance does not weaken it.
-- **Durable routing audit (DBR-AR-2)** — **OPEN**; routing/auth audit evidence in Smoke C V2 is in-memory only.
+- **Durable routing audit (DBR-AR-2)** — see the DBR-AR-2 closure record below (Dan-authorized governance
+  decision, 2026-07-16); routing/auth audit evidence in Smoke C V2 is in-memory only; durable routing-audit
+  evidence exists for the disposable proof and the retained local standing environment (DBR-AR-2D), and
+  production-environment durability evidence remains deployment-era scope (PAE-02/PAE-08).
 - **Production deployment / supervision** — **OPEN** (deployment evidence required).
 - **Lovable / API-Gateway cutover** — separate track (interim Supabase/RLS; B5-BLK-5 / B5-BLK-6).
 - **AI Agent implementation** and **product billing / fees** — separate future tracks.
@@ -77,10 +80,11 @@ Decision baseline: `origin/main @ 84882c77cfe409bab0af454b4411cf65795bcbfd` (B5-
 MVP acceptance at database granularity is not cluster-level proof, not production deployment, not production activation, not Lovable cutover, not billing completion, and not AI Agent completion.
 The Physical Multi-Database MVP mandate (IC-010 §O) remains mandatory and binding; acceptance at database granularity does not weaken it.
 Cluster-level distinctness remains deployment scope (AT-D15T1-4; held by B5-BLK-2).
-DBR-AR-2 (durable routing audit) remains OPEN — a separate Database Router follow-on; it was not part of the B5-BLK-4 closure evidence bar (see the B5-E record) and its status is unchanged by this decision.
+DBR-AR-2 — CLOSED (Dan-authorized governance decision, 2026-07-16); this closure closes zero B5 activation blockers, the blocker census remains nine with 8 of 9 OPEN, and production remains NOT READY / DO-NOT-ACTIVATE.
+DBR-AR-2 (durable routing audit) was a separate Database Router follow-on; it was not part of the B5-BLK-4 closure evidence bar (see the B5-E record) and its status was unchanged by the B5-E decision.
 Production runtime activation remains NOT READY / DO-NOT-ACTIVATE — 8 of 9 activation blockers remain OPEN; the B5-E closure of B5-BLK-4 changes no other blocker and does not make the gate ready.
 The gate §5 activation condition "provisioning audit sink available (B-6) — or an explicit, approved waiver" remains binding at activation time and is not waived by the B5-E closure.
-Next step: the next Dan-authorized governed slice; every remaining activation blocker is deployment-scope (B5-BLK-2/3/7/8/9) or product/integration-track (B5-BLK-5/6), and DBR-AR-2 is the named Database Router follow-on PRD.
+Next step: the next Dan-authorized governed slice; every remaining activation blocker is deployment-scope (B5-BLK-2/3/7/8/9) or product/integration-track (B5-BLK-5/6), and the DBR-AR-2 durable-routing-audit follow-on is governed by its closure record (Dan-authorized governance decision, 2026-07-16) — no further DBR-AR-2 slice is authorized.
 The 2026-07-12 re-grounding itself neither performs nor bypasses this decision; the decision is the separate B5-E record above.
 
 **IC-002 tenant lifecycle — eight authoritative states** (copied from

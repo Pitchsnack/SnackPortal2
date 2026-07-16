@@ -78,7 +78,9 @@ Every captured command output scanned: no resolved secret. All emitted identitie
 
 ## 8. Locked state (unchanged by this record)
 
-DBR-AR-2 remains OPEN. DBR-AR-2E — not started and unauthorized. Production activation remains
+DBR-AR-2 — CLOSED (Dan-authorized governance decision, 2026-07-16); this closure closes zero B5 activation blockers, the blocker census remains nine with 8 of 9 OPEN, and production remains NOT READY / DO-NOT-ACTIVATE.
+DBR-AR-2E — production-activation evidence consolidated (Outcome A — REMAIN NOT READY / DO-NOT-ACTIVATE).
+Production activation remains
 NOT READY / DO-NOT-ACTIVATE — 8 of 9 activation blockers remain OPEN. The hosted live-PG loop
 remains exactly 14 harnesses; the standing harness is manual-only. ATR-2B-1 remains a separately
 governed HTTP-hardening follow-up.

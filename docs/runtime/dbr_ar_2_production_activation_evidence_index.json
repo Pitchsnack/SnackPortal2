@@ -9,7 +9,7 @@
   "blocker_census": 9,
   "blockers_open": 8,
   "blockers_closed": 1,
-  "dbr_ar_2_status": "OPEN",
+  "dbr_ar_2_status": "CLOSED \u2014 DAN-AUTHORIZED GOVERNANCE DECISION",
   "generated_on": "2026-07-16",
   "evidence": [
     {
@@ -32,6 +32,27 @@
       "sensitivity": "references-only",
       "retention": "retain-all (IC-001 default)",
       "notes": "OPEN; SEPARATELY GOVERNED; NOT IMPLEMENTED BY DBR-AR-2E. Unsupported-method refusal shape / default-HTML / Server header hardening; the merged 2B non-POST refusal shape is unchanged and pinned by four architecture guards. DBR-AR-2 is not an entry in the B5 activation-blocker register; DBR-AR-2E closes zero blockers."
+    },
+    {
+      "evidence_id": "EV-CD-01",
+      "requirement_id": "DBR-AR-2-CLOSURE",
+      "blocker_id": "NONE",
+      "title": "DBR-AR-2 closure decision - Dan-authorized governance decision (2026-07-16)",
+      "status": "PASS",
+      "source_type": "repo-file",
+      "source_path_or_url": "docs/runtime/dbr_ar_2_production_activation_evidence.md (section 13) + docs/runtime/dbr_ar_2_durable_routing_audit_contract.md (section 1 closure record)",
+      "source_commit": "THIS-PR (docs/dbr-ar-2-closure-decision; binding completes at merge)",
+      "source_tree": "THIS-PR (docs/dbr-ar-2-closure-decision; binding completes at merge)",
+      "source_blob_or_hash": "edited by this PR",
+      "environment": "repository",
+      "database_identity": "none",
+      "captured_at": "2026-07-16",
+      "verified_at": "2026-07-16",
+      "verifier": "Claude Fable 5 - DBR-AR-2 Closure Decision V1 execution (Dan START-GATE 2026-07-16); grounded in the accepted Closure Decision V1 readiness review (2026-07-16)",
+      "reproducibility": "live",
+      "sensitivity": "references-only",
+      "retention": "retain-all (IC-001 default)",
+      "notes": "Dan-authorized DBR-AR-2 closure decision (2026-07-16): DBR-AR-2 is outside the B5 activation-blocker register; this closure closes zero B5 activation blockers; the blocker census remains nine with 8 of 9 OPEN; production remains NOT READY / DO-NOT-ACTIVATE; the Lovable cutover remains OPEN; every carried item (ATR-2B-1, OBS-V3-PM-1, OBS-2E-PM-1..6, OBS-2E-POST-1/2/3, section-18 items) is re-carried, not resolved. DBR-AR-2 is not an entry in the B5 activation-blocker register; DBR-AR-2E closes zero blockers."
     },
     {
       "evidence_id": "EV-OBS-V3-PM-1",

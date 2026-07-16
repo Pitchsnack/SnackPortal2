@@ -18,8 +18,10 @@ operator runbook (blob verification before SQL, explicit 010→011, forbidden de
 recovery, production enablement unauthorized before DBR-AR-2E); the OBS-2D-1 hardening (the exact
 20-column sequence, the exact authored CHECK set, and the exact trigger set, cross-derived from the
 committed DDL and pinned in both the V2 harness and the V3 standing operator); and the locked state
-(DBR-AR-2 remains OPEN; the V2 disposable proof + V3 standing witnesses delivered only after
-evidence acceptance; 2E production-activation evidence consolidated with Outcome A — REMAIN NOT
+(the exact canonical DBR-AR-2 closure sentence — Dan-authorized governance decision, 2026-07-16 —
+in the contract doc and the b7c2 doc; the V2 disposable proof + V3 standing witnesses delivered only
+after evidence acceptance with the remained-OPEN-at-delivery historical tail; 2E production-activation
+evidence consolidated with Outcome A — REMAIN NOT
 READY / DO-NOT-ACTIVATE; ATR-2B-1 separate with its HTTP-hardening meaning).
 Every detector carries a planted non-vacuity companion. Pure stdlib; standalone-runnable:
   python tests/architecture/test_dbr_ar_2d_live_proof_boundaries.py
@@ -87,6 +89,13 @@ _EPHEMERAL_DSN = "postgresql://postgres@localhost:5432/postgres"  # the ONLY wor
 
 _LOOP_RE = re.compile(r"for\s+h\s+in\s+(?P<loop>.+?);\s*do", re.DOTALL)
 _ENTRY_RE = re.compile(r"\S+\.py")
+
+# The ONLY sanctioned DBR-AR-2 closure claim (PRD DBR-AR-2 Closure Decision V2 START-GATE §7).
+_CLOSURE_PIN = (
+    "dbr-ar-2 — closed (dan-authorized governance decision, 2026-07-16); this closure closes zero b5"
+    " activation blockers, the blocker census remains nine with 8 of 9 open, and production remains"
+    " not ready / do-not-activate."
+)
 
 # The four frozen event classes, as the harness's emission-order assertion literal.
 _FOUR_CLASSES = '["Route", "RouteControl", "RouteDenied", "IsolationAnomaly"]'
@@ -302,7 +311,7 @@ def test_2d_b7c2_doc_lockstep() -> None:
     assert "test_dbr_ar_2d_routing_audit_live_pg.py" in _md_section(doc, "What it runs"), "the run-set prose must list the 2D harness"
     norm = _norm(doc)
     assert "no standing or production ddl application occurs" in norm, "the doc must record the disposable-only scope"
-    assert "dbr-ar-2 remains open" in norm, "the doc must keep DBR-AR-2 OPEN"
+    assert _CLOSURE_PIN in norm, "the doc must carry the exact canonical DBR-AR-2 closure sentence"
 
 
 def test_2d_b7c2_nonvacuity() -> None:
@@ -310,6 +319,10 @@ def test_2d_b7c2_nonvacuity() -> None:
     assert "no standing or production ddl application occurs" not in _norm("standing DDL application occurs here"), (
         "a scope widening must be detectable"
     )
+    assert _CLOSURE_PIN not in _norm("dbr-ar-2 — closed."), "a bare closure claim must not satisfy the exact closure pin"
+    assert _CLOSURE_PIN not in _norm(
+        "dbr-ar-2 — closed (dan-authorized governance decision, 2026-07-16); production remains not ready / do-not-activate."
+    ), "a count-free/zero-closure-free closure variant must not satisfy the exact closure pin"
 
 
 # ---------------------------------------------------------------------------
@@ -449,10 +462,11 @@ def test_2d_runbook_nonvacuity() -> None:
 # ---------------------------------------------------------------------------
 def test_2d_locked_state_pinned() -> None:
     doc = _text(_CONTRACT_DOC).lower()
-    assert "dbr-ar-2 — remains open." in doc, "DBR-AR-2 must remain OPEN"
+    assert _CLOSURE_PIN in doc, "the exact canonical DBR-AR-2 closure sentence must be recorded in the contract doc"
     assert (
         "dbr-ar-2d — disposable/hosted postgresql proof delivered (v2) and retained standing-environment witnesses"
-        " delivered (v3, this pr); dbr-ar-2d is delivered only after this evidence is accepted; dbr-ar-2 remains open." in doc
+        " delivered (v3, this pr); dbr-ar-2d is delivered only after this evidence is accepted;"
+        " dbr-ar-2 remained open at 2d delivery." in doc
     ), "the truthful V3 2D status (V2 disposable proof + V3 standing witnesses; delivered only after acceptance) must be recorded"
     assert "dbr-ar-2e — production-activation evidence consolidated; outcome a is remain not ready / do-not-activate." in doc, (
         "the truthful 2E status (evidence consolidated; Outcome A — REMAIN NOT READY) must be recorded"
@@ -479,7 +493,8 @@ def test_2d_atr_2b1_stays_separate() -> None:
 def test_2d_locked_state_nonvacuity() -> None:
     evolved = (
         "dbr-ar-2d — disposable/hosted postgresql proof delivered (v2) and retained standing-environment witnesses"
-        " delivered (v3, this pr); dbr-ar-2d is delivered only after this evidence is accepted; dbr-ar-2 remains open."
+        " delivered (v3, this pr); dbr-ar-2d is delivered only after this evidence is accepted;"
+        " dbr-ar-2 remained open at 2d delivery."
     )
     assert evolved not in evolved.replace("delivered only after this evidence is accepted", "unconditionally delivered"), (
         "an unconditional 2D delivery mask must be detectable"
@@ -491,7 +506,12 @@ def test_2d_locked_state_nonvacuity() -> None:
     assert "dbr-ar-2e — production-activation evidence consolidated; outcome a is remain not ready / do-not-activate." not in (
         "dbr-ar-2e — production-activation evidence consolidated."
     ), "a shortened 2E status (without the Outcome A / not-ready posture) must not satisfy"
-    assert "dbr-ar-2 — remains open." not in "dbr-ar-2 — closed.", "a closed-2 claim must be detectable"
+    assert _CLOSURE_PIN not in "dbr-ar-2 — closed.", "a bare closure claim must not satisfy the exact closure pin"
+    assert _CLOSURE_PIN not in (
+        "dbr-ar-2 — closed (dan-authorized governance decision); this closure closes zero b5 activation"
+        " blockers, the blocker census remains nine with 8 of 9 open, and production remains not ready /"
+        " do-not-activate."
+    ), "a date-free closure variant must not satisfy the exact closure pin"
     assert "version_string" in "def version_string(self): return ''", "an ATR-2B-1 header override must be detectable"
 
 

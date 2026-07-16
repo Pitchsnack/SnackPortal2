@@ -21,9 +21,11 @@ were evolved by PRD DBR-AR-2D V2/V3 and PRD DBR-AR-2E V1 (the delivering slices)
 zero-2D-file rail now permits EXACTLY the six authorized backend files (the five 2D
 files plus the DBR-AR-2E activation-evidence guard — any seventh file and any second
 ``dbr_ar_2e`` file stay forbidden), and the locked-state pin now requires the truthful
-evolved status (2D disposable/hosted proof + standing witnesses delivered; 2E
-production-activation evidence consolidated with Outcome A — REMAIN NOT READY /
-DO-NOT-ACTIVATE; DBR-AR-2 remains OPEN). Every detector carries a planted
+evolved status (2D disposable/hosted proof + standing witnesses delivered with the
+remained-OPEN-at-delivery historical tail; 2E production-activation evidence
+consolidated with Outcome A — REMAIN NOT READY / DO-NOT-ACTIVATE; and the exact
+canonical DBR-AR-2 closure sentence — Dan-authorized governance decision, 2026-07-16 —
+in the contract doc). Every detector carries a planted
 non-vacuity companion. Pure stdlib; standalone-runnable:
   python tests/architecture/test_dbr_ar_2c_composition_boundaries.py
 """
@@ -69,12 +71,19 @@ _AUTHORIZED_2D_FILES = (
     _TESTS / "control_plane" / "requires_pg" / "test_dbr_ar_2d_routing_audit_live_pg.py",
     _TESTS / "control_plane" / "requires_pg" / "test_pg_dbr_ar_2d_standing_witnesses.py",
 )
-# The truthful evolved 2D/2E locked-state pin (lower-cased contract-doc sentences; PRD DBR-AR-2D V3).
+# The truthful evolved 2D/2E/closure locked-state pins (lower-cased contract-doc sentences;
+# PRD DBR-AR-2D V3 as evolved by the Dan-authorized DBR-AR-2 closure decision, 2026-07-16).
 _2D_STATUS_PIN = (
     "dbr-ar-2d — disposable/hosted postgresql proof delivered (v2) and retained standing-environment witnesses"
-    " delivered (v3, this pr); dbr-ar-2d is delivered only after this evidence is accepted; dbr-ar-2 remains open."
+    " delivered (v3, this pr); dbr-ar-2d is delivered only after this evidence is accepted;"
+    " dbr-ar-2 remained open at 2d delivery."
 )
 _2E_STATUS_PIN = "dbr-ar-2e — production-activation evidence consolidated; outcome a is remain not ready / do-not-activate."
+_CLOSURE_PIN = (
+    "dbr-ar-2 — closed (dan-authorized governance decision, 2026-07-16); this closure closes zero b5"
+    " activation blockers, the blocker census remains nine with 8 of 9 open, and production remains"
+    " not ready / do-not-activate."
+)
 
 # D2/D3 — the exact, complete environment vocabulary of this slice (no drifted variants).
 _DR_ENV_SUFFIXES = frozenset({"BASE_URL", "TIMEOUT_SECONDS"})
@@ -562,10 +571,10 @@ def test_2c_ddl_discipline_and_locked_state() -> None:
         for token in ("CREATE TABLE", "ALTER TABLE", "DROP TABLE", ".sql"):
             assert token not in text, f"{path.name} must not apply or load DDL ({token!r})"
     doc = _text(_CONTRACT_DOC).lower()
-    assert "dbr-ar-2 — remains open." in doc, "DBR-AR-2 must remain OPEN in the contract doc"
+    assert _CLOSURE_PIN in doc, "the exact canonical DBR-AR-2 closure sentence must be recorded in the contract doc"
     assert _2D_STATUS_PIN in doc, (
         "the 2D status must record: disposable/hosted proof (V2) + standing witnesses (V3) delivered;"
-        " 2D delivered only after evidence acceptance; DBR-AR-2 remains OPEN"
+        " 2D delivered only after evidence acceptance; DBR-AR-2 remained OPEN at 2D delivery"
     )
     assert _2E_STATUS_PIN in doc, "the truthful 2E status (evidence consolidated; Outcome A — REMAIN NOT READY) must be recorded"
     assert "production runtime activation remains not ready / do-not-activate" in doc, "the fail-closed gate posture must hold"
@@ -606,6 +615,12 @@ def test_2c_stop_rails_nonvacuity() -> None:
     assert _2E_STATUS_PIN not in "dbr-ar-2e — production-activation evidence consolidated.", (
         "a shortened 2E status (without the Outcome A / not-ready posture) must not satisfy"
     )
+    assert _CLOSURE_PIN not in "dbr-ar-2 — closed.", "a bare closure claim must not satisfy the exact closure pin"
+    assert _CLOSURE_PIN not in (
+        "dbr-ar-2 — closed (dan-authorized governance decision); this closure closes zero b5 activation"
+        " blockers, the blocker census remains nine with 8 of 9 open, and production remains not ready /"
+        " do-not-activate."
+    ), "a date-free closure variant must not satisfy the exact closure pin"
     planted_sixth = _TESTS / "database_router" / "test_dbr_ar_2d_extra.py"
     assert sorted((*_AUTHORIZED_2D_FILES, planted_sixth)) != sorted(_AUTHORIZED_2D_FILES), (
         "a planted seventh dbr_ar_2d backend file must be detectable as unauthorized"
