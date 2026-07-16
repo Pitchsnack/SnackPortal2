@@ -262,7 +262,7 @@ to separately governed; the contract §17 2E-row objective is superseded by the 
   standing re-read with the exact frozen full-row digest is the cross-session durability witness.
 - Proof 11 (cross-tenant reads denied): structural absence of any read surface
   (`__abstractmethods__` is exactly the append method —
-  `backend/tests/database_router/test_dbr_ar_2b_routing_audit_store.py`) plus the ingest 405
+  `backend/tests/control_plane/test_dbr_ar_2b_routing_audit_store.py`) plus the ingest 405
   refusal of GET/PUT/DELETE/PATCH/OPTIONS
   (`backend/tests/control_plane/test_dbr_ar_2b_routing_audit_ingest.py`).
 
@@ -290,6 +290,10 @@ retention/legal-hold/deletion values (§18.2) · the §18.3 gate-condition decis
 Gateway class-3 wiring · §18.7 optional admin events · older-handover regeneration (folders
 43/45) · commit-graph maintenance. OBS-2E-POST-1 sequencing note: any future closure-vocabulary
 hardening must target the new post-closure canonical sentence and must not reopen DBR-AR-2.
-External stale wording outside the authorized surface (the two carved-out `main.py` prose
-locations above and the read-only wrapper's posture-line pin) is separately governed
-documentation hygiene.
+External stale wording outside the authorized surface is separately governed documentation
+hygiene, not authoritative for the current governance state, and not edited by this closure or
+its revision: the two carved-out `main.py` prose locations above; the read-only wrapper's
+posture-line pin; and `backend/tests/control_plane/requires_pg/smoke_c_integrated_live_proof.py`
+(two known stale sites — the module docstring near line 53 and the `audit_disclosure` string
+near line 909), which is outside this revision surface and separately governed
+documentation/runtime-prose hygiene.

@@ -457,8 +457,9 @@ def test_2d_runbook_nonvacuity() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 9. Locked state: DBR-AR-2 OPEN; standing witnesses not started; 2E not started;
-#    DDL still un-enrolled; README truthful; ATR-2B-1 separate
+# 9. Locked state: the exact canonical DBR-AR-2 closure sentence (candidate CLOSED in this PR;
+#    on main it remained OPEN until the human merge); 2D standing witnesses delivered (V3) and
+#    2E evidence consolidated; DDL still un-enrolled; README truthful; ATR-2B-1 separate
 # ---------------------------------------------------------------------------
 def test_2d_locked_state_pinned() -> None:
     doc = _text(_CONTRACT_DOC).lower()

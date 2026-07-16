@@ -24,7 +24,8 @@ status block (2A implemented; 2B storage capability implemented when its PR merg
 append-only enforcement, Control Plane store, internal ingest adapter, uncomposed Database Router client;
 2C composition and failure semantics implemented when its PR merges — explicit opt-in C2 composition,
 condition-1 discard + bounded denial, one bounded idempotent retry, fixed-key degradation counters;
-DBR-AR-2 remains OPEN; DDL applied only to the retained local standing Control DB; composition implemented
+DBR-AR-2 remained OPEN through the 2A-2E deliveries and is CLOSED by the candidate closure record of this
+PR (on main it remains OPEN until the human merge); DDL applied only to the retained local standing Control DB; composition implemented
 as a dormant explicit opt-in seam only; production durability evidence NOT AVAILABLE;
 writer-role DDL separately governed) plus the Before/After early-denial coverage sentences.
 Every detector carries a planted-mutation non-vacuity companion (PRD §12/§19 batteries). Text inspection only —
@@ -974,7 +975,7 @@ def test_dbr2_m23_nonvacuity() -> None:
 
 
 # Mutation 24 — one document loses the exact V1 status sentence: covered per-document by
-# test_dbr2_open_status_pinned_per_document / test_dbr2_open_status_nonvacuity above.
+# test_dbr2_closure_status_pinned_per_document / test_dbr2_closure_status_nonvacuity above.
 
 
 # --- DBR-AR-2B additions: ownership/boundary pins + durability-proven detector -------------
