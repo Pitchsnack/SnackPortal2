@@ -100,6 +100,55 @@ The gateway MUST be **fail-closed**: the following conditions all yield **Reques
 
 Denial semantics follow IC-005 (401 unauthenticated / 403 forbidden) and IC-002 readiness (*not found* / *not ready* / *administratively disabled* / *unavailable*). No error path may downgrade to a less-isolated outcome.
 
+## Response Composition Contract (§V — amendment; PRD B5-BLK-6A, Dan-authorized, 2026-07-17)
+This section **is** the "separate IC-010 amendment" / "separate IC-010 normative amendment" that the **07E-2-C RouteOutcome note** and the **D-15-T1a dispatch wire contract capture** (both below) each require before any response-composition implementation. It draws one distinction the pre-amendment contract did not draw, and changes nothing else:
+
+- **ARBITRARY DOWNSTREAM BODY PASS-THROUGH — FORBIDDEN.**
+- **GATEWAY-COMPOSED, CONTRACT-APPROVED DTO RESPONSE — PERMITTED.**
+
+The first remains prohibited exactly as before. The second is newly permitted, and only under the conditions below. No other IC-010 rule is relaxed: §B (no business logic), §C (the single flow), §G/§T (references-only `RequestContext`), §H/§X (the gateway never resolves a database), §J (references-only audit), §K/§O/§Q (one request → one category → one database), §L (fail-closed denial), §R (internal surfaces never client-reachable), and §U (IC-006/IC-007 deferrals) are unchanged and prevail over any reading of this section.
+
+### Permitted behavior (§V.1)
+The gateway **MAY** compose and return a **GATEWAY-COMPOSED, CONTRACT-APPROVED DTO RESPONSE**, and only when **all** of the following hold:
+
+- **Adopted-contract DTOs only.** The DTO **MUST** be defined by an **adopted interface contract**. The gateway **MUST NOT** compose or return a DTO that no adopted interface contract defines.
+- **Gateway-owned and typed composition.** Composition is **gateway-owned and typed**: the gateway **MUST** construct the DTO itself, as a typed structure it defines, from values it has itself validated. A response the gateway did not compose is not a composed response.
+- **Typed results from injected ports.** The gateway **MAY** consume **typed results from injected ports** as composition inputs. Ports return typed values, never opaque bodies; the gateway remains free of direct database access (§H/§X) and of business logic (§B).
+- **Deterministic serialization.** Serialization **MUST** be **deterministic**: the same DTO instance serializes to the same bytes, with a fixed field order and no environment-, clock-, or iteration-order-dependent variation.
+- **Contract and revision traceability.** Every composed response **MUST** carry **contract and revision traceability** — the composing seam names the interface contract and the revision it serves (today: **IC-009-R1**).
+- **Denial and error semantics unchanged.** §L prevails without downgrade: the existing status and `public_code` vocabulary is preserved, denial precedes data, and **no new `public_code` is introduced by composition**.
+- **The composer never selects a database.** **No database is selected by the response composer.** Database resolution remains exclusively the Database Router's (§H/§X); composing a response is never a routing act.
+- **One request → one approved operation → one database.** A composed response **MUST** be the result of exactly one approved operation resolving to exactly one database (§K/§O/§Q). Composition never straddles the Control DB and a tenant DB, and never spans two tenant DBs.
+
+### Behavior that remains forbidden (§V.2)
+**ARBITRARY DOWNSTREAM BODY PASS-THROUGH — FORBIDDEN.** This prohibition is retained in full and is **not** weakened by §V.1. The gateway **MUST NOT**:
+
+- relay an **arbitrary backend body** — any downstream response body it did not itself compose into an approved DTO;
+- relay **raw bytes**, a byte stream, or an **unapproved dictionary**;
+- expose a **database row** directly;
+- expose **provider-specific payloads**;
+- expose **secrets, credentials, DSNs, tokens, or authorization payloads**;
+- expose **raw exceptions, stack traces, SQL, internal hostnames, or physical database identity**;
+- expose **tenant attribution in global-directory DTOs** — directory DTOs remain **tenant-anonymous** (D-35 Tenant Anonymity Rule prevails). Membership DTOs are a distinct case: a `MembershipsForPrincipal` DTO lawfully carries the IC-002 membership references (tenant id, role, display ref — §Q) and **MUST** expose **only approved references**, never tenant-DB data;
+- **aggregate multiple tenant-database results** into one response;
+- **convert a denial into success**;
+- **hide routing or isolation failures** — an `IsolationAnomaly` or routing failure is never masked by a composed response (§J/§K);
+- **weaken `RouteOutcome` into a business-payload carrier**. **`RouteOutcome` remains references-only and carries no business payload** (§G/§T; the 07E-2-C note below is unchanged): the Database Router still returns no body, and composition never sources content from it.
+
+A composed response is produced **only** for an allowed, dispatched request. On any denial, the gateway returns the §L denial and **no DTO**.
+
+### Relationship to IC-009 (§V.3)
+- **IC-009-R1 owns the approved portal DTO catalogue and portal visibility rules.**
+- **IC-010 §V owns the Gateway's permission and mechanics for composing those DTOs.**
+
+The boundary of §W/M1 is preserved: IC-010 bounds IC-009 and does not depend on its content. This amendment **does not itself implement DTOs, ports, handlers, transports, or serving edges** — it authorizes their later, separately-governed implementation and nothing more.
+
+### IC-007 boundary (§V.4)
+**IC-007 remains a DEFERRAL BOUNDARY ONLY.** §V authorizes **no positive cross-tenant capability, route, fan-out, workflow, or DTO**. §U is unchanged; a cross-tenant straddle remains denied fail-closed and audited (§K/§J), and no composed response may be produced for one. Positive IC-007 design remains separately governed.
+
+### Non-overclaim (§V.5)
+This amendment does **not**: implement runtime response composition; create a northbound HTTP ingress (ingress remains D-15/deployment-owned, §P intact); connect Lovable or authorize the Lovable cutover; close **B5-BLK-6**; close **B5-BLK-5**; provision infrastructure; access production; change any activation blocker; or authorize activation. **B5-BLK-6 remains OPEN. B5-BLK-5 remains OPEN. Production remains NOT READY / DO-NOT-ACTIVATE.** Runtime implementation of §V proceeds only under a separate, explicitly-authorizing execution PRD (register entry → contract → code); proof and blocker closure are separately governed again after that.
+
 ## Service Contract (§M)
 All backend services — **Auth Router, Database Router, Import Service, Lineage Service, and future services** — MUST be reachable **only through the API Gateway** for **client/portal ingress**, *unless explicitly governed otherwise*. The **"explicitly governed otherwise"** clause covers the already-built **internal service-to-service transport**: services call one another over sanctioned internal transport ports (HTTP read APIs) under static cross-service import constraints that enforce **service independence** (import-linter). Per *Internal-Surface Protection*, these internal surfaces are **internal-only** and **MUST NEVER be directly client-reachable** — they sit behind the gateway boundary and are **not a portal ingress path**. The gateway governs the **client edge**; it does not forbid the internal transport graph, and that graph never offers a client or portal a way around the gateway.
 
@@ -153,6 +202,8 @@ The gateway resolves (via the Database Router) to the Control Database **or** ex
 
 **RouteOutcome (D-07E-6a).** A future 07E-2-X execution PRD MAY widen `RouterDispatchPort.dispatch()` from `None` to a **references-only `RouteOutcome`** (status / public_code / category / handoff marker + already-permitted correlation/trace references). `RouteOutcome` **MUST NOT** carry tenant-DB connections, tenant-DB names, raw credentials, secrets, request/response bodies, PII, business payloads, or vendor-specific data (Global Audit Representation Rule; §G/§J references-only), and the gateway **MUST** still resolve no database from it (§H/§X/§K). **Full response-body pass-through is NOT approved** — it would require a separate IC-010 amendment. This is a within-package port-level decision traceable to §C (`→ Service → Response`) and §H — not a normative boundary change.
 
+**Amended (2026-07-17, PRD B5-BLK-6A).** The separate IC-010 amendment this note requires is now **§V — Response Composition Contract** (above). §V does **not** weaken this note: **arbitrary downstream body pass-through remains FORBIDDEN**, and **`RouteOutcome` remains references-only and carries no business payload** — the prohibitions in this note stand in full. §V adds only the narrow permission to return a **gateway-composed, contract-approved DTO** that the gateway builds itself from typed port results (never relayed from a downstream body), under every §V.1 condition and subject to §V.2.
+
 **D-15 boundary (D-07E-6b / D-07E-6c).** Live gateway→database-router dispatch, the gateway HTTP ingress server, the router dispatch server, and tenant-vs-Control-DB physical-distinctness proof remain **D-15/deployment-owned** (§P reservation intact). This governance capture implements no routing and opens no database.
 
 **Non-overclaim.** This governance refresh does not implement routing, does not open a tenant database, does not prove Physical Multi-Database MVP completion, and does not close B5-BLK-4.
@@ -160,6 +211,8 @@ The gateway resolves (via the Database Router) to the Control Database **or** ex
 ## D-15-T1a dispatch wire contract capture (governance; PRD-D15-T1a, 2026-07-07)
 
 **Dispatch wire contract (D-15-T1a).** `docs/d15/D15-DISPATCH-SPEC-01-Gateway-Router-Dispatch-Wire-Contract.md` defines the references-only gateway↔database-router dispatch wire contract for future D-15-T1 runtime work. T1a is **governance-only** and precedes runtime **T1b** (the transport pair). The request envelope is versioned (`v:1`) and carries **only** `RequestContext`'s five reference fields (`correlation_id`, `request_id`, `active_tenant_id`, `principal_ref`, `role`) plus the gateway `DispatchCategory` as **advisory metadata**. **`DispatchDecision` is NOT serialized on the wire.** The database router binds the database **solely from the signed `RequestContext` claim**; gateway category is advisory and is **never a database selector** (§X/§H/§G). The response envelope is references-only `{status, public_code, dispatched}` (POST `/internal/dispatch/route`, internal-only per §R); response **`category` remains gateway-owned** and is not returned by the router. The router's live `TenantConnection`/`RouteResult`/`TenantRoutingView`/`SecretRef`/DSN/credential/topology and any request/response body **never cross** the boundary. **Full response-body or business-payload pass-through remains NOT approved and requires a separate IC-010 normative amendment before implementation** (consistent with the 07E-2-C note above).
+
+**Amended (2026-07-17, PRD B5-BLK-6A).** The separate IC-010 normative amendment this capture requires is now **§V — Response Composition Contract** (above), which amends the 07E-2-C note identically — the two notes remain mutually consistent. §V leaves this capture's wire contract **unchanged**: the response envelope stays references-only `{status, public_code, dispatched}`, the router still returns **no body**, `DispatchDecision` is still **not serialized on the wire**, `category` remains gateway-owned, and **full response-body or business-payload pass-through remains NOT approved**. Only a **gateway-composed, contract-approved DTO** — built by the gateway from typed port results, never relayed from a downstream body — is permitted, and only under §V.
 
 **Non-overclaim.** This note does not authorize runtime dispatch, gateway HTTP ingress, router dispatch-server implementation, api_gateway transport-client implementation, tenant database routing, tenant-vs-Control-DB physical-distinctness proof, live-PG proof, B5-BLK-4 closure, or Physical Multi-Database MVP completion. Live routing + physical distinctness remain **D-15/deployment-owned** (§P intact). No normative boundary rule (§H/§X/§K/§O/§G/§J), prohibition, or frozen invariant is altered by this capture.
 
