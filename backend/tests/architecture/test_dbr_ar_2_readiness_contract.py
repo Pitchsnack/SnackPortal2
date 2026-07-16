@@ -2,17 +2,21 @@
 
 Pins the DBR-AR-2 V1 contract-capture record (PRD DBR-AR-2 V1, 2026-07-12, baseline
 ac6ca9da48837b5c06cf6a9f1663af73fedf1b74) as evolved by DBR-AR-2A (2026-07-13), DBR-AR-2B (2026-07-13),
-DBR-AR-2C (2026-07-14), and the DBR-AR-2D disposable/hosted sub-slice (2026-07-14 — status anchors only:
-the 2D status records the delivered disposable/hosted PostgreSQL proof with the standing-environment
-witnesses not started, DBR-AR-2E stays not started, and the live-durability truth sentence is scoped to
-the disposable proof; DBR-AR-2 remains OPEN and every other pin is unchanged): the
+DBR-AR-2C (2026-07-14), the DBR-AR-2D disposable/hosted sub-slice (2026-07-14), and the DBR-AR-2D V3
+standing witnesses (2026-07-14 — status anchors only: the 2D status records the V2 disposable proof AND
+the V3 retained standing witnesses as delivered only after evidence acceptance, the DDL-scope sentence
+records the Dan-authorized manual apply to the retained local standing Control DB ONLY (never enrolled,
+never tenant/staging/production), the durability sentence covers the disposable proof + the retained
+standing environment while production durability stays not delivered, and the next governed step is
+DBR-AR-2E (unauthorized); DBR-AR-2E stays not started; DBR-AR-2 remains OPEN and every other pin is
+unchanged): the
 dedicated contract document and the readiness-matrix cross-reference must keep DBR-AR-2 OPEN, keep every B5-E
 decision sentence intact, commit to the selected architecture (Option B — Control-Plane-owned durable
 routing-audit store behind a service boundary), carry the event-schema minimums and the forbidden-data list,
 state explicit failure semantics with no silent fail-open, claim no cross-database atomicity, authorize no
 cross-service import, keep the Control Plane the sole Control-DB writer with no router credential, claim no
-applied schema / proven live durability, keep the blocker count at 8 of 9, record the
-implementation-slice sequence and the exact next governed step (DBR-AR-2D), and carry the exact DBR-AR-2A/2B/2C
+schema or durability beyond the sanctioned V3 standing scope, keep the blocker count at 8 of 9, record the
+implementation-slice sequence and the exact next governed step (DBR-AR-2E, unauthorized), and carry the exact DBR-AR-2A/2B/2C
 status block (2A implemented; 2B storage capability implemented when its PR merges — created-not-applied DDL,
 append-only enforcement, Control Plane store, internal ingest adapter, uncomposed Database Router client;
 2C composition and failure semantics implemented when its PR merges — explicit opt-in C2 composition,
@@ -58,8 +62,8 @@ _NO_ATOMICITY_SENTENCE = (
 )
 _NO_IMPORT_SENTENCE = "no cross-service import is authorized"
 _NEXT_STEP_SENTENCE = (
-    "next implementation slice after dbr-ar-2c is fully merged, post-merge verified, and target-cleaned:"
-    " dbr-ar-2d — live proof and operator runbook."
+    "next governed step after dbr-ar-2d is fully merged, post-merge verified, and target-cleaned:"
+    " dbr-ar-2e — production activation evidence (unauthorized until its own gpt prd, readiness review, and dan start-gate)."
 )
 _SOLE_WRITER_SENTENCE = "the control plane remains the sole writer of the control database"
 _NO_ROUTER_CREDENTIAL_SENTENCE = "it gains no control-db credential under option b"
@@ -80,15 +84,22 @@ _2C_STATUS_SENTENCE = (
     " path in the same explicitly authorized degraded mode)."
 )
 _2A_OPEN_SENTENCE = "dbr-ar-2 — remains open."
-# PRD DBR-AR-2D V2: the combined 2C-era "2d through 2e — not started" sentence is superseded by the
-# truthful per-slice status pair (disposable/hosted proof delivered; standing witnesses not started;
-# 2D still OPEN; 2E not started).
+# PRD DBR-AR-2D V2 recorded the disposable/hosted proof; PRD DBR-AR-2D V3 supersedes that status
+# with the truthful full-2D record (V2 disposable proof + V3 standing witnesses; delivered only
+# after evidence acceptance; DBR-AR-2 still OPEN; 2E not started).
 _2D_STATUS_SENTENCE = (
-    "dbr-ar-2d — disposable/hosted postgresql proof delivered by this slice; standing-environment"
-    " witnesses not started and separately governed; dbr-ar-2d remains open."
+    "dbr-ar-2d — disposable/hosted postgresql proof delivered (v2) and retained standing-environment witnesses"
+    " delivered (v3, this pr); dbr-ar-2d is delivered only after this evidence is accepted; dbr-ar-2 remains open."
 )
 _2E_STATUS_SENTENCE = "dbr-ar-2e — not started."
-_DDL_NOT_APPLIED_SENTENCE = "the ddl is not applied."
+# PRD DBR-AR-2D V3 §4: the DDL is manually applied ONLY to the retained local standing Control DB
+# (Dan-authorized, backup-first, blob-verified, 010→011); every other environment stays unapplied
+# and the automatic standing apply order stays 001–009.
+_DDL_APPLIED_SCOPE_SENTENCE = (
+    "the ddl is applied only to the retained local standing control database, by the dan-authorized dbr-ar-2d v3"
+    " manual operator apply (backup-first, blob-verified, 010 then 011, each exactly once); it is not applied to"
+    " any tenant, staging, or production database and is not enrolled in the automatic standing apply order (001–009)."
+)
 _2C_COMPOSITION_SENTENCE = (
     "production composition is implemented as an explicit opt-in environment seam and stays dormant unless"
     " selected; no production environment selects it and the activation gate is unchanged."
@@ -99,7 +110,8 @@ _BEFORE_2A_SENTENCE = (
 )
 _AFTER_2A_SENTENCE = "after dbr-ar-2a: every completed or denied route() invocation produces exactly one router-edge in-memory event."
 _DURABILITY_SENTENCE = (
-    "live durability evidence exists for the disposable postgresql proof only; standing-environment durability remains not yet proven."
+    "live durability evidence exists for the disposable postgresql proof and for the retained local standing"
+    " environment (dbr-ar-2d v3); production-environment durability evidence remains not delivered and is dbr-ar-2e scope."
 )
 _2A_ANCHORS = (
     _2A_STATUS_SENTENCE,
@@ -108,7 +120,7 @@ _2A_ANCHORS = (
     _2A_OPEN_SENTENCE,
     _2D_STATUS_SENTENCE,
     _2E_STATUS_SENTENCE,
-    _DDL_NOT_APPLIED_SENTENCE,
+    _DDL_APPLIED_SCOPE_SENTENCE,
     _2C_COMPOSITION_SENTENCE,
     _WRITER_ROLE_SENTENCE,
     _BEFORE_2A_SENTENCE,
@@ -384,9 +396,11 @@ _OPEN_MARKER_RE = re.compile(r"\b(?:open|in-memory|follow-on|not|pending|remains
 
 
 def _mask_v1_status(norm_text: str) -> str:
-    # Exact-sentence masks only: any variant of a closure claim still trips m01.
+    # Exact-sentence masks only: any variant of a closure claim still trips m01/m21.
     masked = norm_text.replace(_V1_STATUS_SENTENCE, " <v1-status-sentence> ")
     masked = masked.replace(_2D_STATUS_SENTENCE, " <2d-status-sentence> ")
+    masked = masked.replace(_DDL_APPLIED_SCOPE_SENTENCE, " <ddl-applied-scope-sentence> ")
+    masked = masked.replace(_DURABILITY_SENTENCE, " <durability-sentence> ")
     masked = masked.replace(_2C_STATUS_SENTENCE, " <2c-status-sentence> ")
     masked = masked.replace(_2B_STATUS_SENTENCE, " <2b-status-sentence> ")
     return masked.replace(_2A_STATUS_SENTENCE, " <2a-status-sentence> ")
@@ -447,9 +461,13 @@ def test_dbr2_2a_status_nonvacuity() -> None:
     assert _AFTER_2A_SENTENCE not in _norm("after dbr-ar-2a: zero or more router-edge in-memory events may be produced")
     assert _BEFORE_2A_SENTENCE not in _norm("before dbr-ar-2a: pre-target denials were fully audited")
     assert _2D_STATUS_SENTENCE not in _norm("dbr-ar-2d through dbr-ar-2e — not started")  # the superseded 2C-era form no longer satisfies
-    assert _2D_STATUS_SENTENCE not in _norm(_2D_STATUS_SENTENCE.replace("witnesses not started", "witnesses complete")), (
-        "a standing-witness completion mask must be detectable"
-    )
+    assert _2D_STATUS_SENTENCE not in _norm(
+        "dbr-ar-2d — disposable/hosted postgresql proof delivered by this slice; standing-environment"
+        " witnesses not started and separately governed; dbr-ar-2d remains open."
+    ), "the superseded V2-era status sentence must no longer satisfy"
+    assert _2D_STATUS_SENTENCE not in _norm(
+        _2D_STATUS_SENTENCE.replace("delivered only after this evidence is accepted", "unconditionally delivered")
+    ), "an unconditional 2D delivery mask must be detectable"
     assert _2E_STATUS_SENTENCE not in _norm("dbr-ar-2e — started")
     assert _claims_dbr2_complete("dbr-ar-2d — delivered.")  # a shortened 2D closure claim is unmasked
     assert _claims_dbr2_complete("dbr-ar-2d — disposable/hosted postgresql proof delivered.")  # ditto without the open markers
@@ -780,6 +798,15 @@ def test_dbr2_m21_nonvacuity() -> None:
     assert not _claims_routing_schema_delivered("created-not-applied DDL for the routing-audit table")
     assert not _claims_routing_schema_delivered("the provisioning control_audit DDL (B-7A) is unrelated here")
     assert not _claims_routing_schema_delivered("internal code routing_audit_unavailable; wire disclosure stays the sanitized bucket")
+    # PRD DBR-AR-2D V3: the EXACT truthful standing-apply sentence is sanctioned (exact-sentence
+    # mask), while any scope-widened variant (production / tenant / staging apply) still trips.
+    assert not _claims_routing_schema_delivered("- " + _DDL_APPLIED_SCOPE_SENTENCE)
+    assert _claims_routing_schema_delivered(
+        _DDL_APPLIED_SCOPE_SENTENCE.replace("retained local standing control database", "production control database")
+    ), "a production-apply masquerade of the sanctioned sentence must be detectable"
+    assert _claims_routing_schema_delivered("the ddl is applied to sp2_tenant_b5_standing_alpha under dbr-ar-2d"), (
+        "a tenant-apply claim must be detectable"
+    )
 
 
 def test_dbr2_m22_no_production_wiring_claim() -> None:

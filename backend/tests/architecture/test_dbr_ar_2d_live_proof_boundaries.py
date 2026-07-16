@@ -1,8 +1,9 @@
 """DBR-AR-2D — disposable live-proof / runbook boundaries guard (architecture; no DB, no runtime).
 
 Machine-pins the PRD DBR-AR-2D V2 execution decisions by text/AST inspection of the committed
-sources: the exact authorized file surface (exactly TWO backend ``dbr_ar_2d`` files — the
-disposable live-PG proof harness and this guard — and zero ``dbr_ar_2e`` files); the harness's
+sources: the exact authorized file surface (exactly FIVE backend ``dbr_ar_2d`` files after PRD
+DBR-AR-2D V3 — the disposable live-PG proof harness, this guard, and the three V3 standing-witness
+files — and zero ``dbr_ar_2e`` files); the harness's
 reviewed 010/011 blob pins equal to the committed DDL blobs with the §7.1 STOP-before-connect
 ordering; the exact 010→011 apply order (each exactly once, exact repo paths, no wildcard or
 directory scan, no copied DDL bytes); disposable proof-database ownership with guaranteed
@@ -14,10 +15,12 @@ UPDATE / DELETE / TRUNCATE rejection with rows unchanged, DB-assigned ``recorded
 caller-unbound ``id``, identity ordering, bounded failure with no in-memory fallback and no
 leakage — everything over the real HTTP wire, never a direct store call); the non-destructive
 operator runbook (blob verification before SQL, explicit 010→011, forbidden destructive
-recovery, production enablement unauthorized before DBR-AR-2E); and the locked state (DBR-AR-2
-remains OPEN; standing-environment 2D witnesses not started; DBR-AR-2E not started; ATR-2B-1
-separate with its HTTP-hardening meaning). Every detector carries a planted non-vacuity
-companion. Pure stdlib; standalone-runnable:
+recovery, production enablement unauthorized before DBR-AR-2E); the OBS-2D-1 hardening (the exact
+20-column sequence, the exact authored CHECK set, and the exact trigger set, cross-derived from the
+committed DDL and pinned in both the V2 harness and the V3 standing operator); and the locked state
+(DBR-AR-2 remains OPEN; the V2 disposable proof + V3 standing witnesses delivered only after
+evidence acceptance; DBR-AR-2E not started; ATR-2B-1 separate with its HTTP-hardening meaning).
+Every detector carries a planted non-vacuity companion. Pure stdlib; standalone-runnable:
   python tests/architecture/test_dbr_ar_2d_live_proof_boundaries.py
 """
 
@@ -64,6 +67,18 @@ _AUTHORIZED_SURFACE = (
     ".github/workflows/live-pg-durable-path.yml",
     "infrastructure/db/control/README.md",
 )
+
+# The exact backend ``dbr_ar_2d`` census after PRD DBR-AR-2D V3 §11 (V2's two files + the three
+# standing-witness files). Any SIXTH 2D file, and any 2E file, remains forbidden until its own
+# governed slice.
+_AUTHORIZED_2D_BACKEND_V3 = (
+    "backend/tests/architecture/test_dbr_ar_2d_live_proof_boundaries.py",
+    "backend/tests/architecture/test_dbr_ar_2d_standing_witness_boundaries.py",
+    "backend/tests/control_plane/requires_pg/dbr_ar_2d_standing_witnesses.py",
+    "backend/tests/control_plane/requires_pg/test_dbr_ar_2d_routing_audit_live_pg.py",
+    "backend/tests/control_plane/requires_pg/test_pg_dbr_ar_2d_standing_witnesses.py",
+)
+_STANDING_OPS = _BACKEND / "tests" / "control_plane" / "requires_pg" / "dbr_ar_2d_standing_witnesses.py"
 
 _EXPECTED_HARNESS_COUNT = 14  # 13 → 14 by PRD DBR-AR-2D V2 (the dedicated 2D disposable proof)
 _EPHEMERAL_DSN = "postgresql://postgres@localhost:5432/postgres"  # the ONLY workflow DSN (localhost service)
@@ -150,15 +165,15 @@ def test_2d_exact_file_surface() -> None:
         for p in _BACKEND.rglob(pattern)
         if not (_scan.SKIP_PARTS & set(p.parts))
     )
-    assert hits == sorted(_AUTHORIZED_SURFACE[:2]), f"exactly the two authorized backend 2D files may exist (no 2E work): {hits}"
-    for rel in _AUTHORIZED_SURFACE:
+    assert hits == sorted(_AUTHORIZED_2D_BACKEND_V3), f"exactly the five authorized backend 2D files may exist (no 2E work): {hits}"
+    for rel in _AUTHORIZED_SURFACE + _AUTHORIZED_2D_BACKEND_V3:
         assert (_REPO / rel).is_file(), f"authorized-surface file missing: {rel}"
 
 
 def test_2d_file_surface_nonvacuity() -> None:
-    planted = sorted(list(_AUTHORIZED_SURFACE[:2]) + ["backend/tests/database_router/test_dbr_ar_2d_extra.py"])
-    assert planted != sorted(_AUTHORIZED_SURFACE[:2]), "a third dbr_ar_2d backend file must be detectable"
-    assert "backend/tests/x/test_dbr_ar_2e_probe.py" not in _AUTHORIZED_SURFACE, "a 2E file is never authorized here"
+    planted = sorted(list(_AUTHORIZED_2D_BACKEND_V3) + ["backend/tests/database_router/test_dbr_ar_2d_extra.py"])
+    assert planted != sorted(_AUTHORIZED_2D_BACKEND_V3), "a sixth dbr_ar_2d backend file must be detectable"
+    assert "backend/tests/x/test_dbr_ar_2e_probe.py" not in _AUTHORIZED_2D_BACKEND_V3, "a 2E file is never authorized here"
 
 
 # ---------------------------------------------------------------------------
@@ -430,14 +445,17 @@ def test_2d_locked_state_pinned() -> None:
     doc = _text(_CONTRACT_DOC).lower()
     assert "dbr-ar-2 — remains open." in doc, "DBR-AR-2 must remain OPEN"
     assert (
-        "dbr-ar-2d — disposable/hosted postgresql proof delivered by this slice;"
-        " standing-environment witnesses not started and separately governed; dbr-ar-2d remains open." in doc
-    ), "the truthful 2D status (delivered disposable proof; standing witnesses not started; 2D still OPEN) must be recorded"
+        "dbr-ar-2d — disposable/hosted postgresql proof delivered (v2) and retained standing-environment witnesses"
+        " delivered (v3, this pr); dbr-ar-2d is delivered only after this evidence is accepted; dbr-ar-2 remains open." in doc
+    ), "the truthful V3 2D status (V2 disposable proof + V3 standing witnesses; delivered only after acceptance) must be recorded"
     assert "dbr-ar-2e — not started." in doc, "DBR-AR-2E must remain not started"
     assert "production runtime activation remains not ready / do-not-activate" in doc, "the fail-closed gate posture must hold"
     readme = _norm(_text(_CONTROL_README))
     assert "reviewed and exercised by the dbr-ar-2d disposable live proof" in readme, "the README must record the 2D review truthfully"
     assert "not enrolled in the b5-4 standing apply order" in readme, "the README must keep 010/011 un-enrolled"
+    assert "manually applied" in readme and "retained local standing control db" in readme, (
+        "the README must record the V3 manual standing apply truthfully"
+    )
 
 
 def test_2d_atr_2b1_stays_separate() -> None:
@@ -452,13 +470,126 @@ def test_2d_atr_2b1_stays_separate() -> None:
 
 def test_2d_locked_state_nonvacuity() -> None:
     evolved = (
+        "dbr-ar-2d — disposable/hosted postgresql proof delivered (v2) and retained standing-environment witnesses"
+        " delivered (v3, this pr); dbr-ar-2d is delivered only after this evidence is accepted; dbr-ar-2 remains open."
+    )
+    assert evolved not in evolved.replace("delivered only after this evidence is accepted", "unconditionally delivered"), (
+        "an unconditional 2D delivery mask must be detectable"
+    )
+    assert evolved not in (
         "dbr-ar-2d — disposable/hosted postgresql proof delivered by this slice;"
         " standing-environment witnesses not started and separately governed; dbr-ar-2d remains open."
-    )
-    assert evolved not in evolved.replace("witnesses not started", "witnesses complete"), "a standing-witness masking must be detectable"
+    ), "the superseded V2-era status sentence must no longer satisfy"
     assert "dbr-ar-2e — not started." not in "dbr-ar-2e — started.", "a started-2E claim must be detectable"
     assert "dbr-ar-2 — remains open." not in "dbr-ar-2 — closed.", "a closed-2 claim must be detectable"
     assert "version_string" in "def version_string(self): return ''", "an ATR-2B-1 header override must be detectable"
+
+
+# ---------------------------------------------------------------------------
+# 10. OBS-2D-1 hardening (PRD DBR-AR-2D V3 §9): the live schema evidence is pinned EXACTLY —
+#     the 20-column sequence, the catalog-equality assertion, both frozen CHECK names, the exact
+#     authored CHECK set, and the exact trigger set — in the V2 harness AND the V3 standing
+#     operator, cross-derived from the committed DDL 010/011 sources of truth (never modified).
+# ---------------------------------------------------------------------------
+_OBS1_EXPECTED_COLS = [
+    "id",
+    "event_id",
+    "event_version",
+    "occurred_at",
+    "recorded_at",
+    "correlation_id",
+    "actor_ref",
+    "action",
+    "outcome",
+    "source_service",
+    "source_version",
+    "request_ref",
+    "trace_ref",
+    "tenant_ref",
+    "resolved_tenant_ref",
+    "public_code",
+    "error_class",
+    "association_store_ref",
+    "association_version",
+    "lane",
+]
+_OBS1_EXPECTED_CHECKS = [
+    "control_routing_audit_action_check",
+    "control_routing_audit_event_version_check",
+    "control_routing_audit_source_service_check",
+]
+_OBS1_EXPECTED_TRIGGERS = ["control_routing_audit_no_mutation", "control_routing_audit_no_truncate"]
+
+_DDL_COLUMN_RE = re.compile(r"^ {4}([a-z_]+)\b", re.MULTILINE)
+_DDL_CONSTRAINT_RE = re.compile(r"CONSTRAINT (control_routing_audit_[a-z_]+)")
+_DDL_TRIGGER_RE = re.compile(r"^CREATE TRIGGER (control_routing_audit_[a-z_]+)", re.MULTILINE)
+
+
+def _module_literal(source: str, name: str) -> object:
+    """The module-level literal ``name`` (AST; Assign or AnnAssign) of ``source``."""
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == name for t in node.targets):
+            return ast.literal_eval(node.value)
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id == name and node.value is not None:
+            return ast.literal_eval(node.value)
+    raise AssertionError(f"module literal {name!r} not found")
+
+
+def test_2d_obs1_twenty_column_sequence_pinned() -> None:
+    ddl_columns = _DDL_COLUMN_RE.findall(_text(_DDL_010))
+    assert ddl_columns == _OBS1_EXPECTED_COLS, f"the DDL 010 column sequence drifted: {ddl_columns}"
+    assert _module_literal(_text(_HARNESS), "_EXPECTED_COLS") == _OBS1_EXPECTED_COLS, (
+        "the V2 harness _EXPECTED_COLS must pin the exact 20-column sequence"
+    )
+    assert _module_literal(_text(_STANDING_OPS), "_EXPECTED_COLS") == _OBS1_EXPECTED_COLS, (
+        "the V3 standing operator _EXPECTED_COLS must pin the exact 20-column sequence"
+    )
+    assert "names == _EXPECTED_COLS" in _text(_HARNESS), "the harness must assert catalog columns EQUAL _EXPECTED_COLS"
+    assert 'census["column_names"] != _EXPECTED_COLS' in _text(_STANDING_OPS), (
+        "the standing operator must fail closed unless catalog columns EQUAL _EXPECTED_COLS"
+    )
+
+
+def test_2d_obs1_check_and_trigger_sets_pinned() -> None:
+    ddl_checks = sorted(set(_DDL_CONSTRAINT_RE.findall(_text(_DDL_010))))
+    assert ddl_checks == _OBS1_EXPECTED_CHECKS, f"the DDL 010 named CHECK set drifted: {ddl_checks}"
+    ddl_triggers = sorted(_DDL_TRIGGER_RE.findall(_text(_DDL_011)))
+    assert ddl_triggers == _OBS1_EXPECTED_TRIGGERS, f"the DDL 011 trigger set drifted: {ddl_triggers}"
+    assert "CREATE OR REPLACE FUNCTION control_routing_audit_append_only()" in _text(_DDL_011), (
+        "the append-only trigger function must remain the authored one"
+    )
+    harness = _text(_HARNESS)
+    assert '"control_routing_audit_action_check" in checks' in harness, "the harness must pin the frozen action CHECK by name"
+    assert '"control_routing_audit_source_service_check" in checks' in harness, (
+        "the harness must pin the frozen source_service CHECK by name"
+    )
+    assert 'triggers == ["control_routing_audit_no_mutation", "control_routing_audit_no_truncate"]' in harness, (
+        "the harness must assert the EXACT trigger set"
+    )
+    ops_source = _text(_STANDING_OPS)
+    assert _module_literal(ops_source, "_EXPECTED_CHECKS") == _OBS1_EXPECTED_CHECKS, (
+        "the standing operator must pin the EXACT authored CHECK set"
+    )
+    assert _module_literal(ops_source, "_EXPECTED_TRIGGERS") == _OBS1_EXPECTED_TRIGGERS, (
+        "the standing operator must pin the EXACT trigger set"
+    )
+    assert 'census["checks"] != _EXPECTED_CHECKS' in ops_source, "the standing operator must fail closed on an inexact CHECK set"
+    assert 'census["triggers"] != _EXPECTED_TRIGGERS' in ops_source, "the standing operator must fail closed on an inexact trigger set"
+
+
+def test_2d_obs1_nonvacuity() -> None:
+    assert _OBS1_EXPECTED_COLS[:19] != _OBS1_EXPECTED_COLS, "a dropped 20th column must be detectable"
+    assert sorted(set(_OBS1_EXPECTED_CHECKS + ["control_routing_audit_rogue_check"])) != _OBS1_EXPECTED_CHECKS, (
+        "an extra CHECK constraint must be detectable"
+    )
+    assert ["control_routing_audit_no_mutation"] != _OBS1_EXPECTED_TRIGGERS, "a dropped trigger must be detectable"
+    assert _DDL_COLUMN_RE.findall("    rogue_col     text,\n") == ["rogue_col"], "the DDL column extractor went vacuous"
+    assert _DDL_TRIGGER_RE.findall("CREATE TRIGGER control_routing_audit_extra\n") == ["control_routing_audit_extra"], (
+        "the DDL trigger extractor went vacuous"
+    )
+    assert '"control_routing_audit_action_check" in checks' not in 'checks_probe = ["something_else"]', (
+        "a dropped harness CHECK pin must be detectable"
+    )
 
 
 if __name__ == "__main__":
@@ -492,5 +623,8 @@ if __name__ == "__main__":
             test_2d_locked_state_pinned,
             test_2d_atr_2b1_stays_separate,
             test_2d_locked_state_nonvacuity,
+            test_2d_obs1_twenty_column_sequence_pinned,
+            test_2d_obs1_check_and_trigger_sets_pinned,
+            test_2d_obs1_nonvacuity,
         ]
     )

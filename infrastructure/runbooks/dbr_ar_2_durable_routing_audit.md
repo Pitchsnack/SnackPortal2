@@ -107,3 +107,21 @@ silently fall back after durable mode selection
 
 Any destructive recovery requires a separate governed incident procedure; nothing in this runbook
 authorizes one.
+
+## 7. Standing execution record (DBR-AR-2D V3)
+
+The separately governed, Dan-authorized standing-environment run named above was executed under
+**PRD DBR-AR-2D V3** (Dan START-GATE, 2026-07-14) against the retained local standing Control
+database only, by the standing witness operator
+`backend/tests/control_plane/requires_pg/dbr_ar_2d_standing_witnesses.py` (`plan` → `apply
+--backup-dir <outside-repo>` → `run` → `status`): every §1 precondition held (including the
+secure full logical backup OUTSIDE the repository, sha256-recorded, `pg_restore --list`
+readability-verified), the §2 apply followed the exact 010-then-011 order under the reviewed blob
+pins, the §3 verification passed with the exact catalog census and the reject-expected canary
+probes, and the standing witness produced exactly the four predeclared durable evidence rows.
+The evidence-generating `run` is EXACTLY-ONCE: the operator refuses a second `apply` or `run`
+(durable, cross-process refusal), and re-verification is the read-only
+`test_pg_dbr_ar_2d_standing_witnesses.py` harness plus the operator `status` command. This record
+changes no rule above: the automatic standing apply order remains 001–009, no tenant, staging, or
+production database receives 010/011, no runtime service ever applies DDL, and production
+enablement remains unauthorized until the DBR-AR-2E evidence review.

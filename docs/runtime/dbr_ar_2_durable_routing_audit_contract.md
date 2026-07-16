@@ -18,17 +18,17 @@ Authoritative standing status (unchanged by this document):
 - The Lovable cutover remains OPEN (B5-BLK-5 / B5-BLK-6; separate track).
 - The gate §5 activation condition "provisioning audit sink available (B-6) — or an explicit, approved waiver" remains binding at activation time and is not waived by anything in this document.
 
-**DBR-AR-2A / DBR-AR-2B / DBR-AR-2C / DBR-AR-2D status (event contract and port; durable storage capability; composition and failure semantics; disposable live proof):**
+**DBR-AR-2A / DBR-AR-2B / DBR-AR-2C / DBR-AR-2D status (event contract and port; durable storage capability; composition and failure semantics; live proof — disposable V2 and standing V3):**
 
 - DBR-AR-2A — implemented.
 - DBR-AR-2B — storage capability implemented when this PR merges: created-not-applied DDL, append-only enforcement, Control Plane store, internal ingest adapter, and uncomposed Database Router client.
 - DBR-AR-2C — composition and failure semantics implemented when this PR merges: explicit opt-in environment-selected composition (C2; selector unset preserves the prior in-memory composition byte-for-byte), audit-before-hand-back with connection discard and the bounded condition-1 denial, one bounded synchronous idempotent retry for transient unavailability only, and fixed-key degradation counters for denial/anomaly record loss (the §11 condition-3 witness, covering the isolation-anomaly path in the same explicitly authorized degraded mode).
 - DBR-AR-2 — remains OPEN.
-- DBR-AR-2D — disposable/hosted PostgreSQL proof delivered by this slice; standing-environment witnesses not started and separately governed; DBR-AR-2D remains OPEN.
+- DBR-AR-2D — disposable/hosted PostgreSQL proof delivered (V2) and retained standing-environment witnesses delivered (V3, this PR); DBR-AR-2D is delivered only after this evidence is accepted; DBR-AR-2 remains OPEN.
 - DBR-AR-2E — not started.
-- The DDL is not applied. DBR-AR-2D exercised DDL 010/011 only against a disposable proof database that was created and removed within the proof; no standing, staging, tenant, or production database received them.
+- The DDL is applied only to the retained local standing Control database, by the Dan-authorized DBR-AR-2D V3 manual operator apply (backup-first, blob-verified, 010 then 011, each exactly once); it is not applied to any tenant, staging, or production database and is not enrolled in the automatic standing apply order (001–009).
 - Production composition is implemented as an explicit opt-in environment seam and stays dormant unless selected; no production environment selects it and the activation gate is unchanged.
-- Live durability evidence exists for the disposable PostgreSQL proof only; standing-environment durability remains not yet proven.
+- Live durability evidence exists for the disposable PostgreSQL proof and for the retained local standing environment (DBR-AR-2D V3); production-environment durability evidence remains not delivered and is DBR-AR-2E scope.
 - Least-privilege routing-audit writer-role DDL remains separately governed and is not delivered by DBR-AR-2B.
 - Production activation remains NOT READY / DO-NOT-ACTIVATE.
 
@@ -63,7 +63,7 @@ request was denied. DBR-AR-2 defines the durable, vendor-neutral, references-onl
   (its denial scenarios are denied at the auth boundary and never reach `route()`).
   Before DBR-AR-2A: two pre-target denials (`tenant_routing_unavailable`, `no_active_tenant`) had no router-edge audit event.
   After DBR-AR-2A: every completed or denied `route()` invocation produces exactly one router-edge in-memory event.
-  Live durability evidence exists for the disposable PostgreSQL proof only; standing-environment durability remains not yet proven.
+  Live durability evidence exists for the disposable PostgreSQL proof and for the retained local standing environment (DBR-AR-2D V3); production-environment durability evidence remains not delivered and is DBR-AR-2E scope.
 - **Event shape today (`backend/shared/audit.py`):** frozen `OperationalAuditEvent` — `actor_ref`, `action`,
   `correlation_id`, `outcome`, `target_ref`; references only.
 - **Router-edge denial vocabulary (`backend/database_router/models.py`, `disclosure.py`, `resolver.py`,
@@ -356,6 +356,15 @@ the wire carries the sanitized status bucket only).
 
 Standing checks in this V1 phase were read-only; no apply, no teardown, no Smoke C execution.
 
+**DBR-AR-2D V3 standing-witness delivery record (2026-07-14, Dan START-GATE).** The remaining STANDING-ENVIRONMENT
+rows of this matrix (proofs 1 and 2 standing halves, 4, 8, and 12) were delivered over the retained local standing
+topology by the manual standing operator (`backend/tests/control_plane/requires_pg/dbr_ar_2d_standing_witnesses.py`,
+plan → backup-first apply → run-exactly-once → status), producing exactly four predeclared durable evidence rows
+(Route alpha; Route beta; RouteDenied dormant `not_ready`; IsolationAnomaly alpha→beta) with the dormant Auth-edge
+denial (`tenant_not_ready`) adding zero routing-audit rows, one request → one active tenant → one physical database
+holding with the durable sink composed, and the retained standing topology unchanged outside the exact authorized
+delta; DBR-AR-2 remains OPEN.
+
 ## 17. Implementation slice sequence (smallest safe follow-up PRs; none begin in V1)
 
 | Slice | Objective | Authorized surface | Off-limits | Acceptance / test strategy | Live proof | Rollback | Depends on | Model |
@@ -400,13 +409,12 @@ explicitly authorized runbook step.
 
 ## 21. Next governed step
 
-**Next implementation slice after DBR-AR-2C is fully merged,
-post-merge verified, and target-cleaned:
-DBR-AR-2D — live proof and operator runbook.**
+**Next governed step after DBR-AR-2D is fully merged, post-merge verified, and target-cleaned:
+DBR-AR-2E — production activation evidence (unauthorized until its own GPT PRD, readiness review, and Dan START-GATE).**
 
 The DBR-AR-2D disposable/hosted sub-slice (disposable PostgreSQL proof + hosted ephemeral PostgreSQL CI +
-operator runbook) was Dan-authorized and delivered under PRD DBR-AR-2D V2; its standing-environment witnesses are not started.
-Those standing-environment witnesses (§16 proofs 4, 8, and 12 over the retained standing topology) stay
-separately governed and require their own GPT PRD, readiness review, and Dan START-GATE, following the
-standard loop (independent pre-merge verify → Dan human merge → post-merge verify → target-only cleanup).
+operator runbook) was Dan-authorized and delivered under PRD DBR-AR-2D V2 while DBR-AR-2 remains OPEN, and the
+retained standing-environment witnesses (§16 proofs 1/2 standing halves, 4, 8, and 12 over the retained standing
+topology) were Dan-authorized and delivered under PRD DBR-AR-2D V3 (this PR) while DBR-AR-2 remains OPEN; the
+standard loop applies (independent pre-merge verify → Dan human merge → post-merge verify → target-only cleanup).
 DBR-AR-2E remains not started. DBR-AR-2 remains OPEN.

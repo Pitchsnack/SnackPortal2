@@ -72,6 +72,14 @@ MANUAL_ONLY_EXCEPTIONS = {
         ".github workflow edit plus the EXPECTED_HARNESS_COUNT/b7c2-doc lockstep, which is outside the "
         "Smoke C V2 authorized five-file surface; tracked follow-up in the Smoke C V2 execution report ATR"
     ),
+    "tests/control_plane/requires_pg/test_pg_dbr_ar_2d_standing_witnesses.py": (
+        "PRD DBR-AR-2D V3 standing-witness read-only verification: bound to the ESTABLISHED B5-4/B5-4A "
+        "standing topology, the local Docker fixture, the external secret root, AND the Dan-authorized "
+        "exactly-once V3 standing evidence (DDL 010/011 manually applied to the retained local Control "
+        "DB + the four durable evidence rows) — not runnable on the single ephemeral CI service; the "
+        "hosted 14-harness loop is deliberately UNCHANGED by the V3 slice (PRD DBR-AR-2D V3 §10), so "
+        "enrollment is forbidden, not merely deferred"
+    ),
 }
 
 # SAME loop idiom as the AT-5 / ATR-4 guards (replicated for self-containment, not imported).
