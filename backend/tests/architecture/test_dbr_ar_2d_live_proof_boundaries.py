@@ -1,9 +1,9 @@
 """DBR-AR-2D — disposable live-proof / runbook boundaries guard (architecture; no DB, no runtime).
 
 Machine-pins the PRD DBR-AR-2D V2 execution decisions by text/AST inspection of the committed
-sources: the exact authorized file surface (exactly FIVE backend ``dbr_ar_2d`` files after PRD
-DBR-AR-2D V3 — the disposable live-PG proof harness, this guard, and the three V3 standing-witness
-files — and zero ``dbr_ar_2e`` files); the harness's
+sources: the exact authorized file surface (exactly SIX backend ``dbr_ar_2d``/``dbr_ar_2e`` files
+after PRD DBR-AR-2D V3 + PRD DBR-AR-2E V1 — the disposable live-PG proof harness, this guard, the
+three V3 standing-witness files, and the single 2E activation-evidence guard); the harness's
 reviewed 010/011 blob pins equal to the committed DDL blobs with the §7.1 STOP-before-connect
 ordering; the exact 010→011 apply order (each exactly once, exact repo paths, no wildcard or
 directory scan, no copied DDL bytes); disposable proof-database ownership with guaranteed
@@ -19,7 +19,8 @@ recovery, production enablement unauthorized before DBR-AR-2E); the OBS-2D-1 har
 20-column sequence, the exact authored CHECK set, and the exact trigger set, cross-derived from the
 committed DDL and pinned in both the V2 harness and the V3 standing operator); and the locked state
 (DBR-AR-2 remains OPEN; the V2 disposable proof + V3 standing witnesses delivered only after
-evidence acceptance; DBR-AR-2E not started; ATR-2B-1 separate with its HTTP-hardening meaning).
+evidence acceptance; 2E production-activation evidence consolidated with Outcome A — REMAIN NOT
+READY / DO-NOT-ACTIVATE; ATR-2B-1 separate with its HTTP-hardening meaning).
 Every detector carries a planted non-vacuity companion. Pure stdlib; standalone-runnable:
   python tests/architecture/test_dbr_ar_2d_live_proof_boundaries.py
 """
@@ -68,12 +69,13 @@ _AUTHORIZED_SURFACE = (
     "infrastructure/db/control/README.md",
 )
 
-# The exact backend ``dbr_ar_2d`` census after PRD DBR-AR-2D V3 §11 (V2's two files + the three
-# standing-witness files). Any SIXTH 2D file, and any 2E file, remains forbidden until its own
-# governed slice.
+# The exact backend ``dbr_ar_2d``/``dbr_ar_2e`` census after PRD DBR-AR-2D V3 §11 (V2's two files
+# + the three standing-witness files) and PRD DBR-AR-2E V1 §4 (exactly one activation-evidence
+# guard). Any SEVENTH file, and any SECOND 2E file, remains forbidden until its own governed slice.
 _AUTHORIZED_2D_BACKEND_V3 = (
     "backend/tests/architecture/test_dbr_ar_2d_live_proof_boundaries.py",
     "backend/tests/architecture/test_dbr_ar_2d_standing_witness_boundaries.py",
+    "backend/tests/architecture/test_dbr_ar_2e_activation_evidence_boundaries.py",
     "backend/tests/control_plane/requires_pg/dbr_ar_2d_standing_witnesses.py",
     "backend/tests/control_plane/requires_pg/test_dbr_ar_2d_routing_audit_live_pg.py",
     "backend/tests/control_plane/requires_pg/test_pg_dbr_ar_2d_standing_witnesses.py",
@@ -165,7 +167,9 @@ def test_2d_exact_file_surface() -> None:
         for p in _BACKEND.rglob(pattern)
         if not (_scan.SKIP_PARTS & set(p.parts))
     )
-    assert hits == sorted(_AUTHORIZED_2D_BACKEND_V3), f"exactly the five authorized backend 2D files may exist (no 2E work): {hits}"
+    assert hits == sorted(_AUTHORIZED_2D_BACKEND_V3), (
+        f"exactly the six authorized backend 2D/2E files may exist (no seventh file; no second 2E file): {hits}"
+    )
     for rel in _AUTHORIZED_SURFACE + _AUTHORIZED_2D_BACKEND_V3:
         assert (_REPO / rel).is_file(), f"authorized-surface file missing: {rel}"
 
@@ -173,7 +177,9 @@ def test_2d_exact_file_surface() -> None:
 def test_2d_file_surface_nonvacuity() -> None:
     planted = sorted(list(_AUTHORIZED_2D_BACKEND_V3) + ["backend/tests/database_router/test_dbr_ar_2d_extra.py"])
     assert planted != sorted(_AUTHORIZED_2D_BACKEND_V3), "a sixth dbr_ar_2d backend file must be detectable"
-    assert "backend/tests/x/test_dbr_ar_2e_probe.py" not in _AUTHORIZED_2D_BACKEND_V3, "a 2E file is never authorized here"
+    assert "backend/tests/x/test_dbr_ar_2e_probe.py" not in _AUTHORIZED_2D_BACKEND_V3, (
+        "only the single PRD-DBR-AR-2E-V1 guard is authorized — any other 2E file stays unauthorized"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -448,7 +454,9 @@ def test_2d_locked_state_pinned() -> None:
         "dbr-ar-2d — disposable/hosted postgresql proof delivered (v2) and retained standing-environment witnesses"
         " delivered (v3, this pr); dbr-ar-2d is delivered only after this evidence is accepted; dbr-ar-2 remains open." in doc
     ), "the truthful V3 2D status (V2 disposable proof + V3 standing witnesses; delivered only after acceptance) must be recorded"
-    assert "dbr-ar-2e — not started." in doc, "DBR-AR-2E must remain not started"
+    assert "dbr-ar-2e — production-activation evidence consolidated; outcome a is remain not ready / do-not-activate." in doc, (
+        "the truthful 2E status (evidence consolidated; Outcome A — REMAIN NOT READY) must be recorded"
+    )
     assert "production runtime activation remains not ready / do-not-activate" in doc, "the fail-closed gate posture must hold"
     readme = _norm(_text(_CONTROL_README))
     assert "reviewed and exercised by the dbr-ar-2d disposable live proof" in readme, "the README must record the 2D review truthfully"
@@ -480,7 +488,9 @@ def test_2d_locked_state_nonvacuity() -> None:
         "dbr-ar-2d — disposable/hosted postgresql proof delivered by this slice;"
         " standing-environment witnesses not started and separately governed; dbr-ar-2d remains open."
     ), "the superseded V2-era status sentence must no longer satisfy"
-    assert "dbr-ar-2e — not started." not in "dbr-ar-2e — started.", "a started-2E claim must be detectable"
+    assert "dbr-ar-2e — production-activation evidence consolidated; outcome a is remain not ready / do-not-activate." not in (
+        "dbr-ar-2e — production-activation evidence consolidated."
+    ), "a shortened 2E status (without the Outcome A / not-ready posture) must not satisfy"
     assert "dbr-ar-2 — remains open." not in "dbr-ar-2 — closed.", "a closed-2 claim must be detectable"
     assert "version_string" in "def version_string(self): return ''", "an ATR-2B-1 header override must be detectable"
 

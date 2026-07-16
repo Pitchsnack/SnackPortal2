@@ -17,12 +17,13 @@ first, and neither handler recursively audits); the loopback-only host allow-lis
 ValueError-before-store/socket ordering of the Control-Plane ingest seam with its
 reference-only store construction; created-not-applied DDL discipline unchanged;
 ATR-2B-1 not silently implemented; and the 2C file census. The two DBR-AR-2D stop rails
-were evolved by PRD DBR-AR-2D V2 (the delivering slice): the zero-2D-file rail now
-permits EXACTLY the two authorized 2D backend files (the disposable live-PG proof
-harness and its architecture guard — any third ``dbr_ar_2d`` file and any ``dbr_ar_2e``
-file stay forbidden), and the locked-state pin now requires the truthful evolved status
-(disposable/hosted 2D proof delivered; standing-environment witnesses not started;
-DBR-AR-2E not started; DBR-AR-2 remains OPEN). Every detector carries a planted
+were evolved by PRD DBR-AR-2D V2/V3 and PRD DBR-AR-2E V1 (the delivering slices): the
+zero-2D-file rail now permits EXACTLY the six authorized backend files (the five 2D
+files plus the DBR-AR-2E activation-evidence guard — any seventh file and any second
+``dbr_ar_2e`` file stay forbidden), and the locked-state pin now requires the truthful
+evolved status (2D disposable/hosted proof + standing witnesses delivered; 2E
+production-activation evidence consolidated with Outcome A — REMAIN NOT READY /
+DO-NOT-ACTIVATE; DBR-AR-2 remains OPEN). Every detector carries a planted
 non-vacuity companion. Pure stdlib; standalone-runnable:
   python tests/architecture/test_dbr_ar_2c_composition_boundaries.py
 """
@@ -56,12 +57,14 @@ _2C_TEST_FILES = (
     _TESTS / "database_router" / "test_dbr_ar_2c_routing_audit_composition.py",
 )
 # PRD DBR-AR-2D V2 §11 authorized exactly two backend files; PRD DBR-AR-2D V3 §11 adds the three
-# standing-witness files (operator + read-only verification harness + boundaries guard). Any SIXTH
-# *dbr_ar_2d* file, and any *dbr_ar_2e* file, remains forbidden until its own governed slice (the
-# bypass-probe posture of the original zero-2D rail is preserved).
+# standing-witness files (operator + read-only verification harness + boundaries guard); PRD
+# DBR-AR-2E V1 §4 adds exactly one file — the activation-evidence boundaries guard. Any SEVENTH
+# *dbr_ar_2d*/*dbr_ar_2e* file (and any SECOND 2E file) remains forbidden until its own governed
+# slice (the bypass-probe posture of the original zero-2D rail is preserved).
 _AUTHORIZED_2D_FILES = (
     _TESTS / "architecture" / "test_dbr_ar_2d_live_proof_boundaries.py",
     _TESTS / "architecture" / "test_dbr_ar_2d_standing_witness_boundaries.py",
+    _TESTS / "architecture" / "test_dbr_ar_2e_activation_evidence_boundaries.py",
     _TESTS / "control_plane" / "requires_pg" / "dbr_ar_2d_standing_witnesses.py",
     _TESTS / "control_plane" / "requires_pg" / "test_dbr_ar_2d_routing_audit_live_pg.py",
     _TESTS / "control_plane" / "requires_pg" / "test_pg_dbr_ar_2d_standing_witnesses.py",
@@ -71,7 +74,7 @@ _2D_STATUS_PIN = (
     "dbr-ar-2d — disposable/hosted postgresql proof delivered (v2) and retained standing-environment witnesses"
     " delivered (v3, this pr); dbr-ar-2d is delivered only after this evidence is accepted; dbr-ar-2 remains open."
 )
-_2E_STATUS_PIN = "dbr-ar-2e — not started."
+_2E_STATUS_PIN = "dbr-ar-2e — production-activation evidence consolidated; outcome a is remain not ready / do-not-activate."
 
 # D2/D3 — the exact, complete environment vocabulary of this slice (no drifted variants).
 _DR_ENV_SUFFIXES = frozenset({"BASE_URL", "TIMEOUT_SECONDS"})
@@ -564,14 +567,15 @@ def test_2c_ddl_discipline_and_locked_state() -> None:
         "the 2D status must record: disposable/hosted proof (V2) + standing witnesses (V3) delivered;"
         " 2D delivered only after evidence acceptance; DBR-AR-2 remains OPEN"
     )
-    assert _2E_STATUS_PIN in doc, "DBR-AR-2E must remain not started"
+    assert _2E_STATUS_PIN in doc, "the truthful 2E status (evidence consolidated; Outcome A — REMAIN NOT READY) must be recorded"
     assert "production runtime activation remains not ready / do-not-activate" in doc, "the fail-closed gate posture must hold"
 
 
 def test_2c_no_2d_2e_files() -> None:
     hits = sorted(p for pattern in ("*dbr_ar_2d*", "*dbr_ar_2e*") for p in _BACKEND.rglob(pattern) if not (_scan.SKIP_PARTS & set(p.parts)))
     assert hits == sorted(_AUTHORIZED_2D_FILES), (
-        f"only the five PRD-DBR-AR-2D-V2/V3-authorized backend files may exist (no sixth 2D file, no 2E work): {[str(p) for p in hits]}"
+        f"only the six PRD-DBR-AR-2D-V2/V3 + DBR-AR-2E-V1 authorized backend files may exist"
+        f" (no seventh file; no second 2E file): {[str(p) for p in hits]}"
     )
     for path in _2C_TEST_FILES + _AUTHORIZED_2D_FILES:
         assert path.is_file(), f"2C/2D surface test file missing: {path}"
@@ -599,10 +603,16 @@ def test_2c_stop_rails_nonvacuity() -> None:
         "dbr-ar-2d — disposable/hosted postgresql proof delivered by this slice;"
         " standing-environment witnesses not started and separately governed; dbr-ar-2d remains open."
     ), "the superseded V2-era status sentence must no longer satisfy"
-    assert _2E_STATUS_PIN not in "dbr-ar-2e — started.", "a started-2E claim must be detectable"
+    assert _2E_STATUS_PIN not in "dbr-ar-2e — production-activation evidence consolidated.", (
+        "a shortened 2E status (without the Outcome A / not-ready posture) must not satisfy"
+    )
     planted_sixth = _TESTS / "database_router" / "test_dbr_ar_2d_extra.py"
     assert sorted((*_AUTHORIZED_2D_FILES, planted_sixth)) != sorted(_AUTHORIZED_2D_FILES), (
-        "a planted sixth dbr_ar_2d backend file must be detectable as unauthorized"
+        "a planted seventh dbr_ar_2d backend file must be detectable as unauthorized"
+    )
+    planted_second_2e = _TESTS / "architecture" / "test_dbr_ar_2e_extra.py"
+    assert sorted((*_AUTHORIZED_2D_FILES, planted_second_2e)) != sorted(_AUTHORIZED_2D_FILES), (
+        "a planted second dbr_ar_2e backend file must be detectable as unauthorized"
     )
     assert "version_string" in "def version_string(self): return ''", "an ATR-2B-1 header override must be detectable"
 
