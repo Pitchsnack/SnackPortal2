@@ -125,3 +125,38 @@ The evidence-generating `run` is EXACTLY-ONCE: the operator refuses a second `ap
 changes no rule above: the automatic standing apply order remains 001–009, no tenant, staging, or
 production database receives 010/011, no runtime service ever applies DDL, and production
 enablement remains unauthorized until the DBR-AR-2E evidence review.
+
+## 8. Incident query procedure (documentation only — references-only)
+
+Scope: the OPERATOR incident-query discipline for the durable routing-audit store (contract
+§13–§15). This section is documentation only: it names no production target or credential and
+claims no production execution; operational production evidence remains `NOT AVAILABLE` (PAE-11),
+and production enablement remains unauthorized.
+
+1. **Authorization**: CONTROL-role operator authorization is required before any incident read;
+   every incident read is itself an audited, control-plane-scoped operation (contract §13/§14).
+2. **Lookup keys**: a query targets exactly one `correlation_id` or exactly one `tenant_ref`.
+3. **One-tenant scope**: each query is scoped to a single tenant; cross-tenant aggregation is
+   never performed by an incident query (per-tenant scoped reads only — contract §14).
+4. **References-only output**: results carry references only — no raw payload, no PII, no
+   credential, no DSN, no topology detail, and no exception text is exported or echoed.
+5. **Evidence export**: operator-initiated only, audited under the Export Audit class shape
+   (IC-002 class 4); exported evidence inherits the SMOKE-C-SPEC-01 §7 redaction rules.
+
+## 9. Alert threshold posture (truthful — no invented value)
+
+A production alert threshold, monitoring owner, and escalation chain are not defined.
+PAE-10 remains NOT AVAILABLE.
+No threshold may be inferred from the standing environment.
+Condition-1 denials and condition-3 lost-record alerts alert immediately (contract §15); the
+sustained transient-retry alert threshold is an operator-tuned value that does not exist yet and
+is deployment-era scope (B5-BLK-9).
+
+## 10. DBR-AR-2E consolidation record (2026-07-16)
+
+The DBR-AR-2E V1 evidence consolidation (Dan START-GATE, 2026-07-16) indexes this runbook in
+`docs/runtime/dbr_ar_2_production_activation_evidence.md` and its machine-readable index; it
+changes no procedure above, closes zero B5 activation blockers, keeps the activation-blocker
+census at nine, and concludes Outcome A — REMAIN NOT READY / DO-NOT-ACTIVATE. DBR-AR-2 remains
+OPEN; production enablement remains unauthorized (a separate Dan-authorized DBR-AR-2 closure
+decision and a separate production activation decision would still be required).

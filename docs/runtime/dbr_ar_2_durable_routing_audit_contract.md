@@ -25,10 +25,11 @@ Authoritative standing status (unchanged by this document):
 - DBR-AR-2C — composition and failure semantics implemented when this PR merges: explicit opt-in environment-selected composition (C2; selector unset preserves the prior in-memory composition byte-for-byte), audit-before-hand-back with connection discard and the bounded condition-1 denial, one bounded synchronous idempotent retry for transient unavailability only, and fixed-key degradation counters for denial/anomaly record loss (the §11 condition-3 witness, covering the isolation-anomaly path in the same explicitly authorized degraded mode).
 - DBR-AR-2 — remains OPEN.
 - DBR-AR-2D — disposable/hosted PostgreSQL proof delivered (V2) and retained standing-environment witnesses delivered (V3, this PR); DBR-AR-2D is delivered only after this evidence is accepted; DBR-AR-2 remains OPEN.
-- DBR-AR-2E — not started.
+- DBR-AR-2E — production-activation evidence consolidated; Outcome A is REMAIN NOT READY / DO-NOT-ACTIVATE.
+- DBR-AR-2E closes zero B5 activation blockers; the activation-blocker census remains nine; DBR-AR-2 remains OPEN.
 - The DDL is applied only to the retained local standing Control database, by the Dan-authorized DBR-AR-2D V3 manual operator apply (backup-first, blob-verified, 010 then 011, each exactly once); it is not applied to any tenant, staging, or production database and is not enrolled in the automatic standing apply order (001–009).
 - Production composition is implemented as an explicit opt-in environment seam and stays dormant unless selected; no production environment selects it and the activation gate is unchanged.
-- Live durability evidence exists for the disposable PostgreSQL proof and for the retained local standing environment (DBR-AR-2D V3); production-environment durability evidence remains not delivered and is DBR-AR-2E scope.
+- Live durability evidence exists for the disposable PostgreSQL proof and for the retained local standing environment (DBR-AR-2D V3); production-environment durability evidence remains not delivered — the DBR-AR-2E consolidation records it as NOT AVAILABLE (PAE-02/PAE-08) and it remains deployment-era scope (B5-BLK-2/3-era work).
 - Least-privilege routing-audit writer-role DDL remains separately governed and is not delivered by DBR-AR-2B.
 - Production activation remains NOT READY / DO-NOT-ACTIVATE.
 
@@ -63,7 +64,7 @@ request was denied. DBR-AR-2 defines the durable, vendor-neutral, references-onl
   (its denial scenarios are denied at the auth boundary and never reach `route()`).
   Before DBR-AR-2A: two pre-target denials (`tenant_routing_unavailable`, `no_active_tenant`) had no router-edge audit event.
   After DBR-AR-2A: every completed or denied `route()` invocation produces exactly one router-edge in-memory event.
-  Live durability evidence exists for the disposable PostgreSQL proof and for the retained local standing environment (DBR-AR-2D V3); production-environment durability evidence remains not delivered and is DBR-AR-2E scope.
+  Live durability evidence exists for the disposable PostgreSQL proof and for the retained local standing environment (DBR-AR-2D V3); production-environment durability evidence remains not delivered — the DBR-AR-2E consolidation records it as NOT AVAILABLE (PAE-02/PAE-08) and it remains deployment-era scope (B5-BLK-2/3-era work).
 - **Event shape today (`backend/shared/audit.py`):** frozen `OperationalAuditEvent` — `actor_ref`, `action`,
   `correlation_id`, `outcome`, `target_ref`; references only.
 - **Router-edge denial vocabulary (`backend/database_router/models.py`, `disclosure.py`, `resolver.py`,
@@ -328,7 +329,8 @@ the wire carries the sanitized status bucket only).
 - **Queue depth / lag:** none — there is no queue by design (§10 condition 6).
 - **Alert thresholds:** any condition-1 fail-closed denial (allowed route denied for audit unavailability) and
   any condition-3 lost denial record alert immediately; sustained transient-retry rates alert at an
-  operator-tuned threshold (runbook value).
+  operator-tuned threshold. A production alert threshold, monitoring owner, and escalation chain are not
+  defined. PAE-10 remains NOT AVAILABLE. No threshold may be inferred from the standing environment.
 - **Operator runbook:** a DBR-AR-2D deliverable (start/stop of the ingest edge, failure drill, recovery, and
   evidence capture), following the Smoke C runbook conventions.
 - **Incident query procedure:** per-`correlation_id` and per-`tenant_ref` operator queries over the store,
@@ -409,12 +411,12 @@ explicitly authorized runbook step.
 
 ## 21. Next governed step
 
-**Next governed step after DBR-AR-2D is fully merged, post-merge verified, and target-cleaned:
-DBR-AR-2E — production activation evidence (unauthorized until its own GPT PRD, readiness review, and Dan START-GATE).**
+**The next governed step is a separate Dan-authorized DBR-AR-2 closure decision. Production activation remains a separate human-governed decision and is not authorized by DBR-AR-2E.**
 
 The DBR-AR-2D disposable/hosted sub-slice (disposable PostgreSQL proof + hosted ephemeral PostgreSQL CI +
 operator runbook) was Dan-authorized and delivered under PRD DBR-AR-2D V2 while DBR-AR-2 remains OPEN, and the
 retained standing-environment witnesses (§16 proofs 1/2 standing halves, 4, 8, and 12 over the retained standing
-topology) were Dan-authorized and delivered under PRD DBR-AR-2D V3 (this PR) while DBR-AR-2 remains OPEN; the
+topology) were Dan-authorized and delivered under PRD DBR-AR-2D V3 while DBR-AR-2 remains OPEN; the
 standard loop applies (independent pre-merge verify → Dan human merge → post-merge verify → target-only cleanup).
-DBR-AR-2E remains not started. DBR-AR-2 remains OPEN.
+
+The DBR-AR-2E V1 production-activation evidence consolidation was Dan-authorized (START-GATE, 2026-07-16) and is recorded by `docs/runtime/dbr_ar_2_production_activation_evidence.md` plus the machine-readable index `docs/runtime/dbr_ar_2_production_activation_evidence_index.json` while DBR-AR-2 remains OPEN: it consolidates the DBR-AR-2A→2D evidence, closes zero B5 activation blockers, keeps the activation-blocker census at nine, records the contract §18.3 gate-condition question as still open for the separate activation decision, and concludes Outcome A — REMAIN NOT READY / DO-NOT-ACTIVATE. DBR-AR-2 remains OPEN.

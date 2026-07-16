@@ -18,8 +18,9 @@ and environment restoration; the durable cross-process rerun refusal; the no-ove
 posture; the hosted live-PG loop UNCHANGED at exactly 14 with the new standing harness a justified
 MANUAL_ONLY exception; the subprocess census (status-only standing delegation + the read-only
 commit witness + pg_dump/pg_restore only); the evolved locked-state record (DBR-AR-2D delivered
-only after evidence acceptance; DBR-AR-2 remains OPEN; DBR-AR-2E not started; production NOT
-READY; ATR-2B-1 separate); and the exact authorized backend 2D file census. Every detector
+only after evidence acceptance; DBR-AR-2 remains OPEN; DBR-AR-2E production-activation evidence
+consolidated with Outcome A — REMAIN NOT READY / DO-NOT-ACTIVATE; production NOT
+READY; ATR-2B-1 separate); and the exact authorized backend 2D/2E file census. Every detector
 carries a planted non-vacuity companion. Pure stdlib; standalone-runnable:
   python tests/architecture/test_dbr_ar_2d_standing_witness_boundaries.py
 """
@@ -55,10 +56,12 @@ _CP_INGEST = _BACKEND / "control_plane" / "adapters" / "providers" / "http_routi
 _DDL_010 = _REPO / "infrastructure" / "db" / "control" / "010_routing_audit.sql"
 _DDL_011 = _REPO / "infrastructure" / "db" / "control" / "011_routing_audit_append_only.sql"
 
-# The exact authorized backend 2D census after PRD DBR-AR-2D V3 (V2's two files + V3's three).
+# The exact authorized backend 2D/2E census after PRD DBR-AR-2D V3 (V2's two files + V3's three)
+# and PRD DBR-AR-2E V1 (exactly one activation-evidence guard).
 _AUTHORIZED_2D_BACKEND = (
     "backend/tests/architecture/test_dbr_ar_2d_live_proof_boundaries.py",
     "backend/tests/architecture/test_dbr_ar_2d_standing_witness_boundaries.py",
+    "backend/tests/architecture/test_dbr_ar_2e_activation_evidence_boundaries.py",
     "backend/tests/control_plane/requires_pg/dbr_ar_2d_standing_witnesses.py",
     "backend/tests/control_plane/requires_pg/test_dbr_ar_2d_routing_audit_live_pg.py",
     "backend/tests/control_plane/requires_pg/test_pg_dbr_ar_2d_standing_witnesses.py",
@@ -234,7 +237,9 @@ def test_v3_exact_backend_2d_census() -> None:
         for p in _BACKEND.rglob(pattern)
         if not (_scan.SKIP_PARTS & set(p.parts))
     )
-    assert hits == sorted(_AUTHORIZED_2D_BACKEND), f"exactly the five authorized backend 2D files may exist (no 2E work): {hits}"
+    assert hits == sorted(_AUTHORIZED_2D_BACKEND), (
+        f"exactly the six authorized backend 2D/2E files may exist (no seventh file; no second 2E file): {hits}"
+    )
     for rel in _AUTHORIZED_2D_BACKEND:
         assert (_REPO / rel).is_file(), f"authorized 2D file missing: {rel}"
 
@@ -242,7 +247,9 @@ def test_v3_exact_backend_2d_census() -> None:
 def test_v3_census_nonvacuity() -> None:
     planted = sorted(list(_AUTHORIZED_2D_BACKEND) + ["backend/tests/database_router/test_dbr_ar_2d_extra.py"])
     assert planted != sorted(_AUTHORIZED_2D_BACKEND), "a sixth dbr_ar_2d backend file must be detectable"
-    assert "backend/tests/x/test_dbr_ar_2e_probe.py" not in _AUTHORIZED_2D_BACKEND, "a 2E file is never authorized here"
+    assert "backend/tests/x/test_dbr_ar_2e_probe.py" not in _AUTHORIZED_2D_BACKEND, (
+        "only the single PRD-DBR-AR-2E-V1 guard is authorized — any other 2E file stays unauthorized"
+    )
 
 
 def test_v3_command_surface_exactly_plan_apply_run_status() -> None:
@@ -690,7 +697,9 @@ def test_v3_locked_state_lockstep() -> None:
         "dbr-ar-2d — disposable/hosted postgresql proof delivered (v2) and retained standing-environment witnesses"
         " delivered (v3, this pr); dbr-ar-2d is delivered only after this evidence is accepted; dbr-ar-2 remains open." in doc
     ), "the truthful evolved 2D status sentence must be recorded"
-    assert "dbr-ar-2e — not started." in doc, "DBR-AR-2E must remain not started"
+    assert "dbr-ar-2e — production-activation evidence consolidated; outcome a is remain not ready / do-not-activate." in doc, (
+        "the truthful 2E status (evidence consolidated; Outcome A — REMAIN NOT READY) must be recorded"
+    )
     assert "production runtime activation remains not ready / do-not-activate" in doc, "the fail-closed gate posture must hold"
     assert (
         "the ddl is applied only to the retained local standing control database" in doc
@@ -729,7 +738,9 @@ def test_v3_locked_state_nonvacuity() -> None:
         "an unconditional 2D delivery claim must be detectable"
     )
     assert "dbr-ar-2 — remains open." not in "dbr-ar-2 — closed.", "a closed-2 claim must be detectable"
-    assert "dbr-ar-2e — not started." not in "dbr-ar-2e — started.", "a started-2E claim must be detectable"
+    assert "dbr-ar-2e — production-activation evidence consolidated; outcome a is remain not ready / do-not-activate." not in (
+        "dbr-ar-2e — production-activation evidence consolidated."
+    ), "a shortened 2E status (without the Outcome A / not-ready posture) must not satisfy"
     assert "not enrolled in the automatic standing apply order (001–009)" not in _norm(
         "010/011 are now enrolled in the automatic standing apply order"
     ), "an enrollment claim must be detectable"
