@@ -29,7 +29,7 @@ from __future__ import annotations
 import pathlib
 import re
 import sys
-from typing import List, Tuple
+from typing import Callable, List, Tuple
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import _scan  # noqa: E402
@@ -437,6 +437,370 @@ def test_probe_set_covers_the_six_required_categories() -> None:
     assert {name for name, _ in _PROBES} == {name for name, _ in _FORBIDDEN_AUTHORIZATIONS}, "every detector must carry a probe"
 
 
+# ================================================================================================
+# B5-BLK-6C-A — Audit Obligation Reconciliation (Dan-authorized Option A, 2026-07-17)
+#
+# Pins the four governed documents of the 6C-A amendment: IC-002, IC-005, IC-010, and the
+# Architecture Decision Register. Option A: the MembershipsForPrincipal success audit is
+# MANDATED (exactly one references-only `workspace_memberships_read` event per successful
+# self-scoped enumeration, empty enumerations included; API Gateway emitter; Control-DB
+# operational audit home; separate success-access subclass — the four denial/anomaly classes
+# unchanged), and per-read Global Directory access audit is RESERVED. 6C-A adds no runtime
+# implementation and closes no blocker; runtime binding follows in B5-BLK-6C-B.
+# ================================================================================================
+_IC002 = _scan.REPO_ROOT / "contracts" / "IC-002-Tenant-Startup-Contract.md"
+_IC005 = _scan.REPO_ROOT / "contracts" / "IC-005-Authentication-Routing-Contract.md"
+
+_ADR_6CA_HEADING = "### B5-BLK-6C-A — Audit Obligation Reconciliation"
+_IC002_AUDIT_REQ_HEADING = "## Audit Requirements"
+_IC002_AUDIT_EXT_HEADING = "## Audit-Section Extension"
+_IC005_EMISSION_HEADING = "## Runtime Operational Audit Emission"
+_J_HEADING = "## Audit Contract (§J"
+_Q_HEADING = "## Endpoint Dispatch Taxonomy (§Q"
+_R_HEADING = "## Internal-Surface Protection (§R"
+
+
+def _nonempty_section(md: str, heading_start: str, level: str, min_body: int = 200) -> str:
+    """Structural extraction that REFUSES an empty/stub section (a pair of empty sections must never match)."""
+    section = _section(md, heading_start, level)
+    body = section.split("\n", 1)[1] if "\n" in section else ""
+    assert len(body.strip()) >= min_body, f"extracted section is empty or a stub: {heading_start!r}"
+    return section
+
+
+def _ic002_audit_requirements() -> str:
+    return _nonempty_section(_read(_IC002), _IC002_AUDIT_REQ_HEADING, "## ")
+
+
+def _ic002_audit_extension() -> str:
+    return _nonempty_section(_read(_IC002), _IC002_AUDIT_EXT_HEADING, "## ")
+
+
+def _ic005_emission() -> str:
+    return _nonempty_section(_read(_IC005), _IC005_EMISSION_HEADING, "## ")
+
+
+def _j_section() -> str:
+    return _nonempty_section(_read(_CONTRACT), _J_HEADING, "## ")
+
+
+def _q_section() -> str:
+    return _nonempty_section(_read(_CONTRACT), _Q_HEADING, "## ")
+
+
+def _r_section() -> str:
+    return _nonempty_section(_read(_CONTRACT), _R_HEADING, "## ")
+
+
+def _adr_6ca_section() -> str:
+    return _nonempty_section(_read(_ADR), _ADR_6CA_HEADING, "### ")
+
+
+# --- The canonical Option A anchors (normalized), shared verbatim across the three contracts ----
+_6CA_MANDATE: Tuple[str, ...] = (
+    "a successful self-scoped membershipsforprincipal enumeration must emit exactly one "
+    'references-only operational audit event with action == "workspace_memberships_read"',
+    "a successful empty enumeration is still a successful enumeration and must emit the event",
+    "never zero events, never two, never one event per returned membership record, never one event per tenant",
+    "the audit records the operation, not the number or contents of returned memberships",
+)
+_6CA_EMITTER: Tuple[str, ...] = (
+    "the api gateway is the emitter",
+    "sole emitter of this success event",
+)
+_6CA_HOME: Tuple[str, ...] = (
+    "the event resides in control-db operational audit",
+    "separate success-access subclass",
+)
+_6CA_SHAPE: Tuple[str, ...] = (
+    "audit_id, action, actor_principal_ref, subject_principal_ref, correlation_id, occurred_at, outcome, event_version",
+    'action == "workspace_memberships_read"',
+    'outcome == "success"',
+    "event_version == 1",
+    "for the currently bound self-scoped operation, actor_principal_ref == subject_principal_ref",
+)
+_6CA_SEPARATION: Tuple[str, ...] = (
+    "the four gateway-edge denial/anomaly classes remain exactly the historic four — "
+    "routedenied, carriermismatch, carrieroncontrolanomaly, isolationanomaly — unchanged",
+    "must not be relabelled or classified as a denial, anomaly, or routing event",
+)
+_6CA_ROWS_PROHIBITED: Tuple[str, ...] = (
+    "the event must not contain the returned tenant-membership collection",
+    "raw membership rows",
+)
+_6CA_NON_EMISSION: Tuple[str, ...] = ("does not emit this success event",)
+_6CA_RUNTIME_PENDING: Tuple[str, ...] = (
+    "b5-blk-6c-a authorizes and defines the later b5-blk-6c-b runtime implementation",
+    "does not itself implement or prove runtime emission",
+    "not yet emitted by the current runtime",
+)
+_6CA_CONTRACT_COMMON: Tuple[str, ...] = (
+    _6CA_MANDATE + _6CA_EMITTER + _6CA_HOME + _6CA_SHAPE + _6CA_SEPARATION + _6CA_ROWS_PROHIBITED + _6CA_NON_EMISSION + _6CA_RUNTIME_PENDING
+)
+
+# The pre-6C-A IC-002:165 MUST, preserved verbatim, plus its new homing pointer.
+_6CA_IC002_MUST: Tuple[str, ...] = (
+    "membershipsforprincipal calls must be audited (actor, subject principal reference, timestamp, correlation id — references only)",
+    "homed 2026-07-17 under b5-blk-6c-a",
+)
+
+# §Q must point at the mandated event; the CONTROL-on-behalf form stays unbound; taxonomy intact.
+_6CA_Q: Tuple[str, ...] = (
+    "must emit exactly one workspace_memberships_read success-access event (§j; b5-blk-6c-a), including a successful empty enumeration",
+    "membership records only (tenant id, role, display ref), never tenant-db data",
+    "is not runtime-bound by b5-blk-6b and is not implemented by b5-blk-6c-a",
+    "dispatched to exactly one category",
+    "one request → one category → one database",
+)
+
+# Option A directory-read reservation — required in IC-005 AND in IC-010 §R (the reconciliation).
+_6CA_RESERVED: Tuple[str, ...] = (
+    "per-read global directory access audit is reserved",
+    "it is not required by b5-blk-6",
+    "it is not emitted by the current runtime",
+    "it may be elected only through a later governed contract decision",
+    "startup directory read",
+    "investor directory read",
+    "reaches directory reads only",
+    "does not shelter or reach membershipsforprincipal",
+    "does not authorize or imply global deal directory support",
+)
+_6CA_R_RETAINED: Tuple[str, ...] = (
+    "must add ic-005 authentication at the edge",
+    "the internal read path is never offered raw to a client",
+    "internal read apis must never be directly client-reachable",
+)
+
+# The historic §J four-event emit sentence, pinned in full — inserting a fifth event breaks it.
+_J_HISTORIC_EMIT = (
+    "the gateway emits these audit events where applicable: carriermismatch (403 carrier/claim mismatch), "
+    "carrieroncontrolanomaly (recognized tenant carrier on a tenantless control token — mandatory per d-33-e1 item 1), "
+    "routedenied (authorization/readiness denial at dispatch), and isolationanomaly "
+    "(any detected attempt to cross the one-database boundary)"
+)
+# The IC-002 class-3 gateway-edge braced action set — exactly once, exactly four members.
+_IC002_GATEWAY_EDGE_SET = "action ∈ {routedenied, carriermismatch, carrieroncontrolanomaly, isolationanomaly}"
+
+_ADR_6CA_REQUIRED: Tuple[str, ...] = (
+    "b5-blk-6c-a — audit obligation reconciliation (option a)",
+    "dan selected option a",
+    "decide b5-blk-6c-a option a",
+    "the membershipsforprincipal success audit is mandated",
+    "global directory per-read audit is reserved",
+    "workspace_memberships_read is the action label",
+    "the api gateway is the emitter",
+    "control-db operational audit is the event home",
+    "6c-b runtime work remains pending",
+    "b5-blk-6c-a closes no blocker",
+    "b5-blk-6c-a authorizes and defines the later b5-blk-6c-b runtime implementation",
+    "does not itself implement or prove runtime emission",
+    "§v response-composition rules unchanged",
+    "b5-blk-6 remains open",
+    "b5-blk-5 remains open",
+    "eight of nine blockers remain open",
+    "production remains not ready / do-not-activate",
+)
+
+# --- 6C-A forbidden-authorization detectors (each matches only an AFFIRMATIVE violation) --------
+_FORBIDDEN_6CA: Tuple[Tuple[str, "re.Pattern[str]"], ...] = (
+    (
+        "memberships-audit reservation claim",
+        re.compile(r"membershipsforprincipal (?:success )?audit (?:is|remains) ?reserved|reserves? the membershipsforprincipal audit"),
+    ),
+    (
+        "memberships-audit weakening to may",
+        re.compile(
+            r"membershipsforprincipal (?:calls|enumerations?) may be audited"
+            r"|memberships(?:forprincipal)? success audit is optional"
+        ),
+    ),
+    (
+        "raw membership-row authorization",
+        re.compile(
+            r"may (?:carry|contain|include) raw membership rows"
+            r"|raw membership rows are permitted"
+            r"|may contain the returned tenant-membership collection"
+        ),
+    ),
+    (
+        "per-membership fan-out emission",
+        re.compile(
+            r"one event per returned membership record (?:is|may be) emitted"
+            r"|emits? one event per membership (?:row|record)"
+            r"|one event per tenant (?:is|may be) emitted"
+        ),
+    ),
+    (
+        "per-read directory-audit mandate claim",
+        re.compile(
+            r"per-read (?:global )?directory (?:access )?audit is (?:mandated|mandatory|required)"
+            r"|each directory read must emit"
+            r"|directory reads? must (?:add|emit) a? ?(?:reference-only )?(?:per-read )?access audit"
+        ),
+    ),
+    (
+        "directory-audit already-implemented claim",
+        re.compile(
+            r"directory[- ]read (?:access )?audit is (?:already |currently )?(?:implemented|emitted)"
+            r"|per-read (?:access )?audit is emitted by the current runtime"
+        ),
+    ),
+    (
+        "memberships-emission already-implemented claim",
+        re.compile(
+            r"workspace_memberships_read (?:event )?is (?:already |currently |now )?(?:implemented|emitted)"
+            r"|the success event is already emitted"
+            r"|memberships[^.;|]{0,50}runtime emission (?:is|has been) (?:implemented|landed|proven)"
+        ),
+    ),
+)
+
+
+def _forbidden_hits_6ca(norm_text: str) -> List[str]:
+    hits = [name for name, rx in _FORBIDDEN_AUTHORIZATIONS if rx.search(norm_text)]
+    hits += [name for name, rx in _FORBIDDEN_6CA if rx.search(norm_text)]
+    return hits
+
+
+_PROBES_6CA: Tuple[Tuple[str, str], ...] = (
+    ("memberships-audit reservation claim", "The MembershipsForPrincipal audit is Reserved and no longer mandated."),
+    ("memberships-audit weakening to may", "MembershipsForPrincipal calls MAY be audited at the gateway's discretion."),
+    ("raw membership-row authorization", "The success event MAY contain the returned tenant-membership collection."),
+    ("per-membership fan-out emission", "The gateway emits one event per membership record."),
+    ("per-read directory-audit mandate claim", "Per-read Global Directory access audit is mandated for every read."),
+    ("directory-audit already-implemented claim", "The directory-read access audit is already implemented at the edge."),
+    ("memberships-emission already-implemented claim", "The workspace_memberships_read event is already emitted by the gateway."),
+)
+
+# Every 6C-A-governed section, by name, for the forbidden-authorization sweep.
+_6CA_SECTIONS: Tuple[Tuple[str, Callable[[], str]], ...] = (
+    ("IC-002 Audit Requirements", _ic002_audit_requirements),
+    ("IC-002 Audit-Section Extension", _ic002_audit_extension),
+    ("IC-005 Runtime Operational Audit Emission", _ic005_emission),
+    ("IC-010 §J", _j_section),
+    ("IC-010 §Q", _q_section),
+    ("IC-010 §R", _r_section),
+    ("IC-010 §V", _v_section),
+    ("ADR B5-BLK-6C-A entry", _adr_6ca_section),
+)
+
+
+def test_6ca_governing_documents_present_and_sections_nonempty() -> None:
+    """All four governed documents must open, and every selected section must be non-empty."""
+    for path in (_CONTRACT, _ADR, _IC002, _IC005):
+        assert path.is_file(), f"governed document missing: {path}"
+    for name, section_fn in _6CA_SECTIONS:
+        assert len(_norm(section_fn())) > 200, f"{name} must be non-empty"
+
+
+def test_6ca_ic002_must_preserved_and_homed() -> None:
+    assert _missing(_norm(_ic002_audit_requirements()), _6CA_IC002_MUST) == []
+
+
+def test_6ca_mandate_emitter_home_shape_in_all_three_contracts() -> None:
+    for name, section_fn in (
+        ("IC-002 Audit-Section Extension", _ic002_audit_extension),
+        ("IC-005 Runtime Operational Audit Emission", _ic005_emission),
+        ("IC-010 §J", _j_section),
+    ):
+        missing = _missing(_norm(section_fn()), _6CA_CONTRACT_COMMON)
+        assert missing == [], f"{name} is missing Option A anchors: {missing}"
+
+
+def test_6ca_separation_from_the_historic_four_denial_anomaly_classes() -> None:
+    assert _J_HISTORIC_EMIT in _norm(_j_section()), "the historic four-event §J emit sentence must survive verbatim"
+    ic002 = _norm(_read(_IC002))
+    assert ic002.count(_IC002_GATEWAY_EDGE_SET) == 1, "the IC-002 class-3 gateway-edge action set must stay exactly the frozen four"
+    assert "workspace_memberships_read" not in _IC002_GATEWAY_EDGE_SET
+
+
+def test_6ca_q_section_points_to_the_mandated_event() -> None:
+    assert _missing(_norm(_q_section()), _6CA_Q) == []
+
+
+def test_6ca_directory_read_audit_reserved_in_ic005_and_r() -> None:
+    for name, section_fn in (("IC-005", _ic005_emission), ("IC-010 §R", _r_section)):
+        missing = _missing(_norm(section_fn()), _6CA_RESERVED)
+        assert missing == [], f"{name} is missing the Reserved directory-read anchors: {missing}"
+    assert _missing(_norm(_r_section()), _6CA_R_RETAINED) == []
+
+
+def test_6ca_adr_entry_records_option_a() -> None:
+    assert _missing(_norm(_adr_6ca_section()), _ADR_6CA_REQUIRED) == []
+
+
+def test_6ca_adr_record_begins_with_a_new_level_three_heading() -> None:
+    """OBS-RDY-6C-3: the record must be a proper `### ` heading so the 6A extractor cannot swallow it."""
+    lines = _read(_ADR).split("\n")
+    heads = [ln for ln in lines if ln.startswith(_ADR_6CA_HEADING)]
+    assert len(heads) == 1, f"exactly one `### B5-BLK-6C-A` heading line expected, found {len(heads)}"
+    assert "audit obligation reconciliation (option a)" not in _norm(_adr_section()), (
+        "the 6A ADR capture must terminate at the new `###` heading, not swallow the 6C-A record"
+    )
+    demoted = _read(_ADR).replace("\n" + _ADR_6CA_HEADING, "\n#" + _ADR_6CA_HEADING)
+    assert not any(ln.startswith(_ADR_6CA_HEADING) for ln in demoted.split("\n")), (
+        "the heading check must fail when the record is demoted to a #### sub-heading (in-memory only)"
+    )
+
+
+def test_6ca_nonvacuity_every_contract_anchor_is_load_bearing() -> None:
+    for section_fn, anchors in (
+        (_ic002_audit_requirements, _6CA_IC002_MUST),
+        (_ic002_audit_extension, _6CA_CONTRACT_COMMON),
+        (_ic005_emission, _6CA_CONTRACT_COMMON + _6CA_RESERVED),
+        (_j_section, _6CA_CONTRACT_COMMON),
+        (_q_section, _6CA_Q),
+        (_r_section, _6CA_RESERVED + _6CA_R_RETAINED),
+    ):
+        live = _norm(section_fn())
+        assert _missing(live, anchors) == [], "control must be green before planting"
+        for anchor in anchors:
+            planted = live.replace(anchor, "")
+            assert anchor in _missing(planted, anchors), f"detector did not fire when {anchor!r} was removed"
+
+
+def test_6ca_nonvacuity_every_adr_anchor_is_load_bearing() -> None:
+    live = _norm(_adr_6ca_section())
+    assert _missing(live, _ADR_6CA_REQUIRED) == [], "control must be green before planting"
+    for anchor in _ADR_6CA_REQUIRED:
+        planted = live.replace(anchor, "")
+        assert anchor in _missing(planted, _ADR_6CA_REQUIRED), f"detector did not fire when {anchor!r} was removed"
+
+
+def test_6ca_live_sections_authorize_nothing_forbidden() -> None:
+    """Green control: no 6C-A-governed section trips any historic or new forbidden-authorization detector."""
+    for name, section_fn in _6CA_SECTIONS:
+        hits = _forbidden_hits_6ca(_norm(section_fn()))
+        assert hits == [], f"{name} must not authorize: {hits}"
+
+
+def test_6ca_planted_probes_are_each_rejected() -> None:
+    base = _j_section()
+    assert _forbidden_hits_6ca(_norm(base)) == [], "control must be green before planting"
+    for expected, injected in _PROBES_6CA:
+        planted = _norm(base + "\n" + injected)
+        hits = _forbidden_hits_6ca(planted)
+        assert expected in hits, f"probe not rejected: {expected!r} (injected {injected!r}; hits={hits})"
+    assert _forbidden_hits_6ca(_norm(_j_section())) == [], "control must remain green after planting (in-memory only)"
+
+
+def test_6ca_probe_set_covers_every_new_detector() -> None:
+    assert len(_PROBES_6CA) == 7, "every 6C-A forbidden-authorization detector must carry a probe"
+    assert {name for name, _ in _PROBES_6CA} == {name for name, _ in _FORBIDDEN_6CA}, "every detector must carry a probe"
+
+
+def test_6ca_blockers_and_production_state_unchanged() -> None:
+    adr = _norm(_adr_6ca_section())
+    assert "b5-blk-6c-a closes no blocker" in adr
+    assert "b5-blk-6 remains open" in adr
+    assert "b5-blk-5 remains open" in adr
+    assert "production remains not ready / do-not-activate" in adr
+    for section_fn in (_ic002_audit_extension, _ic005_emission):
+        norm = _norm(section_fn())
+        assert "closes no blocker" in norm
+        assert "b5-blk-6 remains open" in norm
+
+
 if __name__ == "__main__":
     _scan.run(
         [
@@ -468,5 +832,19 @@ if __name__ == "__main__":
             test_live_amendment_authorizes_nothing_forbidden,
             test_planted_probes_are_each_rejected,
             test_probe_set_covers_the_six_required_categories,
+            test_6ca_governing_documents_present_and_sections_nonempty,
+            test_6ca_ic002_must_preserved_and_homed,
+            test_6ca_mandate_emitter_home_shape_in_all_three_contracts,
+            test_6ca_separation_from_the_historic_four_denial_anomaly_classes,
+            test_6ca_q_section_points_to_the_mandated_event,
+            test_6ca_directory_read_audit_reserved_in_ic005_and_r,
+            test_6ca_adr_entry_records_option_a,
+            test_6ca_adr_record_begins_with_a_new_level_three_heading,
+            test_6ca_nonvacuity_every_contract_anchor_is_load_bearing,
+            test_6ca_nonvacuity_every_adr_anchor_is_load_bearing,
+            test_6ca_live_sections_authorize_nothing_forbidden,
+            test_6ca_planted_probes_are_each_rejected,
+            test_6ca_probe_set_covers_every_new_detector,
+            test_6ca_blockers_and_production_state_unchanged,
         ]
     )
