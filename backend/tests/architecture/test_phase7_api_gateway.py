@@ -183,6 +183,70 @@ def test_portal_dto_shapes_are_references_only() -> None:
         assert violations == [], f"{cls} references-only violations: {violations}"
 
 
+# B5-BLK-6C-B: the census extends to the audit event. GatewayAuditEvent stays references
+# only after gaining the four optional success-shape fields (audit_id / subject_ref /
+# occurred_at / event_version — IC-002 class 3b): scalar types only (str / int / Optional /
+# the AuditAction enum), an EXACT field-name set, and an audit-specific forbidden-name set
+# additional to the global one. The global _FORBIDDEN_FIELD_NAMES is unchanged — portal
+# shapes lawfully carry `records`/`memberships` fields; the audit event never may, so a
+# field that could smuggle rows, the returned membership collection, or DB identity fails
+# the build structurally.
+_AUDIT_EVENT_ALLOWED_FIELD_TYPES = {"int", "str", "Optional", "AuditAction"}
+_AUDIT_EVENT_EXPECTED_FIELDS = {
+    "action",
+    "correlation_id",
+    "outcome",
+    "actor_ref",
+    "tenant_ref",
+    "carrier_ref",
+    "audit_id",
+    "subject_ref",
+    "occurred_at",
+    "event_version",
+}
+_AUDIT_EVENT_FORBIDDEN_FIELD_NAMES = {"rows", "records", "memberships", "database", "db_name"}
+
+
+def _audit_event_field_names(source: str) -> set:
+    node = _find_classdef(source, "GatewayAuditEvent")
+    assert node is not None, "GatewayAuditEvent must be defined in api_gateway/models.py"
+    return {s.target.id for s in node.body if isinstance(s, ast.AnnAssign) and isinstance(s.target, ast.Name)}
+
+
+def test_gateway_audit_event_is_references_only_with_exact_field_set() -> None:
+    source = _MODELS.read_text(encoding="utf-8")
+    violations = _references_only_violations(source, "GatewayAuditEvent", _AUDIT_EVENT_ALLOWED_FIELD_TYPES)
+    assert violations == [], f"GatewayAuditEvent references-only violations: {violations}"
+    names = _audit_event_field_names(source)
+    assert names == _AUDIT_EVENT_EXPECTED_FIELDS, sorted(names ^ _AUDIT_EVENT_EXPECTED_FIELDS)
+    assert not (names & _AUDIT_EVENT_FORBIDDEN_FIELD_NAMES), sorted(names & _AUDIT_EVENT_FORBIDDEN_FIELD_NAMES)
+
+
+def test_gateway_audit_event_guard_flags_unsafe_fields() -> None:
+    # Self-test companions: the audit-event census must flag a smuggled collection field,
+    # a forbidden global name, an audit-specific forbidden name, an unexpected extra field,
+    # and an unsafe type — otherwise it could pass silently on real drift.
+    smuggled = (
+        "from dataclasses import dataclass\n"
+        "@dataclass(frozen=True)\n"
+        "class GatewayAuditEvent:\n"
+        "    action: AuditAction\n"
+        "    memberships: Tuple[str, ...]\n"  # audit-specific forbidden NAME + unsafe TYPE
+        "    payload: Optional[str]\n"  # forbidden global NAME (safe type)
+    )
+    v = _references_only_violations(smuggled, "GatewayAuditEvent", _AUDIT_EVENT_ALLOWED_FIELD_TYPES)
+    assert any("payload" in x for x in v), v
+    assert any("Tuple" in x for x in v), v
+    names = _audit_event_field_names(smuggled)
+    assert names != _AUDIT_EVENT_EXPECTED_FIELDS
+    assert names & _AUDIT_EVENT_FORBIDDEN_FIELD_NAMES == {"memberships"}
+    # A benign-typed but unexpected extra field still breaks the exact-set pin.
+    extra = "class GatewayAuditEvent:\n    action: AuditAction\n    note: Optional[str]\n"
+    assert _audit_event_field_names(extra) != _AUDIT_EVENT_EXPECTED_FIELDS
+    # Absent class -> the census cannot pass vacuously.
+    assert _references_only_violations("x = 1\n", "GatewayAuditEvent", _AUDIT_EVENT_ALLOWED_FIELD_TYPES) == ["GatewayAuditEvent not found"]
+
+
 def test_references_only_guard_flags_unsafe_fields() -> None:
     # Self-test companion: the guard MUST flag a forbidden field name, an unsafe field type,
     # and an absent class — otherwise it could silently pass on real drift. Covers BOTH
@@ -226,6 +290,8 @@ if __name__ == "__main__":
             test_api_gateway_governing_contracts_lock_ic010,
             test_route_dispatch_shapes_are_references_only,
             test_portal_dto_shapes_are_references_only,
+            test_gateway_audit_event_is_references_only_with_exact_field_set,
+            test_gateway_audit_event_guard_flags_unsafe_fields,
             test_references_only_guard_flags_unsafe_fields,
         ]
     )

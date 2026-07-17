@@ -33,12 +33,19 @@ class DatabaseDomain(Enum):
 
 
 class AuditAction(Enum):
-    """IC-010 §J runtime/operational-audit emit-set (the gateway is the emitter)."""
+    """IC-010 §J runtime/operational-audit emit-set (the gateway is the emitter).
+
+    The four denial/anomaly actions are the historic gateway-edge set — unchanged.
+    ``WORKSPACE_MEMBERSHIPS_READ`` (B5-BLK-6C-B) is the separate gateway-edge
+    success-access subclass (IC-002 Audit-Section Extension class 3b): never a denial,
+    anomaly, or routing action.
+    """
 
     CARRIER_MISMATCH = "CarrierMismatch"
     CARRIER_ON_CONTROL_ANOMALY = "CarrierOnControlAnomaly"
     ROUTE_DENIED = "RouteDenied"
     ISOLATION_ANOMALY = "IsolationAnomaly"
+    WORKSPACE_MEMBERSHIPS_READ = "workspace_memberships_read"
 
 
 @dataclass(frozen=True)
@@ -91,6 +98,12 @@ class GatewayAuditEvent:
     Never carries names/emails/PII/payloads/secrets. ``carrier_ref`` (when present) is the
     carrier-asserted tenant id rendered as an opaque, length-bounded string for anomaly
     attribution only — never parsed, resolved, or trusted (IC-005:116).
+
+    The four optional success-shape fields (B5-BLK-6C-B; IC-002 class 3b) default to
+    ``None`` so the four denial/anomaly events construct unchanged. The
+    ``workspace_memberships_read`` success-access event populates them; its contract
+    mapping is ``actor_ref`` -> actor_principal_ref and ``subject_ref`` ->
+    subject_principal_ref (self-scoped: equal). Never the returned membership collection.
     """
 
     action: AuditAction
@@ -99,6 +112,10 @@ class GatewayAuditEvent:
     actor_ref: Optional[str] = None
     tenant_ref: Optional[str] = None
     carrier_ref: Optional[str] = None
+    audit_id: Optional[str] = None
+    subject_ref: Optional[str] = None
+    occurred_at: Optional[str] = None
+    event_version: Optional[int] = None
 
 
 @dataclass(frozen=True)

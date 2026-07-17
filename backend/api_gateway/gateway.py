@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from datetime import datetime, timezone
 from typing import Callable, Optional, Set, Tuple
 
 from shared.context import RequestContext
@@ -187,6 +188,27 @@ class Gateway:
                 # 404 -> None -> 403); never leaks existence, never a DTO on denial.
                 emit(AuditAction.ROUTE_DENIED, "rejected", actor_ref=auth.principal_ref, tenant_ref=context.active_tenant_id)
                 return GatewayResponse(status=403, public_code="forbidden")
+            if category is DispatchCategory.MEMBERSHIPS_FOR_PRINCIPAL:
+                # B5-BLK-6C-B (IC-010 §J success-access subclass; IC-002 class 3b): exactly
+                # ONE references-only workspace_memberships_read event per successful
+                # self-scoped enumeration — a successful EMPTY enumeration included. Emitted
+                # only here: after the successful Control-Plane read and DTO composition,
+                # after the composed-is-None denial, before the single success return —
+                # never on a denial/failure path, never per membership, never per tenant.
+                # The category gate keeps directory-read success unaudited (§R Reserved).
+                # Self-scoped: actor == subject == the authenticated principal only.
+                self._audit.emit(
+                    GatewayAuditEvent(
+                        action=AuditAction.WORKSPACE_MEMBERSHIPS_READ,
+                        correlation_id=correlation_id,
+                        outcome="success",
+                        actor_ref=auth.principal_ref,
+                        subject_ref=auth.principal_ref,
+                        audit_id=uuid.uuid4().hex,
+                        occurred_at=datetime.now(timezone.utc).isoformat(),
+                        event_version=1,
+                    )
+                )
             return GatewayResponse(status=200, public_code="ok", dispatched=True, category=category, portal_dto=composed)
 
         # Hand off to the Database Router (it selects exactly one DB from the signed claim).

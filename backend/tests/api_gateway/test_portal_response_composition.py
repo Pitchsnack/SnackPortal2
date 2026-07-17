@@ -35,7 +35,7 @@ from api_gateway.main import (  # noqa: E402
     build_control_plane_read_from_env,
     build_gateway,
 )
-from api_gateway.models import DispatchCategory, RouteOutcome  # noqa: E402
+from api_gateway.models import AuditAction, DispatchCategory, RouteOutcome  # noqa: E402
 from api_gateway.portal import (  # noqa: E402
     DirectoryEntryDTO,
     GlobalInvestorSummaryDTO,
@@ -109,16 +109,22 @@ def test_memberships_success_composes_membership_dto_with_display_refs() -> None
     assert tuple(m.tenant_id for m in resp.portal_dto.memberships) == ("t1", "t2")
     # display_ref is gateway-composed in the pinned deterministic format (derived, not stored).
     assert resp.portal_dto.memberships[0].display_ref == "ref:tenant/t1/display"
-    assert router.handoffs == [] and audit.events == []
+    assert router.handoffs == []
+    # B5-BLK-6C-B: the successful self-scoped enumeration emits EXACTLY ONE
+    # workspace_memberships_read success-access event (IC-010 §J; IC-002 class 3b).
+    assert [e.action for e in audit.events] == [AuditAction.WORKSPACE_MEMBERSHIPS_READ]
 
 
 def test_memberships_empty_is_success_with_present_dto_and_empty_tuple() -> None:
     # An empty membership set is a lawful success: 200 + a PRESENT DTO with an empty tuple —
     # never an error, never None (IC-002 semantics; a principal may hold zero memberships).
-    gateway, _authn, _router, _audit = D.control_read_setup(D.StubControlPlaneRead(mode="empty"))
+    gateway, _authn, _router, audit = D.control_read_setup(D.StubControlPlaneRead(mode="empty"))
     resp = gateway.handle(D.req(path="/memberships", authorization="tok-ctl"))
     assert (resp.status, resp.public_code) == (200, "ok")
     assert isinstance(resp.portal_dto, WorkspaceMembershipDTO) and resp.portal_dto.memberships == ()
+    # B5-BLK-6C-B: a successful EMPTY enumeration is still a successful enumeration and
+    # emits exactly one success event — never zero (IC-002 class 3b).
+    assert [e.action for e in audit.events] == [AuditAction.WORKSPACE_MEMBERSHIPS_READ]
 
 
 def test_import_initiation_success_composes_accepted_envelope_only() -> None:
@@ -450,12 +456,15 @@ def test_end_to_end_real_cp_read_edge_through_real_gateway() -> None:
         assert (resp.status, resp.public_code, resp.dispatched) == (200, "ok", True)
         assert isinstance(resp.portal_dto, GlobalStartupSummaryDTO)
         assert tuple(e.record_ref for e in resp.portal_dto.records) == ("g1", "g2")
+        assert audit.events == []  # the directory leg contributes ZERO events (§R Reserved)
         resp = gateway.handle(D.req(path="/memberships", authorization="tok-ctl"))
         assert isinstance(resp.portal_dto, WorkspaceMembershipDTO)
         assert tuple((m.tenant_id, m.role, m.display_ref) for m in resp.portal_dto.memberships) == (
             ("t1", "MASTER_AGENT", "ref:tenant/t1/display"),
         )
-        assert router.handoffs == [] and audit.events == []  # composed, not routed; no new audit
+        assert router.handoffs == []  # composed, not routed
+        # B5-BLK-6C-B: exactly ONE event total — directory leg 0 + memberships leg 1.
+        assert [e.action for e in audit.events] == [AuditAction.WORKSPACE_MEMBERSHIPS_READ]
     except OSError:
         return  # loopback networking blocked; transport check skipped
     finally:
