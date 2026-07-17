@@ -23,7 +23,7 @@ import ast
 import dataclasses
 import pathlib
 import sys
-from typing import List, Set, Union, get_args
+from typing import Any, Dict, List, Set, Union, get_args
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import _scan  # noqa: E402
@@ -81,6 +81,24 @@ _EXPECTED_PREFIXES = {"/tenant", "/directory", "/memberships", "/import"}
 # Tenant-resident record DTO names (IC-009 §D business-domain tier) — none may join the
 # union in 6B without binding the lineage_reference half of P.6 (the guarded-skip rule).
 _TENANT_RESIDENT_RECORD_DTO_NAMES = {"TenantStartupDTO", "TenantInvestorDTO", "TenantDealDTO", "LineageSummaryDTO"}
+# The EXACT field set of every portal dataclass — SET EQUALITY, never subset/blocklist.
+# Load-bearing: _P1_FORBIDDEN/_P2_FORBIDDEN (and test_phase7's _FORBIDDEN_FIELD_NAMES) are
+# BLOCKLISTS, and a blocklist cannot enforce an approved DTO catalogue — an innocuously
+# named PII field (owner_email/founder_email/contact_email) is on no blocklist and is typed
+# `str`, so it passes every name and type census while still breaching IC-009 §D's
+# references-only rule ("no name/email/PII payload"). Only an ALLOW-LIST closes the shape.
+_EXACT_FIELD_SETS: Dict[type, Set[str]] = {
+    DirectoryEntryDTO: {"record_ref", "display_name"},
+    GlobalStartupSummaryDTO: {"records", "record_origin", "record_residency", "record_type"},
+    GlobalInvestorSummaryDTO: {"records", "record_origin", "record_residency", "record_type"},
+    MembershipEntryDTO: {"tenant_id", "role", "display_ref"},
+    WorkspaceMembershipDTO: {"memberships"},
+    ImportInitiationDTO: {"source_ref", "target_tenant_ref", "initiation"},
+    ErrorDTO: {"status", "public_code"},
+}
+# PII-shaped field names used ONLY as planted violations in the non-vacuity companion —
+# never authored on a production DTO.
+_PLANTED_PII_FIELDS = ("owner_email", "founder_email", "contact_email")
 
 # Non-empty sample instances — every serialized-instance check runs over THESE (P.6/CLR-3:
 # a check over an empty instance set is vacuous and must fail).
@@ -114,6 +132,22 @@ def _recursive_keys(value: object) -> Set[str]:
 
 def _serialized_keys(dto: PortalDTO) -> Set[str]:
     return _recursive_keys(dataclasses.asdict(dto))
+
+
+def _field_names(cls: Any) -> Set[str]:
+    """The declared field-name set of a dataclass — the unit of exact-closure equality.
+    The SAME helper backs both the real closure check and its planted-violation companion."""
+    return {f.name for f in dataclasses.fields(cls)}
+
+
+def _portal_dataclasses() -> Set[type]:
+    """Every dataclass DECLARED in portal.py, re-derived from the module every run — so a
+    newly authored shape cannot escape closure merely by not being listed in the catalogue."""
+    return {
+        obj
+        for obj in vars(portal).values()
+        if isinstance(obj, type) and dataclasses.is_dataclass(obj) and obj.__module__ == portal.__name__
+    }
 
 
 def _classifier_prefixes(source: str) -> Set[str]:
@@ -201,6 +235,43 @@ def test_no_dto_carries_wire_contract_traceability_fields() -> None:
     for cls in (*get_args(PortalDTO), DirectoryEntryDTO, MembershipEntryDTO, ErrorDTO):
         names = {f.name for f in dataclasses.fields(cls)}
         assert not (names & {"contract_id", "contract_revision"}), f"{cls.__name__} carries a wire traceability field: {names}"
+
+
+# --- exact field-set closure across ALL seven portal shapes (OBS-PMV-11) --------------------------
+def test_every_portal_dataclass_has_exact_field_set_closure() -> None:
+    # IC-009 §D references-only closure by SET EQUALITY over every portal dataclass — the
+    # four PortalDTO union members, both nested entry DTOs, and ErrorDTO. Blocklists cannot
+    # do this job (see _EXACT_FIELD_SETS); an allow-list can.
+    declared = _portal_dataclasses()
+    # Non-vacuity 1: the catalogue must cover portal.py EXACTLY — an unlisted new shape fails
+    # here rather than silently escaping closure, and a stale entry fails too.
+    assert declared == set(_EXACT_FIELD_SETS), (
+        "portal.py dataclasses and the exact-field-set catalogue must match exactly; "
+        f"unlisted={sorted(c.__name__ for c in declared - set(_EXACT_FIELD_SETS))} "
+        f"stale={sorted(c.__name__ for c in set(_EXACT_FIELD_SETS) - declared)}"
+    )
+    # Non-vacuity 2: the catalogue is non-empty and is exactly the seven approved shapes.
+    assert len(_EXACT_FIELD_SETS) == 7, f"expected exactly 7 portal shapes, got {len(_EXACT_FIELD_SETS)}"
+    for cls, expected in _EXACT_FIELD_SETS.items():
+        assert _field_names(cls) == expected, f"{cls.__name__} field set drifted: {_field_names(cls)} != {expected}"
+
+
+def test_exact_field_set_closure_rejects_a_planted_pii_field() -> None:
+    # NON-VACUITY COMPANION (OBS-PMV-11): a PII-shaped field is caught ONLY by exact
+    # closure. Each plant is judged through the SAME `_field_names` helper the real check
+    # uses, on a dataclass built to mirror a real shape plus one extra `str` field.
+    for cls, planted_field in zip((DirectoryEntryDTO, ImportInitiationDTO, GlobalInvestorSummaryDTO), _PLANTED_PII_FIELDS):
+        expected = _EXACT_FIELD_SETS[cls]
+        planted = dataclasses.make_dataclass(cls.__name__, [*((name, str) for name in sorted(expected)), (planted_field, str)], frozen=True)
+        assert _field_names(planted) != expected, f"exact closure must reject {cls.__name__}.{planted_field} (a planted PII-shaped field)"
+        assert _field_names(planted) - expected == {planted_field}
+        # ...and prove WHY set equality is required: every blocklist genuinely MISSES it.
+        assert planted_field not in (_P1_FORBIDDEN | _P2_FORBIDDEN), (
+            f"{planted_field} is on no forbidden-name list — exact field-set closure is its only detector"
+        )
+    # Green control: the real, unplanted shapes still satisfy the same helper.
+    for cls, expected in _EXACT_FIELD_SETS.items():
+        assert _field_names(cls) == expected
 
 
 # --- IC-009 §P.1 — directory-DTO tenant anonymity (mutation detector 4) ----------------------------
@@ -426,6 +497,8 @@ if __name__ == "__main__":
             test_seam_traceability_constants_and_catalogue_closure,
             test_composer_rejects_any_type_absent_from_the_catalogue,
             test_no_dto_carries_wire_contract_traceability_fields,
+            test_every_portal_dataclass_has_exact_field_set_closure,
+            test_exact_field_set_closure_rejects_a_planted_pii_field,
             test_p1_directory_dtos_are_tenant_anonymous_over_nonempty_instances,
             test_p2_no_physical_database_identity_in_any_dto,
             test_p3_every_category_resolves_to_exactly_one_domain_and_database,

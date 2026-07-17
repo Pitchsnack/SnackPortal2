@@ -130,18 +130,54 @@ def test_memberships_sorted_deterministically_by_tenant_id() -> None:
     assert [m["tenant_id"] for m in body["memberships"]] == ["t1", "t2", "t9"]
 
 
+def _memberships_seeded_in_order(*conflict_roles: Role) -> dict:
+    """Read `/memberships?p=u` from a store whose t2 conflicting-role duplicates were
+    inserted in the GIVEN order (t1/TENANT_ADMIN comes from the fixture).
+
+    The insertion order is the whole point: the in-memory store appends blindly and
+    Python's sort is stable, so an implementation that sorted by `tenant_id` ALONE would
+    let the first-inserted record win. Varying this order is what makes the conflict tests
+    discriminating rather than order-coincident.
+    """
+    store = _store_with_ready_tenant()
+    for role in conflict_roles:
+        store.put_membership(MembershipRecord(principal_ref="u", tenant_id="t2", role=role))
+    status, body = ControlPlaneReadDispatcher(ControlPlaneReadService(store)).handle("GET", "/memberships?p=u")
+    assert status == 200
+    return body
+
+
 def test_memberships_deduplicates_by_tenant_id() -> None:
     # The in-memory store appends blindly — duplicates are possible; dedup is read-layer.
-    store = _store_with_ready_tenant()
-    store.put_membership(MembershipRecord(principal_ref="u", tenant_id="t1", role=Role.TENANT_ADMIN))
-    store.put_membership(MembershipRecord(principal_ref="u", tenant_id="t1", role=Role.TENANT_ADMIN))
-    # A differing-role record too: dedup must be deterministic — the FIRST record after
-    # the (tenant_id, role.value) sort wins ("TENANT_ADMIN" < "TENANT_AGENT").
-    store.put_membership(MembershipRecord(principal_ref="u", tenant_id="t1", role=Role.TENANT_AGENT))
-    disp = ControlPlaneReadDispatcher(ControlPlaneReadService(store))
-    status, body = disp.handle("GET", "/memberships?p=u")
-    assert status == 200
-    assert body == {"memberships": [{"tenant_id": "t1", "role": "TENANT_ADMIN"}]}
+    # Dedup must be deterministic: the FIRST record after the (tenant_id, role.value) sort
+    # wins ("TENANT_ADMIN" < "TENANT_AGENT"). The LOSING role is seeded FIRST, so this
+    # assertion CANNOT pass on input order alone — only the role key yields TENANT_ADMIN.
+    body = _memberships_seeded_in_order(Role.TENANT_AGENT, Role.TENANT_ADMIN, Role.TENANT_ADMIN)
+    assert body == {
+        "memberships": [
+            {"tenant_id": "t1", "role": "TENANT_ADMIN"},
+            {"tenant_id": "t2", "role": "TENANT_ADMIN"},  # exactly one entry per tenant
+        ]
+    }
+
+
+def test_memberships_conflicting_roles_resolve_independently_of_input_order() -> None:
+    # The resolved role is a function of the RECORD SET, never of arrival order: both
+    # permutations of a conflicting-role duplicate must yield the identical body. Dropping
+    # role.value from the sort key makes these two diverge (losing-first -> TENANT_AGENT),
+    # which is precisely what the order-coincident seeding used to hide.
+    losing_role_first = _memberships_seeded_in_order(Role.TENANT_AGENT, Role.TENANT_ADMIN)
+    winning_role_first = _memberships_seeded_in_order(Role.TENANT_ADMIN, Role.TENANT_AGENT)
+    assert losing_role_first == winning_role_first, (
+        f"conflict resolution is input-order dependent: {losing_role_first} != {winning_role_first}"
+    )
+    # ...and the winner is the one the (tenant_id, role.value) rule names, not either input head.
+    assert losing_role_first == {
+        "memberships": [
+            {"tenant_id": "t1", "role": "TENANT_ADMIN"},
+            {"tenant_id": "t2", "role": "TENANT_ADMIN"},
+        ]
+    }
 
 
 def test_memberships_unknown_principal_is_empty_200() -> None:
@@ -220,6 +256,7 @@ if __name__ == "__main__":
             test_memberships_success,
             test_memberships_sorted_deterministically_by_tenant_id,
             test_memberships_deduplicates_by_tenant_id,
+            test_memberships_conflicting_roles_resolve_independently_of_input_order,
             test_memberships_unknown_principal_is_empty_200,
             test_memberships_missing_or_empty_p_is_empty_200,
             test_memberships_response_shape_closure,
