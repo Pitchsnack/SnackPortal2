@@ -25,7 +25,14 @@ from api_gateway.models import (  # noqa: E402
     unauthenticated,
     unavailable,
 )
-from api_gateway.ports import AuditEmitterPort, AuthenticatorPort, RouterDispatchPort  # noqa: E402
+from api_gateway.portal import (  # noqa: E402
+    DirectoryEntryDTO,
+    GlobalInvestorSummaryDTO,
+    GlobalStartupSummaryDTO,
+    MembershipEntryDTO,
+    WorkspaceMembershipDTO,
+)
+from api_gateway.ports import AuditEmitterPort, AuthenticatorPort, ControlPlaneReadPort, RouterDispatchPort  # noqa: E402
 from shared.context import RequestContext  # noqa: E402
 
 
@@ -84,6 +91,63 @@ class RecordingAuditEmitter(AuditEmitterPort):
         self.events.append(event)
 
 
+class StubControlPlaneRead(ControlPlaneReadPort):
+    """A configurable ``ControlPlaneReadPort`` double (B5-BLK-6B) with the exact adapter
+    outcome modes:
+
+    * ``"success"``     — returns the configured page/memberships DTOs;
+    * ``"empty"``       — returns DTOs carrying EMPTY tuples (a lawful success);
+    * ``"absent"``      — returns ``None`` (the adapter's live-404 -> None mapping, LW-1);
+    * ``"unavailable"`` — raises OSError (the adapter's transport-failure contract);
+    * ``"timeout"``     — raises TimeoutError (the adapter's bounded-timeout contract);
+    * ``"malformed"``   — raises ValueError (the adapter's typed-parse failure contract).
+
+    Records every requested directory kind and membership principal so tests can assert
+    self-scoping (the gateway must pass ONLY the authenticated principal) and
+    call-ordering (denials must never reach the port)."""
+
+    def __init__(
+        self,
+        mode: str = "success",
+        *,
+        startup_entries: Sequence[DirectoryEntryDTO] = (),
+        investor_entries: Sequence[DirectoryEntryDTO] = (),
+        memberships: Sequence[MembershipEntryDTO] = (),
+    ) -> None:
+        self.mode = mode
+        self.directory_kinds: List[str] = []
+        self.principals: List[str] = []
+        self._startup = tuple(startup_entries)
+        self._investor = tuple(investor_entries)
+        self._memberships = tuple(memberships)
+
+    def _raise_for_mode(self) -> bool:
+        """True when the mode is ``absent`` (return None); raises for the failure modes."""
+        if self.mode == "unavailable":
+            raise OSError("control-plane read unavailable (stub)")
+        if self.mode == "timeout":
+            raise TimeoutError("control-plane read timed out (stub)")
+        if self.mode == "malformed":
+            raise ValueError("malformed control-plane read result (stub)")
+        return self.mode == "absent"
+
+    def directory(self, kind: str):
+        self.directory_kinds.append(kind)
+        if self._raise_for_mode():
+            return None
+        if kind == "startup":
+            return GlobalStartupSummaryDTO(records=self._startup if self.mode == "success" else ())
+        if kind == "investor":
+            return GlobalInvestorSummaryDTO(records=self._investor if self.mode == "success" else ())
+        return None  # unknown/unapproved kind -> the adapter's consistent None
+
+    def memberships_for_principal(self, principal_ref: str) -> Optional[WorkspaceMembershipDTO]:
+        self.principals.append(principal_ref)
+        if self._raise_for_mode():
+            return None
+        return WorkspaceMembershipDTO(memberships=self._memberships if self.mode == "success" else ())
+
+
 def req(
     method: str = "GET",
     path: str = "/tenant/x",
@@ -117,4 +181,22 @@ def tenant_setup(*, token: str = "tok-t1", principal: str = "p1", tenant: str = 
     router = StubRouterDispatch()
     audit = RecordingAuditEmitter()
     gateway = build_gateway(authenticator=authn, router=router, audit=audit)
+    return gateway, authn, router, audit
+
+
+def control_read_setup(
+    control_read: ControlPlaneReadPort,
+    *,
+    token: str = "tok-ctl",
+    principal: str = "ops",
+    tenant: Optional[str] = None,
+    role: Optional[str] = "CONTROL",
+):
+    """A gateway with the B5-BLK-6B Control-Plane read seam ACTIVE (a stub or real port
+    injected) plus one token. Returns (gateway, authenticator, router, audit)."""
+    authn = StubAuthenticator()
+    authn.add_token(token, principal=principal, tenant=tenant, role=role)
+    router = StubRouterDispatch()
+    audit = RecordingAuditEmitter()
+    gateway = build_gateway(authenticator=authn, router=router, control_read=control_read, audit=audit)
     return gateway, authn, router, audit

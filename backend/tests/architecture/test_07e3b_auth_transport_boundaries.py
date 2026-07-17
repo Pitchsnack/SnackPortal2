@@ -126,7 +126,9 @@ _GATEWAY_MAIN = _scan.BACKEND_ROOT / "api_gateway" / "main.py"
 _GW_MAIN_IMPORT_TOPS_ALLOW = frozenset({"__future__", "os", "typing", "urllib"})
 _GW_SELECTOR_ENV = "SP2_GW_AUTH_ROUTER_BASE_URL"
 _GW_DB_ROUTER_SELECTOR_ENV = "SP2_GW_DB_ROUTER_BASE_URL"  # 07E-3d dispatch seam
-_GW_BUILD_GATEWAY_KWONLY = ["authenticator", "router", "classify", "audit", "metrics"]
+# B5-BLK-6B: `control_read` joins at index 2, DEFAULTED (the IC-010 §V read seam is opt-in;
+# None preserves the pre-6B pipeline). authenticator + router stay REQUIRED (indices 0-1).
+_GW_BUILD_GATEWAY_KWONLY = ["authenticator", "router", "control_read", "classify", "audit", "metrics"]
 
 _CLIENT_TOPLEVEL_ALLOW = frozenset({"_is_optional_str", "HttpAuthenticator"})
 _SERVER_TOPLEVEL_ALLOW = frozenset(
@@ -522,16 +524,17 @@ def test_composition_boundary_guard() -> None:
     assert "build_authenticator_from_env" in _top_level_defs(tree), "the config-selectable seam helper must exist"
     assert "HttpAuthenticator" in _names_used(tree), "the seam must select the in-package HttpAuthenticator transport client"
     # build_gateway stays required-injection (no runnable production composition): keyword-only
-    # surface unchanged, authenticator + router carry NO defaults, the tail params keep theirs.
+    # surface pinned by exact list equality (B5-BLK-6B adds `control_read` at index 2,
+    # defaulted), authenticator + router carry NO defaults, every tail param keeps its default.
     bg: Optional[ast.FunctionDef] = None
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == "build_gateway":
             bg = node
     assert bg is not None, "build_gateway must remain defined in the composition root"
-    assert [a.arg for a in bg.args.kwonlyargs] == _GW_BUILD_GATEWAY_KWONLY, "build_gateway keyword-only surface must stay unchanged"
+    assert [a.arg for a in bg.args.kwonlyargs] == _GW_BUILD_GATEWAY_KWONLY, "build_gateway keyword-only surface must match the exact pin"
     assert not bg.args.args and not bg.args.posonlyargs, "build_gateway must stay keyword-only"
     assert bg.args.kw_defaults[0] is None and bg.args.kw_defaults[1] is None, "authenticator + router must stay REQUIRED (no default)"
-    assert all(d is not None for d in bg.args.kw_defaults[2:]), "classify/audit/metrics must keep their defaults"
+    assert all(d is not None for d in bg.args.kw_defaults[2:]), "control_read/classify/audit/metrics must keep their defaults"
     # Composition performs no network I/O and no DSN/DB material; no serve lifecycle anywhere in
     # the composition root OR the auth server module (a running service is deployment scope).
     assert not _urlopen_calls(tree), "the composition root must perform no network I/O (lazy transport)"

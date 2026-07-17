@@ -20,6 +20,7 @@ from .carrier import opaque_carrier_ref, recognized_carriers
 from .dispatch import DispatchError, assert_single_database, decide
 from .models import (
     AuditAction,
+    DatabaseDomain,
     DispatchCategory,
     GatewayAuditEvent,
     GatewayResponse,
@@ -27,10 +28,27 @@ from .models import (
     RequestMetric,
     RequestRejected,
 )
-from .ports import AuditEmitterPort, AuthenticatorPort, MetricsPort, RouterDispatchPort
+from .portal import ImportInitiationDTO, PortalDTO, compose_portal_dto
+from .ports import AuditEmitterPort, AuthenticatorPort, ControlPlaneReadPort, MetricsPort, RouterDispatchPort
 from .request_context import build_request_context
 
 _CORRELATION_HEADER = "x-correlation-id"
+
+_DIRECTORY_PREFIX = "/directory/"
+_IMPORT_PREFIX = "/import/"
+
+
+def _directory_kind(path: str) -> str:
+    """The directory-kind OPERATION parameter from the path (IC-010 §X: an application-
+    level dispatch input, never a tenant/workspace selector). Anything that is not an
+    exact ``/directory/<kind>`` remainder resolves to an unknown kind -> fail-closed."""
+    return path[len(_DIRECTORY_PREFIX) :] if path.startswith(_DIRECTORY_PREFIX) else ""
+
+
+def _import_source_ref(path: str) -> str:
+    """The global-source REFERENCE the import request itself carries (references only;
+    IR-09: the global source is carried by reference, never joined/read in-request)."""
+    return path[len(_IMPORT_PREFIX) :] if path.startswith(_IMPORT_PREFIX) else ""
 
 
 class Gateway:
@@ -41,12 +59,18 @@ class Gateway:
         *,
         authenticator: AuthenticatorPort,
         router: RouterDispatchPort,
+        control_read: Optional[ControlPlaneReadPort] = None,
         classify: Callable[[InboundRequest], DispatchCategory],
         audit: AuditEmitterPort,
         metrics: MetricsPort,
     ) -> None:
         self._authenticator = authenticator
         self._router = router
+        # B5-BLK-6B (IC-010 §V): the OPTIONAL typed Control-Plane read port. None (the
+        # default) keeps the pre-6B pipeline byte-identical — every category continues
+        # through the router and portal_dto stays None (rollback-by-default; no silent
+        # activation).
+        self._control_read = control_read
         self._classify = classify
         self._audit = audit
         self._metrics = metrics
@@ -135,16 +159,68 @@ class Gateway:
             emit(AuditAction.ROUTE_DENIED, "rejected", actor_ref=auth.principal_ref, tenant_ref=context.active_tenant_id)
             return GatewayResponse(status=403, public_code=denied.public_code)
 
+        # B5-BLK-6B (IC-010 §V): with the typed Control-Plane read port injected, the two
+        # CONTROL-domain read categories are COMPOSED from typed port results — the gateway
+        # builds the approved IC-009-R1 DTO itself; no downstream body is ever relayed.
+        # Composition never selects a database (§V.1): the decision above already resolved
+        # the single CONTROL domain, and no tenant database is touched.
+        if self._control_read is not None and decision.domain is DatabaseDomain.CONTROL:
+            try:
+                composed: Optional[PortalDTO]
+                if category is DispatchCategory.GLOBAL_DIRECTORY_READ:
+                    page = self._control_read.directory(_directory_kind(request.path))
+                    composed = compose_portal_dto(page) if page is not None else None
+                else:
+                    # MembershipsForPrincipal is SELF-SCOPED ONLY (IC-002:207 narrowed;
+                    # no CONTROL override in 6B): the subject principal comes exclusively
+                    # from AuthResult.principal_ref — a client-supplied selector (query,
+                    # header, body) is never read.
+                    memberships = self._control_read.memberships_for_principal(auth.principal_ref)
+                    composed = compose_portal_dto(memberships) if memberships is not None else None
+            except Exception:
+                # CP unavailable / timeout / malformed / oversized / internal failure ->
+                # fail closed to the existing §L vocabulary (no new public_code); no raw
+                # exception, provider body, SQL, hostname, or DB identity leaks (§V.2).
+                return GatewayResponse(status=503, public_code="unavailable", category=category)
+            if composed is None:
+                # Unknown kind / not found -> the existing consistent denial (LW-1:
+                # 404 -> None -> 403); never leaks existence, never a DTO on denial.
+                emit(AuditAction.ROUTE_DENIED, "rejected", actor_ref=auth.principal_ref, tenant_ref=context.active_tenant_id)
+                return GatewayResponse(status=403, public_code="forbidden")
+            return GatewayResponse(status=200, public_code="ok", dispatched=True, category=category, portal_dto=composed)
+
         # Hand off to the Database Router (it selects exactly one DB from the signed claim).
         # The gateway resolves no database (§X/§H); it maps the router's references-only
         # RouteOutcome into the response. `category` stays gateway-owned (§Q) — it is the
         # gateway's own per-request classification and is NEVER taken from the router.
         outcome = self._router.dispatch(context, decision)
+
+        # B5-BLK-6B (IC-010 §V): the accepted-initiation envelope, composed ONLY when the
+        # 6B composition seam is active AND the route outcome is dispatched and successful.
+        # Content comes EXCLUSIVELY from the gateway-validated request (the source
+        # reference in the path) and the dispatch-decision references — never from the
+        # RouteOutcome (§V.2: composition never sources content from it) and never from an
+        # import execution (ImportService.start_import is never called; nothing is created).
+        portal_dto: Optional[PortalDTO] = None
+        if (
+            self._control_read is not None
+            and category is DispatchCategory.IMPORT_INITIATION
+            and outcome.dispatched
+            and outcome.status < 400
+            and decision.target_tenant_id is not None
+        ):
+            portal_dto = compose_portal_dto(
+                ImportInitiationDTO(
+                    source_ref=_import_source_ref(request.path),
+                    target_tenant_ref=decision.target_tenant_id,
+                )
+            )
         return GatewayResponse(
             status=outcome.status,
             public_code=outcome.public_code,
             dispatched=outcome.dispatched,
             category=category,
+            portal_dto=portal_dto,
         )
 
     @staticmethod

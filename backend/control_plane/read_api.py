@@ -3,7 +3,8 @@
 Transport-agnostic read service over the ControlStore, plus a path/query dispatcher
 the HTTP provider (and tests) call. Serves the internal **routing** read used by the
 Database Router (`TenantRoutingView`, carrying the association *reference* and the
-expected schema version) and the auth-facing tenant-state / membership / role reads.
+expected schema version) and the auth-facing tenant-state / membership / role reads,
+plus the IC-002 MembershipsForPrincipal enumeration (B5-BLK-6B).
 
 Disclosure-safe (Governance §I): unknown tenants return 404 (consistent denial — no
 existence leak); **no credentials are ever returned** (the association is a
@@ -64,6 +65,28 @@ class ControlPlaneReadService:
         if not members:
             return None
         return {"role": members[0].role.value}
+
+    def memberships_for_principal(self, principal_ref: str) -> dict[str, Any]:
+        """Enumerate a principal's tenant memberships (IC-002:207; B5-BLK-6B).
+
+        Reads through the EXISTING ``list_memberships`` port only. Neither adapter
+        promises order (the postgres store has no ORDER BY; the in-memory store
+        appends blindly, so duplicates are possible), so the read layer sorts by
+        (tenant_id, role.value) and keeps the FIRST record per tenant_id — both
+        adapters agree without touching either. Entries carry ONLY tenant_id + role
+        (``display_ref`` is Gateway-composed downstream; no credentials, no DB
+        material — Governance §I). An empty/unknown/malformed principal_ref yields
+        an empty list — the route never errors on it.
+        """
+        records = self._store.list_memberships(principal_ref=principal_ref)
+        memberships: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for rec in sorted(records, key=lambda r: (r.tenant_id, r.role.value)):
+            if rec.tenant_id in seen:
+                continue
+            seen.add(rec.tenant_id)
+            memberships.append({"tenant_id": rec.tenant_id, "role": rec.role.value})
+        return {"memberships": memberships}
 
     def federation_for_issuer(self, issuer: str) -> Optional[dict[str, Any]]:
         """Resolve an OIDC issuer to its per-tenant federation config (B5-3 LW-2).
@@ -161,6 +184,14 @@ class ControlPlaneReadDispatcher:
             t = (query.get("t") or [""])[0]
             body = self._svc.get_role(p, t)
             return (200, body) if body is not None else _NOT_FOUND
+
+        # /memberships?p=<principal_ref> — the IC-002 MembershipsForPrincipal enumeration
+        # (B5-BLK-6B; plural segment, distinct from the boolean /membership?p=&t= check).
+        # Follows the /membership//role sibling pattern: p coerced via (query.get("p") or [""])[0];
+        # a missing/empty/malformed p yields an empty list, 200 (never an error/existence leak).
+        if segments == ["memberships"]:
+            p = (query.get("p") or [""])[0]
+            return (200, self._svc.memberships_for_principal(p))
 
         # /directory/{kind}/{record_id}
         if len(segments) == 3 and segments[0] == "directory":

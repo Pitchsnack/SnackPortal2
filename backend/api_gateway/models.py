@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Mapping, Optional
 
+from .portal import PortalDTO
+
 
 class DispatchCategory(Enum):
     """IC-010 §Q endpoint-dispatch taxonomy — exactly one category per request."""
@@ -101,12 +103,20 @@ class GatewayAuditEvent:
 
 @dataclass(frozen=True)
 class GatewayResponse:
-    """The gateway's fail-closed result. On rejection: status + public_code, no payload."""
+    """The gateway's fail-closed result. On rejection: status + public_code, no payload.
+
+    ``portal_dto`` (B5-BLK-6B; IC-010 §V) is the single gateway-composed,
+    contract-approved DTO seam: attached ONLY on an allowed, dispatched success and ONLY
+    from the approved IC-009-R1 catalogue (``portal.py``). On every denial it is ``None``
+    (§V.2: the gateway returns the §L denial and no DTO). Never a body/payload field —
+    arbitrary downstream pass-through remains forbidden.
+    """
 
     status: int
     public_code: str
     dispatched: bool = False
     category: Optional[DispatchCategory] = None
+    portal_dto: Optional[PortalDTO] = None
 
 
 @dataclass(frozen=True)
