@@ -17,6 +17,7 @@ python tests/api_gateway/test_portal_response_composition.py
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import pathlib
 import sys
@@ -331,11 +332,23 @@ def test_env_selector_unset_or_empty_is_none_and_invalid_fails_before_socket() -
 
 # --- adapter parsing over a REAL loopback wire (best-effort; OSError self-skip) --------------------
 class _CannedCpHandler(BaseHTTPRequestHandler):
-    """A canned control-plane read edge: per-path fixtures + failure behaviors."""
+    """A canned control-plane read edge: per-path fixtures + failure behaviors.
 
-    behavior = "ok"  # ok | malformed | wrongshape | slow | boom
+    Records every request (hit count + raw path) so the B5-BLK-6C-C pagination-limitation leg can
+    prove the adapter sends no cursor/limit and never follows a served ``next_cursor``.
+    """
+
+    behavior = "ok"  # ok | malformed | wrongshape | slow | boom | cursor
+    hits = 0
+    request_paths: list = []
 
     def do_GET(self) -> None:  # noqa: N802 (http.server API)
+        type(self).hits += 1
+        type(self).request_paths.append(self.path)
+        if self.behavior == "cursor":
+            body = {"records": [{"record_id": "rec-1", "display_name": "Alpha"}], "next_cursor": "100"}
+            self._send(200, json.dumps(body).encode("utf-8"))
+            return
         if self.behavior == "slow":
             time.sleep(0.4)
         if self.behavior == "boom":
@@ -433,6 +446,93 @@ def test_adapter_raises_on_500_malformed_wrongshape_and_timeout() -> None:
         server.server_close()
 
 
+# --- B5-BLK-6C-C residual companions (D9 / D11 / D15 / D16) ----------------------------------------
+def test_client_supplied_kind_query_is_never_read() -> None:
+    # B5-BLK-6C-C (D9): the directory kind is a PATH-derived operation parameter; a client-supplied
+    # query value can never select the kind, reach an unsupported provider path, or alter the taxonomy.
+    cp = D.StubControlPlaneRead(startup_entries=_ENTRIES)
+    gateway, _authn, _router, _audit = D.control_read_setup(cp)
+    resp = gateway.handle(D.req(path="/directory/startup", query={"kind": "deal"}, authorization="tok-ctl"))
+    assert (resp.status, resp.public_code) == (200, "ok")
+    assert isinstance(resp.portal_dto, GlobalStartupSummaryDTO)
+    assert cp.directory_kinds == ["startup"], cp.directory_kinds  # never the client-supplied "deal"
+
+
+def test_composed_portal_dto_instances_carry_exact_field_sets() -> None:
+    # B5-BLK-6C-C (D15 companion): the INSTANCES the gateway composes — not only the classes —
+    # carry exactly the approved field sets (references only; no extra field can ride a response).
+    cp = D.StubControlPlaneRead(startup_entries=_ENTRIES, investor_entries=_ENTRIES, memberships=_MEMBERS)
+    gateway, _authn, _router, _audit = D.control_read_setup(cp)
+    startup = gateway.handle(D.req(path="/directory/startup", authorization="tok-ctl")).portal_dto
+    investor = gateway.handle(D.req(path="/directory/investor", authorization="tok-ctl")).portal_dto
+    members = gateway.handle(D.req(path="/memberships", authorization="tok-ctl")).portal_dto
+    assert startup is not None and investor is not None and members is not None
+    directory_fields = {"records", "record_origin", "record_residency", "record_type"}
+    assert {f.name for f in dataclasses.fields(startup)} == directory_fields
+    assert {f.name for f in dataclasses.fields(investor)} == directory_fields
+    assert {f.name for f in dataclasses.fields(members)} == {"memberships"}
+    assert all({f.name for f in dataclasses.fields(e)} == {"record_ref", "display_name"} for e in startup.records)
+    assert all({f.name for f in dataclasses.fields(m)} == {"tenant_id", "role", "display_ref"} for m in members.memberships)
+    authn = D.StubAuthenticator()
+    authn.add_token("tok-t1", principal="p1", tenant="t1", role="TENANT_AGENT")
+    gateway = D.build_gateway(authenticator=authn, router=D.StubRouterDispatch(), control_read=cp, audit=D.RecordingAuditEmitter())
+    imported = gateway.handle(D.req(method="POST", path="/import/global-startup/rec-9", authorization="tok-t1")).portal_dto
+    assert imported is not None
+    assert {f.name for f in dataclasses.fields(imported)} == {"source_ref", "target_tenant_ref", "initiation"}
+
+
+def test_adapter_sends_no_cursor_and_never_follows_next_cursor_single_page() -> None:
+    # B5-BLK-6C-C (D16): ONE directory page only — the adapter sends no cursor/limit and a served
+    # next_cursor is ignored (exactly one provider request). Pagination support is NOT claimed.
+    started = _canned_server()
+    if started is None:
+        return
+    server, base = started
+    try:
+        _CannedCpHandler.behavior = "cursor"
+        _CannedCpHandler.hits = 0
+        _CannedCpHandler.request_paths.clear()
+        client = HttpControlPlaneRead(base, timeout=2.0)
+        page = client.directory("startup")
+        assert isinstance(page, GlobalStartupSummaryDTO)
+        assert tuple(e.record_ref for e in page.records) == ("rec-1",)  # the single served page only
+        assert _CannedCpHandler.hits == 1, "a served next_cursor must NEVER trigger a follow-up request"
+        assert _CannedCpHandler.request_paths == ["/directory/startup"], "no cursor/limit query may be sent"
+    except OSError:
+        return  # loopback networking blocked; transport check skipped
+    finally:
+        _CannedCpHandler.behavior = "ok"
+        server.shutdown()
+        server.server_close()
+
+
+def test_oversized_response_maps_to_503_unavailable_no_dto() -> None:
+    # B5-BLK-6C-C (D11): a response larger than the bounded size raises adapter-side and the
+    # gateway collapses it fail-closed to 503 unavailable with no DTO and no success audit event.
+    started = _canned_server()
+    if started is None:
+        return
+    server, base = started
+    try:
+        _CannedCpHandler.behavior = "ok"
+        client = HttpControlPlaneRead(base, timeout=2.0, max_response_bytes=8)
+        raised = False
+        try:
+            client.directory("startup")
+        except ValueError:
+            raised = True
+        assert raised, "an oversized response must raise (fail closed), never return a value"
+        gateway, _authn, _router, audit = D.control_read_setup(client, principal="u1")
+        resp = gateway.handle(D.req(path="/memberships", authorization="tok-ctl"))
+        assert (resp.status, resp.public_code) == (503, "unavailable") and resp.portal_dto is None
+        assert audit.events == []  # no success event on the oversized failure path
+    except OSError:
+        return  # loopback networking blocked; transport check skipped
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_end_to_end_real_cp_read_edge_through_real_gateway() -> None:
     # The strongest in-slice composition proof: the REAL control_plane read edge (in-memory
     # store) → the REAL HttpControlPlaneRead adapter → the REAL gateway pipeline.
@@ -495,6 +595,10 @@ if __name__ == "__main__":
             test_env_selector_unset_or_empty_is_none_and_invalid_fails_before_socket,
             test_adapter_parses_typed_dtos_and_maps_404_to_none_over_real_wire,
             test_adapter_raises_on_500_malformed_wrongshape_and_timeout,
+            test_client_supplied_kind_query_is_never_read,
+            test_composed_portal_dto_instances_carry_exact_field_sets,
+            test_adapter_sends_no_cursor_and_never_follows_next_cursor_single_page,
+            test_oversized_response_maps_to_503_unavailable_no_dto,
             test_end_to_end_real_cp_read_edge_through_real_gateway,
         ]
     )
