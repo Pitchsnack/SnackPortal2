@@ -81,8 +81,19 @@ def test_api_gateway_governing_contracts_lock_ic010() -> None:
 # could smuggle a body / tenant id / DB handle / DSN / secret / credential / payload across
 # the edge (IC-010 §G/§T/§154). This AST census pins every field's TYPE to a primitive/enum
 # allow-set and blocks a forbidden field NAME, so drift fails the build instead of the review.
+#
+# B5-BLK-6B (a NAMED governance act under IC-010 §V.1): the allow-set is SPLIT so that
+# GatewayResponse ALONE additionally admits the typed, catalogue-closed `PortalDTO` union
+# (the gateway-composed contract-approved DTO seam), while RouteOutcome KEEPS the strict
+# references-only set — §V.2: RouteOutcome remains references-only and carries no business
+# payload. `_FORBIDDEN_FIELD_NAMES` is unchanged: body/payload/data/content stay banned as
+# arbitrary-pass-through detectors, and the census now also covers every portal.py shape.
 _MODELS = AG / "models.py"
-_ALLOWED_FIELD_TYPES = {"int", "str", "bool", "Optional", "DispatchCategory"}
+_PORTAL = AG / "portal.py"
+_ROUTE_OUTCOME_ALLOWED_FIELD_TYPES = {"int", "str", "bool", "Optional", "DispatchCategory"}
+_GATEWAY_RESPONSE_ALLOWED_FIELD_TYPES = _ROUTE_OUTCOME_ALLOWED_FIELD_TYPES | {"PortalDTO"}
+# portal.py shapes: primitives + frozen tuples of the two portal-local entry shapes only.
+_PORTAL_ALLOWED_FIELD_TYPES = {"int", "str", "bool", "Optional", "Tuple", "DirectoryEntryDTO", "MembershipEntryDTO"}
 _FORBIDDEN_FIELD_NAMES = {
     "body",
     "payload",
@@ -95,7 +106,19 @@ _FORBIDDEN_FIELD_NAMES = {
     "tenant_db",
     "route_ref",
 }
-_REFERENCES_ONLY_SHAPES = ["RouteOutcome", "GatewayResponse"]
+_REFERENCES_ONLY_SHAPES = [
+    ("RouteOutcome", _ROUTE_OUTCOME_ALLOWED_FIELD_TYPES),
+    ("GatewayResponse", _GATEWAY_RESPONSE_ALLOWED_FIELD_TYPES),
+]
+_PORTAL_SHAPES = [
+    "DirectoryEntryDTO",
+    "GlobalStartupSummaryDTO",
+    "GlobalInvestorSummaryDTO",
+    "MembershipEntryDTO",
+    "WorkspaceMembershipDTO",
+    "ImportInitiationDTO",
+    "ErrorDTO",
+]
 
 
 def _find_classdef(source: str, name: str) -> "ast.ClassDef | None":
@@ -115,8 +138,9 @@ def _annotation_type_names(annotation: ast.expr) -> set:
     return names
 
 
-def _references_only_violations(source: str, class_name: str) -> list:
-    """Field-name + field-type violations for a references-only dataclass. Returns the
+def _references_only_violations(source: str, class_name: str, allowed_types: set) -> list:
+    """Field-name + field-type violations for a references-only dataclass against the
+    given TYPE allow-set (the forbidden NAME set is global and never widened). Returns the
     sentinel ``["<class> not found"]`` when the class is absent so an empty match set can
     NEVER read as a pass (non-vacuity, per the repo 07E-1 census convention)."""
     node = _find_classdef(source, class_name)
@@ -131,7 +155,7 @@ def _references_only_violations(source: str, class_name: str) -> list:
         if fname.lower() in _FORBIDDEN_FIELD_NAMES:
             violations.append(f"{class_name}.{fname}: forbidden field name")
         for tname in _annotation_type_names(s.annotation):
-            if tname not in _ALLOWED_FIELD_TYPES:
+            if tname not in allowed_types:
                 violations.append(f"{class_name}.{fname}: type '{tname}' outside references-only allow-set")
     return violations
 
@@ -141,14 +165,28 @@ def test_route_dispatch_shapes_are_references_only() -> None:
     # Non-vacuity: RouteOutcome must exist (07E-2-X introduces it) — the guard cannot pass
     # on an empty match set.
     assert _find_classdef(source, "RouteOutcome") is not None, "RouteOutcome must be defined in api_gateway/models.py"
-    for cls in _REFERENCES_ONLY_SHAPES:
-        violations = _references_only_violations(source, cls)
+    for cls, allowed in _REFERENCES_ONLY_SHAPES:
+        violations = _references_only_violations(source, cls, allowed)
+        assert violations == [], f"{cls} references-only violations: {violations}"
+    # The split stays a split (B5-BLK-6B): PortalDTO is admitted for GatewayResponse ONLY —
+    # RouteOutcome's strict set must never silently gain it.
+    assert "PortalDTO" not in _ROUTE_OUTCOME_ALLOWED_FIELD_TYPES, "RouteOutcome must keep the strict references-only allow-set"
+
+
+def test_portal_dto_shapes_are_references_only() -> None:
+    # B5-BLK-6B: the census extends to portal.py — every IC-009-R1 shape stays references
+    # only (primitives + portal-local entry tuples), with the SAME forbidden-name set
+    # (body/payload/data/content/dsn/secret/credential/connection/tenant_db/route_ref).
+    source = _PORTAL.read_text(encoding="utf-8")
+    for cls in _PORTAL_SHAPES:
+        violations = _references_only_violations(source, cls, _PORTAL_ALLOWED_FIELD_TYPES)
         assert violations == [], f"{cls} references-only violations: {violations}"
 
 
 def test_references_only_guard_flags_unsafe_fields() -> None:
     # Self-test companion: the guard MUST flag a forbidden field name, an unsafe field type,
-    # and an absent class — otherwise it could silently pass on real drift.
+    # and an absent class — otherwise it could silently pass on real drift. Covers BOTH
+    # allow-set branches of the B5-BLK-6B split.
     unsafe = (
         "from dataclasses import dataclass\n"
         "@dataclass(frozen=True)\n"
@@ -157,12 +195,28 @@ def test_references_only_guard_flags_unsafe_fields() -> None:
         "    body: str\n"  # forbidden NAME (safe type)
         "    connection: object\n"  # forbidden NAME + unsafe TYPE
     )
-    v = _references_only_violations(unsafe, "RouteOutcome")
+    v = _references_only_violations(unsafe, "RouteOutcome", _ROUTE_OUTCOME_ALLOWED_FIELD_TYPES)
     assert any("body" in x for x in v), v
     assert any("connection" in x for x in v), v
     assert any("object" in x for x in v), v
     # Absent class → sentinel (proves the non-vacuity guard rejects an empty match set).
-    assert _references_only_violations("x = 1\n", "RouteOutcome") == ["RouteOutcome not found"]
+    assert _references_only_violations("x = 1\n", "RouteOutcome", _ROUTE_OUTCOME_ALLOWED_FIELD_TYPES) == ["RouteOutcome not found"]
+    # STRICT branch: a PortalDTO-typed field on RouteOutcome is flagged...
+    widened = "class RouteOutcome:\n    status: int\n    portal_dto: Optional[PortalDTO]\n"
+    strict_v = _references_only_violations(widened, "RouteOutcome", _ROUTE_OUTCOME_ALLOWED_FIELD_TYPES)
+    assert any("PortalDTO" in x for x in strict_v), strict_v
+    # ...WIDENED branch: the same annotation is admitted for GatewayResponse — but a
+    # forbidden NAME still fails there (the name ban is never relaxed by the split).
+    ok = "class GatewayResponse:\n    status: int\n    portal_dto: Optional[PortalDTO]\n"
+    assert _references_only_violations(ok, "GatewayResponse", _GATEWAY_RESPONSE_ALLOWED_FIELD_TYPES) == []
+    smuggled = "class GatewayResponse:\n    status: int\n    payload: Optional[PortalDTO]\n"
+    named_v = _references_only_violations(smuggled, "GatewayResponse", _GATEWAY_RESPONSE_ALLOWED_FIELD_TYPES)
+    assert any("payload" in x for x in named_v), named_v
+    # PORTAL branch: a raw-object (DB-row-like) field and a tenant_db field are flagged.
+    bad_portal = "class GlobalStartupSummaryDTO:\n    records: object\n    tenant_db: str\n"
+    portal_v = _references_only_violations(bad_portal, "GlobalStartupSummaryDTO", _PORTAL_ALLOWED_FIELD_TYPES)
+    assert any("object" in x for x in portal_v), portal_v
+    assert any("tenant_db" in x for x in portal_v), portal_v
 
 
 if __name__ == "__main__":
@@ -171,6 +225,7 @@ if __name__ == "__main__":
             test_api_gateway_no_forbidden_imports,
             test_api_gateway_governing_contracts_lock_ic010,
             test_route_dispatch_shapes_are_references_only,
+            test_portal_dto_shapes_are_references_only,
             test_references_only_guard_flags_unsafe_fields,
         ]
     )

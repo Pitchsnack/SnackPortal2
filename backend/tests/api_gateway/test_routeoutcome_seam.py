@@ -107,10 +107,12 @@ def test_route_outcome_is_references_only_primitive_fields() -> None:
 
 def test_gateway_response_carries_no_body_and_no_db_resolution() -> None:
     # No body/payload can propagate to the client: GatewayResponse has only status /
-    # public_code / dispatched / category. And the gateway resolves no database — the stub
-    # router records the handoff but opens nothing (non-live).
+    # public_code / dispatched / category, plus the B5-BLK-6B `portal_dto` seam — the
+    # single typed, catalogue-closed, defaulted-None IC-010 §V composition field (never a
+    # body/payload carrier). And the gateway resolves no database — the stub router
+    # records the handoff but opens nothing (non-live).
     gw_field_names = {f.name for f in dataclasses.fields(GatewayResponse)}
-    assert gw_field_names == {"status", "public_code", "dispatched", "category"}, gw_field_names
+    assert gw_field_names == {"status", "public_code", "dispatched", "category", "portal_dto"}, gw_field_names
 
     gateway, _authn, router, _audit = D.tenant_setup()
     gateway.handle(D.req(method="POST", path="/tenant/deals", authorization="tok-t1"))

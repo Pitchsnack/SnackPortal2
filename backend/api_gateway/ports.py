@@ -9,11 +9,12 @@ events through a port with NO persistence sink (AD-1 Option A).
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Optional, Sequence
+from typing import Optional, Sequence, Union
 
 from shared.context import RequestContext
 
 from .models import AuthResult, DispatchDecision, GatewayAuditEvent, RequestMetric, RouteOutcome
+from .portal import GlobalInvestorSummaryDTO, GlobalStartupSummaryDTO, WorkspaceMembershipDTO
 
 
 class AuthenticatorPort(ABC):
@@ -37,6 +38,29 @@ class RouterDispatchPort(ABC):
 
     @abstractmethod
     def dispatch(self, context: RequestContext, decision: DispatchDecision) -> RouteOutcome: ...
+
+
+class ControlPlaneReadPort(ABC):
+    """The gateway-side typed Control-Plane READ port (B5-BLK-6B; IC-010 §V.1 "typed
+    results from injected ports"; §M internal transport — NO in-process import of
+    control_plane). Only IC-009-R1 portal DTOs cross this port: raw dictionaries, raw
+    response bodies, and provider-specific objects never do (typed parsing lives inside
+    the adapter). ``None`` is the consistent not-found/unknown mapping (B5-3 LW-1: a live
+    404 maps to ``None``; the gateway maps it to the existing 403 denial); every transport
+    failure raises, and the gateway collapses it fail-closed to 503 ``unavailable``
+    (IC-010 §L — no new public_code)."""
+
+    @abstractmethod
+    def directory(self, kind: str) -> Optional[Union[GlobalStartupSummaryDTO, GlobalInvestorSummaryDTO]]:
+        """The tenant-anonymous Global Directory page read for an approved kind
+        (``startup``/``investor`` only) — Control-Plane order preserved. Unknown or
+        unapproved kind -> ``None`` (consistent denial)."""
+
+    @abstractmethod
+    def memberships_for_principal(self, principal_ref: str) -> Optional[WorkspaceMembershipDTO]:
+        """The IC-002 MembershipsForPrincipal enumeration for the AUTHENTICATED principal
+        only (self-scoped; the gateway never forwards a client-supplied selector). An
+        empty membership set is a lawful success (an empty tuple, not ``None``)."""
 
 
 class AuditEmitterPort(ABC):
