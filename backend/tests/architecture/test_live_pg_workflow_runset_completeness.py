@@ -72,6 +72,14 @@ MANUAL_ONLY_EXCEPTIONS = {
         ".github workflow edit plus the EXPECTED_HARNESS_COUNT/b7c2-doc lockstep, which is outside the "
         "Smoke C V2 authorized five-file surface; tracked follow-up in the Smoke C V2 execution report ATR"
     ),
+    "tests/control_plane/requires_pg/test_pg_b5_blk6_portal_binding_live_proof.py": (
+        "PRD B5-BLK-6C-C disposable real-Control-DB portal-composition proof: single-cluster capable "
+        "(creates and drops its own disposable Control DB), but deliberately MANUAL_ONLY — loop "
+        "enrollment would require editing the live-pg workflow (plus the EXPECTED_HARNESS_COUNT/"
+        "b7c2-doc lockstep), which is outside the 6C-C authorized surface (no .github changes); "
+        "operator-run per infrastructure/runbooks/b5_blk6_portal_binding_live_proof.md and pinned by "
+        "tests/architecture/test_b5_blk6_portal_binding_live_proof_boundaries.py"
+    ),
     "tests/control_plane/requires_pg/test_pg_dbr_ar_2d_standing_witnesses.py": (
         "PRD DBR-AR-2D V3 standing-witness read-only verification: bound to the ESTABLISHED B5-4/B5-4A "
         "standing topology, the local Docker fixture, the external secret root, AND the Dan-authorized "
