@@ -102,6 +102,25 @@ class ImportInitiationDTO:
 
 
 @dataclasses.dataclass(frozen=True)
+class ImportResultDTO:
+    """The composed-core import COMPLETION envelope (IC-009 §D; W1a) — the completion sibling of
+    ``ImportInitiationDTO``, composed by the gateway ONLY from a real, durably-audited import result.
+    References only (IC-010 §G): the Global Startup source reference, the signed active tenant, the
+    tenant record reference in the ``<tenant>:startups:<global_startup_id>`` lineage-target shape (no raw
+    row PK), the lineage/derivation reference, the import job id, and the total outcome — never a tenant
+    row, source record, DB name, secret, or router detail. ``outcome`` is exactly one of
+    ``created`` / ``replayed`` / ``noop`` (a zero-record import is the LW-1 403 denial and composes NO
+    DTO)."""
+
+    source_ref: str
+    target_tenant_ref: str
+    tenant_record_ref: str
+    lineage_ref: str
+    import_id: str
+    outcome: str
+
+
+@dataclasses.dataclass(frozen=True)
 class ErrorDTO:
     """The §L safe denial surface (IC-009 §D) — status + public code and NOTHING else: no
     DB name, tenant existence, router detail, secret, or stack trace. Deliberately
@@ -112,13 +131,15 @@ class ErrorDTO:
     public_code: str
 
 
-# The approved portal DTO union (IC-009-R1 foundation tier bound in B5-BLK-6B). Exactly
-# these four members; ErrorDTO is excluded by construction (see its docstring).
+# The approved portal DTO union (IC-009-R1 foundation tier bound in B5-BLK-6B; W1a adds the composed-core
+# import completion sibling). Exactly these five members; ErrorDTO is excluded by construction (see its
+# docstring).
 PortalDTO = Union[
     GlobalStartupSummaryDTO,
     GlobalInvestorSummaryDTO,
     WorkspaceMembershipDTO,
     ImportInitiationDTO,
+    ImportResultDTO,
 ]
 
 # The explicit approved-DTO catalogue (IC-010 §V.1 traceability): each composable type is
@@ -129,6 +150,7 @@ APPROVED_PORTAL_DTOS: Mapping[Type[object], Tuple[str, str]] = {
     GlobalInvestorSummaryDTO: (PORTAL_CONTRACT_ID, PORTAL_CONTRACT_REVISION),
     WorkspaceMembershipDTO: (PORTAL_CONTRACT_ID, PORTAL_CONTRACT_REVISION),
     ImportInitiationDTO: (PORTAL_CONTRACT_ID, PORTAL_CONTRACT_REVISION),
+    ImportResultDTO: (PORTAL_CONTRACT_ID, PORTAL_CONTRACT_REVISION),
 }
 
 

@@ -4,7 +4,7 @@ Proves the onboarding lifecycle now reaches Ready on a REAL physically-distinct 
 because onboarding Step 2b applies the tenant schema before verification:
 
     register -> provision physical DB (CREATE DATABASE) -> APPLY SCHEMA (Step 2b: 6 bootstrap +
-    7 tenant templates + System Primary seed, ONE transaction) -> associate ->
+    8 tenant templates + System Primary seed, ONE transaction) -> associate ->
     verify (probe reads schema_version; Physical Distinctness VERIFIED) -> Ready.
 
 It composes the REAL adapters directly (PostgresProvisioningOperator, PostgresTenantSchemaApplicator,
@@ -29,7 +29,7 @@ CHECKS:
   C8  NON-VACUITY: with a no-op applicator (no Step 2b effect) the real tenant DB has no schema_version, so
       verify fails closed and the tenant is NOT Ready; with the real applicator it reaches Ready.
 PRD 07B.1 CHECKS (composed Step-2b + System Primary seed):
-  C9  the composed Step-2b applied 13 files (6 bootstrap first, then the 7 tenant files in
+  C9  the composed Step-2b applied 14 files (6 bootstrap first, then the 8 tenant files in
       TENANT_DDL_APPLY_ORDER) — full 14-table tenant business schema present after Ready.
   C10 a freshly provisioned tenant DB has EXACTLY ONE system_primary Agent (before any human exists).
   C11 the seeded row is agent_kind='system_primary', agent_status='active', supervised_by_agent_id NULL.
@@ -44,7 +44,7 @@ PRD 07B.1 CHECKS (composed Step-2b + System Primary seed):
       applicator seam) is classified fail-closed as TenantSchemaApplicationError; exactly one SP remains.
       Reachability caveat: the normal path cannot race two same-DB Step-2b applies (CREATE DATABASE
       precludes it), so the race is isolated at the seed seam per the exec-auth package §14 allowance.
-  C20 LATE FAILURE (07C-AT-2): (a) a failure AFTER all 13 composed files rolls back the ENTIRE
+  C20 LATE FAILURE (07C-AT-2): (a) a failure AFTER all 14 composed files rolls back the ENTIRE
       transaction (no bootstrap schema, no tenant schema, no SP row persists); (b) a seed-time failure
       likewise rolls back all 13 applied files (fail-closed, no partial schema).
 
@@ -305,12 +305,12 @@ def test_e2e_onboard_applies_schema_and_reaches_ready(admin_dsn: str) -> None:
                 for table in _TENANT_BUSINESS_TABLES:
                     assert _one(cur, "SELECT to_regclass(%s)", (table,)) is not None, f"{table} must exist after Ready"
                 names = [p.name for p in default_tenant_schema_ddl_paths()]
-                assert len(names) == 13, f"composed Step-2b path count must be 13: {names}"
+                assert len(names) == 14, f"composed Step-2b path count must be 14: {names}"
                 assert names[:6] == [p.name for p, _sha in _DDL_BLOBS], "the six 07B bootstrap templates must come first"
                 assert names[6:] == _tenant_apply_order_from_guard(), (
                     f"appended tenant files {names[6:]} must equal 07C's TENANT_DDL_APPLY_ORDER"
                 )
-                print("PASS: C9 composed Step-2b applied 13 files (6 bootstrap + 7 tenant in 07C order); full tenant schema present")
+                print("PASS: C9 composed Step-2b applied 14 files (6 bootstrap + 8 tenant in 07C order); full tenant schema present")
 
                 # C10 + C11 + C15 — exactly one seeded System Primary; correct shape; zero humans needed.
                 assert _one(cur, "SELECT count(*) FROM agents WHERE agent_kind = 'system_primary'") == 1
@@ -492,7 +492,7 @@ def test_schema_application_idempotent_reapply(admin_dsn: str) -> None:
             with t.cursor() as cur:
                 assert _one(cur, "SELECT count(*) FROM schema_version") == 1, "re-apply must not re-seed (idempotent)"
                 assert _one(cur, "SELECT to_regclass('lineage')") is not None, "lineage must remain present"
-                # C12 (PRD 07B.1): the full-set re-apply (13 files + seed, twice) leaves EXACTLY ONE
+                # C12 (PRD 07B.1): the full-set re-apply (14 files + seed, twice) leaves EXACTLY ONE
                 # System Primary — the WHERE NOT EXISTS seed and the DROP-TRIGGER-recreate are both no-ops.
                 assert _one(cur, "SELECT count(*) FROM agents WHERE agent_kind = 'system_primary'") == 1, (
                     "full-set idempotent retry must preserve exactly one system_primary row"
@@ -510,7 +510,7 @@ def test_schema_application_idempotent_reapply(admin_dsn: str) -> None:
 
 def test_composed_late_failure_and_seed_failure_rollback(admin_dsn: str) -> None:
     """C20 (07C-AT-2): rollback proofs for the COMPOSED 13-file Step-2b transaction.
-    (a) a failing statement AFTER all 13 composed files rolls the ENTIRE transaction back — no
+    (a) a failing statement AFTER all 14 composed files rolls the ENTIRE transaction back — no
     bootstrap schema, no tenant schema, no System Primary row persists; (b) a seed-time failure
     (the module seed SQL patched to hit a nonexistent table — test-only, restored in finally)
     likewise rolls back all 13 applied files. Fail-closed both ways: TenantSchemaApplicationError."""
@@ -532,7 +532,7 @@ def test_composed_late_failure_and_seed_failure_rollback(admin_dsn: str) -> None
         _drop_db(psycopg, admin_dsn, target)
         operator.provision(tid, target=target)
 
-        # (a) LATE failure: all 13 real templates apply, then a failing 14th path -> whole txn back.
+        # (a) LATE failure: all 14 real templates apply, then a failing 15th path -> whole txn back.
         late = applicator_mod.PostgresTenantSchemaApplicator(
             secret_store, ddl_paths=[*applicator_mod.default_tenant_schema_ddl_paths(), bad_path]
         )
@@ -541,7 +541,7 @@ def test_composed_late_failure_and_seed_failure_rollback(admin_dsn: str) -> None
             late.apply_schema(tid, target=target, association_ref=ref)
         except TenantSchemaApplicationError:
             raised = True
-        assert raised, "a late failure after the 13 composed files must raise TenantSchemaApplicationError"
+        assert raised, "a late failure after the 14 composed files must raise TenantSchemaApplicationError"
         t = psycopg.connect(_pg.swap_db(admin_dsn, target))
         try:
             with t.cursor() as cur:
@@ -550,7 +550,7 @@ def test_composed_late_failure_and_seed_failure_rollback(admin_dsn: str) -> None
                 assert _one(cur, "SELECT to_regclass('deals')") is None, "tenant schema must roll back entirely"
         finally:
             t.close()
-        print("PASS: C20a late failure after the 13 composed files -> ENTIRE transaction rolled back (no partial schema, no SP)")
+        print("PASS: C20a late failure after the 14 composed files -> ENTIRE transaction rolled back (no partial schema, no SP)")
 
         # (b) SEED-time failure: the seed itself fails -> all 13 applied DDL files roll back.
         original_seed = applicator_mod._SYSTEM_PRIMARY_SEED_SQL

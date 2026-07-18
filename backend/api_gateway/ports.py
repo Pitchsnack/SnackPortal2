@@ -9,6 +9,7 @@ events through a port with NO persistence sink (AD-1 Option A).
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Optional, Sequence, Union
 
 from shared.context import RequestContext
@@ -80,3 +81,48 @@ class MetricsPort(ABC):
 
     @abstractmethod
     def record_request(self, metric: RequestMetric) -> None: ...
+
+
+@dataclass(frozen=True)
+class ImportInitiationRequest:
+    """The references-only IMPORT_INITIATION request the gateway hands to the ``ImportInitiationPort``
+    (W1a composed-core). Content comes EXCLUSIVELY from the gateway-validated request (the source
+    reference in the path) and the signed claim (the active tenant, the authenticated principal) —
+    never a token, secret, payload, source record, DB handle, or topology. ``operation_key`` is the
+    bounded ``x-operation-key`` header value, else a gateway-minted uuid4().hex (operation-level
+    idempotency, D-20)."""
+
+    source_ref: str  # the Global Startup reference (IR-09: carried by reference, never joined in-request)
+    target_tenant_ref: str  # the signed active tenant (never a client-supplied selector)
+    operation_key: str
+    correlation_id: str
+    actor_ref: str  # the authenticated principal reference (never a token)
+
+
+@dataclass(frozen=True)
+class ImportInitiationOutcome:
+    """The references-only outcome the ``ImportInitiationPort`` returns to the gateway (W1a). Never a
+    tenant row, source record, DB handle/name/DSN, credential, or payload. ``ok`` is False for any
+    transport/edge failure (the gateway maps it fail-closed to §L 503). On a served import the counts +
+    ``replayed`` + ``import_id`` let the gateway compose the exact ``ImportResultDTO`` outcome
+    (created/replayed/noop) and the LW-1 zero-record consistent denial — from a real, durably-audited
+    result only."""
+
+    ok: bool
+    state: str  # the ImportStatus.state ("applied" / "failed"); "" on a transport failure
+    replayed: bool
+    applied_count: int
+    noop_count: int
+    import_id: str  # the import job id (== the lineage derivation reference); "" on a transport failure
+
+
+class ImportInitiationPort(ABC):
+    """``Gateway → Import Service`` — the only approved import-initiation boundary (W1a composed-core),
+    reached over transport (NO in-process import of ``import_service``; IC-010 §M/DAG independence). The
+    gateway hands references only and receives a references-only ``ImportInitiationOutcome``; it never
+    resolves a database (IC-010 §X) and the method is named ``initiate`` (NOT ``start_import`` — the
+    gateway must reference no import-execution name). Every transport failure collapses fail-closed to a
+    non-ok outcome (the gateway maps it to 503 ``unavailable`` — no new public_code)."""
+
+    @abstractmethod
+    def initiate(self, request: ImportInitiationRequest) -> ImportInitiationOutcome: ...

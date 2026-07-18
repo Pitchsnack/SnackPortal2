@@ -43,6 +43,7 @@ from api_gateway.portal import (  # noqa: E402
     GlobalInvestorSummaryDTO,
     GlobalStartupSummaryDTO,
     ImportInitiationDTO,
+    ImportResultDTO,
     MembershipEntryDTO,
     PortalDTO,
     WorkspaceMembershipDTO,
@@ -94,6 +95,7 @@ _EXACT_FIELD_SETS: Dict[type, Set[str]] = {
     MembershipEntryDTO: {"tenant_id", "role", "display_ref"},
     WorkspaceMembershipDTO: {"memberships"},
     ImportInitiationDTO: {"source_ref", "target_tenant_ref", "initiation"},
+    ImportResultDTO: {"source_ref", "target_tenant_ref", "tenant_record_ref", "lineage_ref", "import_id", "outcome"},
     ErrorDTO: {"status", "public_code"},
 }
 # PII-shaped field names used ONLY as planted violations in the non-vacuity companion —
@@ -113,6 +115,14 @@ _ALL_UNION_INSTANCES: List[PortalDTO] = [
     _DIRECTORY_INSTANCES[1],
     WorkspaceMembershipDTO(memberships=(MembershipEntryDTO(tenant_id="t1", role="MASTER_AGENT", display_ref=compose_display_ref("t1")),)),
     ImportInitiationDTO(source_ref="global-startup/g1", target_tenant_ref="t1"),
+    ImportResultDTO(
+        source_ref="global-startup/g1",
+        target_tenant_ref="t1",
+        tenant_record_ref="t1:startups:global-startup/g1",
+        lineage_ref="job-1",
+        import_id="job-1",
+        outcome="created",
+    ),
 ]
 
 
@@ -193,6 +203,7 @@ def test_seam_traceability_constants_and_catalogue_closure() -> None:
         GlobalInvestorSummaryDTO,
         WorkspaceMembershipDTO,
         ImportInitiationDTO,
+        ImportResultDTO,
     }, union_members
     # Catalogue closure: the approved-DTO catalogue's key set EQUALS the union member set,
     # and every entry names exactly the (contract, revision) pair the seam serves.
@@ -250,8 +261,8 @@ def test_every_portal_dataclass_has_exact_field_set_closure() -> None:
         f"unlisted={sorted(c.__name__ for c in declared - set(_EXACT_FIELD_SETS))} "
         f"stale={sorted(c.__name__ for c in set(_EXACT_FIELD_SETS) - declared)}"
     )
-    # Non-vacuity 2: the catalogue is non-empty and is exactly the seven approved shapes.
-    assert len(_EXACT_FIELD_SETS) == 7, f"expected exactly 7 portal shapes, got {len(_EXACT_FIELD_SETS)}"
+    # Non-vacuity 2: the catalogue is non-empty and is exactly the eight approved shapes.
+    assert len(_EXACT_FIELD_SETS) == 8, f"expected exactly 8 portal shapes, got {len(_EXACT_FIELD_SETS)}"
     for cls, expected in _EXACT_FIELD_SETS.items():
         assert _field_names(cls) == expected, f"{cls.__name__} field set drifted: {_field_names(cls)} != {expected}"
 

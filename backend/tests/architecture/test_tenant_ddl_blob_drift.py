@@ -49,6 +49,7 @@ TENANT_DDL_APPLY_ORDER = [
     "005_deals.sql",
     "006_ownership.sql",
     "007_links.sql",
+    "008_startups_global_startup_id_unique.sql",
 ]
 
 # Reviewed LF-normalized git-blob SHA-1 pins (PRD 07C V5). A governed DDL change must update these AND the
@@ -61,6 +62,7 @@ _TENANT_DDL_SHA_BY_FILE = {
     "005_deals.sql": "22e91ab26ecf4ff33752f12ba1421ec31d4f7bbc",
     "006_ownership.sql": "d5dd83548543538df97ac75527af2a37127325d3",
     "007_links.sql": "ea1c8a911df5023e5f5902b591ee44b91790b06c",
+    "008_startups_global_startup_id_unique.sql": "20741db4dc6152bcdf9aaec029b9845a7bacb78e",
 }
 
 # Harness scalar-pin assignment style: _TENANT_BLOB_001 = "<40hex>" (NOT _REVIEWED_* — see NAMING RULE).

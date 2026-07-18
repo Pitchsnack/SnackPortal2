@@ -15,7 +15,7 @@ from __future__ import annotations
 import uuid
 from typing import Dict, List, Optional, Tuple
 
-from shared.audit import OperationalAudit, OperationalAuditEvent
+from shared.audit import ImportOperationalAuditEvent, OperationalAudit
 from shared.lineage import LineageEmitPort, LineageIntent
 from shared.session import Lane, RoutedSessionProvider, RoutedTenantSession
 
@@ -114,6 +114,7 @@ class ImportService:
                     rejected_count=int(idem.get("rejected", 0)),
                     last_error_summary="",
                     correlation_id=req.correlation_id,
+                    replayed=True,  # W1a: operation-level idempotent replay (else field-identical to a fresh success)
                 ),
             )
         if idem:
@@ -308,12 +309,13 @@ class ImportService:
 
     def _emit_audit(self, req: ImportRequest, action: str, outcome: str) -> None:
         self._audit.initiate(
-            OperationalAuditEvent(
+            ImportOperationalAuditEvent(
                 actor_ref=req.actor_ref,
                 action=action,
                 correlation_id=req.correlation_id,
                 outcome=outcome,
                 target_ref=req.tenant_id,
+                source_ref=req.source.ref,  # IC-003:131 completeness — the import source reference (references only)
             )
         )
 

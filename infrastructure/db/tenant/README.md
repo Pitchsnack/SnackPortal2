@@ -21,6 +21,7 @@ anywhere** — tenancy is physical (one DB per tenant), never a shared-DB column
 | 5 | `005_deals.sql` | Tenant-local deals (never stored in the Control Global Registry; sharing tables deferred to IC-007). |
 | 6 | `006_ownership.sql` | Six ownership tables — **at most one human Agent** (PK = entity id; UNASSIGNED = row absence = the System Primary bucket; claim = first-writer-wins INSERT) + **zero-or-more distinct AI Agents** (composite PKs). |
 | 7 | `007_links.sql` | `startup_contacts`, `investor_contacts` (contact records — NOT `*_users`), `startup_investors`. |
+| 8 | `008_startups_global_startup_id_unique.sql` | **(W1a)** plain UNIQUE index `startups_global_startup_id_key` on `startups (global_startup_id)` — the unique arbiter for the composed-core import `ON CONFLICT ("global_startup_id") DO UPDATE` idempotent upsert. Non-partial, non-CONCURRENT (applied inside the atomic Step-2b transaction); `global_startup_id` stays a soft text ref (no cross-DB FK). |
 
 The machine-readable ordered authority for this list is
 `backend/tests/architecture/test_tenant_ddl_blob_drift.py` (per-file LF-normalized git-blob pins +

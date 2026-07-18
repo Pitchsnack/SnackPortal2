@@ -29,11 +29,21 @@ from .models import (
     RequestMetric,
     RequestRejected,
 )
-from .portal import ImportInitiationDTO, PortalDTO, compose_portal_dto
-from .ports import AuditEmitterPort, AuthenticatorPort, ControlPlaneReadPort, MetricsPort, RouterDispatchPort
+from .portal import ImportInitiationDTO, ImportResultDTO, PortalDTO, compose_portal_dto
+from .ports import (
+    AuditEmitterPort,
+    AuthenticatorPort,
+    ControlPlaneReadPort,
+    ImportInitiationPort,
+    ImportInitiationRequest,
+    MetricsPort,
+    RouterDispatchPort,
+)
 from .request_context import build_request_context
 
 _CORRELATION_HEADER = "x-correlation-id"
+_OPERATION_KEY_HEADER = "x-operation-key"
+_MAX_OPERATION_KEY_LEN = 200
 
 _DIRECTORY_PREFIX = "/directory/"
 _IMPORT_PREFIX = "/import/"
@@ -64,6 +74,7 @@ class Gateway:
         classify: Callable[[InboundRequest], DispatchCategory],
         audit: AuditEmitterPort,
         metrics: MetricsPort,
+        import_initiation: Optional[ImportInitiationPort] = None,
     ) -> None:
         self._authenticator = authenticator
         self._router = router
@@ -75,6 +86,11 @@ class Gateway:
         self._classify = classify
         self._audit = audit
         self._metrics = metrics
+        # W1a composed-core (IC-003; IC-009 ImportResultDTO): the OPTIONAL Gateway→Import transport
+        # port. None (the default) keeps the port-absent accepted-initiation envelope path
+        # byte-behavior-unchanged; when injected, IMPORT_INITIATION EXECUTES the real import via the
+        # port and NEVER calls self._router.dispatch (single-route).
+        self._import_initiation = import_initiation
 
     def handle(self, request: InboundRequest) -> GatewayResponse:
         # Observability (§S/WP-11): time every request and record a non-disclosing metric
@@ -223,6 +239,47 @@ class Gateway:
                     return GatewayResponse(status=503, public_code="unavailable", category=category)
             return GatewayResponse(status=200, public_code="ok", dispatched=True, category=category, portal_dto=composed)
 
+        # W1a composed-core: with the ImportInitiationPort injected, IMPORT_INITIATION EXECUTES the
+        # real import through the port and does NOT hand off to the Database Router (single-route: no
+        # self._router.dispatch on this path — the router.route() is performed once inside the Import
+        # Service's routed session). Content comes EXCLUSIVELY from the gateway-validated request (the
+        # source reference in the path) and the signed claim (the active tenant, the principal) — never
+        # from a client-supplied selector. The ImportResultDTO is composed only from a real, durably-
+        # audited result; §L maps every failure/denial fail-closed (no DTO on any denial).
+        if self._import_initiation is not None and category is DispatchCategory.IMPORT_INITIATION:
+            # TENANT domain: assert_single_database above guarantees exactly one signed active tenant.
+            assert decision.target_tenant_id is not None
+            source_ref = _import_source_ref(request.path)
+            result = self._import_initiation.initiate(
+                ImportInitiationRequest(
+                    source_ref=source_ref,
+                    target_tenant_ref=decision.target_tenant_id,
+                    operation_key=self._operation_key(request),
+                    correlation_id=correlation_id,
+                    actor_ref=auth.principal_ref,
+                )
+            )
+            if not result.ok or result.state != "applied":
+                # Any transport/audit/engine failure -> fail closed 503 (§L; no DTO; no new public_code).
+                return GatewayResponse(status=503, public_code="unavailable", category=category)
+            if result.applied_count == 0 and result.noop_count == 0:
+                # Zero-record completion (source ref unknown / all records rejected) -> the LW-1
+                # consistent denial; global-record existence is never leaked.
+                emit(AuditAction.ROUTE_DENIED, "rejected", actor_ref=auth.principal_ref, tenant_ref=context.active_tenant_id)
+                return GatewayResponse(status=403, public_code="forbidden")
+            token = "replayed" if result.replayed else ("created" if result.applied_count >= 1 else "noop")
+            composed_result = compose_portal_dto(
+                ImportResultDTO(
+                    source_ref=source_ref,
+                    target_tenant_ref=decision.target_tenant_id,
+                    tenant_record_ref=f"{decision.target_tenant_id}:startups:{source_ref}",
+                    lineage_ref=result.import_id,
+                    import_id=result.import_id,
+                    outcome=token,
+                )
+            )
+            return GatewayResponse(status=200, public_code="ok", dispatched=True, category=category, portal_dto=composed_result)
+
         # Hand off to the Database Router (it selects exactly one DB from the signed claim).
         # The gateway resolves no database (§X/§H); it maps the router's references-only
         # RouteOutcome into the response. `category` stays gateway-owned (§Q) — it is the
@@ -262,4 +319,14 @@ class Gateway:
         for key, value in request.headers.items():
             if key.lower() == _CORRELATION_HEADER and value.strip():
                 return value.strip()
+        return uuid.uuid4().hex
+
+    @staticmethod
+    def _operation_key(request: InboundRequest) -> str:
+        # W1a operation-level idempotency (D-20): a bounded "x-operation-key" header, else gateway-minted.
+        for key, value in request.headers.items():
+            if key.lower() == _OPERATION_KEY_HEADER:
+                candidate = value.strip()
+                if candidate and len(candidate) <= _MAX_OPERATION_KEY_LEN:
+                    return candidate
         return uuid.uuid4().hex

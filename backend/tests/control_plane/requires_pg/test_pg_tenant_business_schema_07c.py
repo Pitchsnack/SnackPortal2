@@ -66,6 +66,7 @@ _TENANT_BLOB_004 = "07015fd6a1c63629e0f682e79c03705f5e69ea3f"
 _TENANT_BLOB_005 = "22e91ab26ecf4ff33752f12ba1421ec31d4f7bbc"
 _TENANT_BLOB_006 = "d5dd83548543538df97ac75527af2a37127325d3"
 _TENANT_BLOB_007 = "ea1c8a911df5023e5f5902b591ee44b91790b06c"
+_TENANT_BLOB_008 = "20741db4dc6152bcdf9aaec029b9845a7bacb78e"
 
 # The ordered tenant apply list (the blob-drift guard asserts this order matches its authority).
 _TENANT_DDL = [
@@ -76,6 +77,7 @@ _TENANT_DDL = [
     ("005_deals.sql", _TENANT_BLOB_005),
     ("006_ownership.sql", _TENANT_BLOB_006),
     ("007_links.sql", _TENANT_BLOB_007),
+    ("008_startups_global_startup_id_unique.sql", _TENANT_BLOB_008),
 ]
 
 # Control DDL applied UNPINNED (their blobs are pinned by test_b7c1_control_audit_ddl_blob_pins.py and
