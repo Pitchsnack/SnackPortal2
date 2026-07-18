@@ -88,6 +88,15 @@ MANUAL_ONLY_EXCEPTIONS = {
         "hosted 14-harness loop is deliberately UNCHANGED by the V3 slice (PRD DBR-AR-2D V3 §10), so "
         "enrollment is forbidden, not merely deferred"
     ),
+    "tests/control_plane/requires_pg/test_pg_gateway_audit_durable.py": (
+        "Gateway Operational Audit Persistence V1a disposable durable-persistence proof: single-cluster "
+        "capable (creates and drops its own disposable Control DB sp2_gateway_audit_v1a_proof, applies "
+        "012/013 to it only), but deliberately MANUAL_ONLY — loop enrollment would require editing the "
+        "live-pg workflow (plus the EXPECTED_HARNESS_COUNT/b7c2-doc lockstep), which is outside the V1a "
+        "authorized surface (no .github changes); operator-run per "
+        "infrastructure/runbooks/gateway_operational_audit_live_proof.md and pinned by "
+        "tests/architecture/test_gateway_operational_audit_boundaries.py"
+    ),
 }
 
 # SAME loop idiom as the AT-5 / ATR-4 guards (replicated for self-containment, not imported).

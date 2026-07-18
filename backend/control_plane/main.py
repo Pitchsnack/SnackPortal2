@@ -887,3 +887,104 @@ def build_routing_audit_server_from_env() -> Optional[Tuple[object, str]]:
 
     store = PostgresRoutingAuditStore(secrets=secrets, ref=ref)
     return build_routing_audit_server(store, host=host, port=port)
+
+
+# --- Gateway Audit V1a: Gateway operational-audit ingest-server composition seam ---------------
+# The config-selectable, socket-binding, serve-INERT composition seam for the Gateway Audit V1a
+# internal ingest edge (``build_gateway_audit_server`` bound to the durable
+# ``PostgresGatewayAuditStore``), mirroring the routing-audit seam above: the bind HOST is the
+# activation selector; while inactive the seam returns ``None`` WITHOUT consulting the port,
+# constructing the store, importing the ingest adapter, or binding a socket. The ingest surface is
+# internal-only, so the host is restricted to the loopback vocabulary below (fail closed). The store
+# is lazy-connect and reference-only (D-14; the shared control-store secret binding): no raw
+# descriptor value, no DDL apply, no serve loop, no thread, no import-time socket, and no DB I/O
+# happen here. The Control Plane remains the sole Control-DB writer.
+
+# The Gateway-audit ingest bind host — the ACTIVATION selector. Non-secret internal config. Unset /
+# empty / whitespace-only → the seam is inactive (returns ``None``); otherwise the stripped value
+# must be one of the internal loopback hosts (IC-010 §R).
+SP2_CP_GATEWAY_AUDIT_HOST = "SP2_CP_GATEWAY_AUDIT_HOST"
+
+# The Gateway-audit ingest bind port. Consulted ONLY when the host selector is active. Unset / empty
+# / whitespace → ``0`` (ephemeral); otherwise a base-10 integer in ``[0, 65535]``; anything else →
+# ``ValueError`` raised BEFORE store construction and socket bind (fail closed).
+SP2_CP_GATEWAY_AUDIT_PORT = "SP2_CP_GATEWAY_AUDIT_PORT"
+
+# The internal-only ingest edge binds loopback hosts exclusively (it must never be portal-reachable
+# or registered as a public ingress — the ingest module contract).
+_GATEWAY_AUDIT_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def _gateway_audit_port_from_env() -> int:
+    """Parse ``SP2_CP_GATEWAY_AUDIT_PORT`` fail-closed: unset/empty/whitespace → ``0`` (ephemeral);
+    otherwise a base-10 integer in ``[0, 65535]``, else ``ValueError`` — raised BEFORE store
+    construction and any socket bind so malformed config never opens a listener."""
+    raw = (os.environ.get(SP2_CP_GATEWAY_AUDIT_PORT) or "").strip()
+    if not raw:
+        return 0
+    try:
+        port = int(raw, 10)
+    except ValueError:
+        raise ValueError(f"invalid {SP2_CP_GATEWAY_AUDIT_PORT}={raw!r}; expected an integer in [0, 65535]") from None
+    if not (0 <= port <= 65535):
+        raise ValueError(f"invalid {SP2_CP_GATEWAY_AUDIT_PORT}={raw!r}; port out of range [0, 65535]")
+    return port
+
+
+def build_gateway_audit_server_from_env() -> Optional[Tuple[object, str]]:
+    """The config-selectable Gateway operational-audit ingest-server composition seam (Gateway Audit V1a).
+
+    Host-gate-first (the routing-audit convention — the bind HOST is the activation selector):
+
+    * ``SP2_CP_GATEWAY_AUDIT_HOST`` unset, or empty/whitespace after stripping → ``None``: the seam
+      is inactive; the port and secret reference are NOT consulted, no store is constructed, no
+      provider module is imported, and no socket binds.
+    * an active host must be one of ``127.0.0.1`` / ``localhost`` / ``::1`` — the ingest edge is
+      internal-only; any other host → ``ValueError`` BEFORE store construction and socket bind (fail
+      closed).
+    * ``SP2_CP_GATEWAY_AUDIT_PORT`` unset/empty → ``0`` (ephemeral); otherwise an integer in
+      ``[0, 65535]``; anything else → ``ValueError`` BEFORE store construction and socket bind.
+    * the durable store binds the SAME reference-only control-store secret composition as the durable
+      ControlStore (D-14; ``SP2_CP_GATEWAY_AUDIT_HOST`` never carries a credential and no raw
+      descriptor value transits here): a blank effective ``SP2_CP_CONTROL_STORE_DSN_REF`` →
+      ``ValueError`` at composition; an unresolvable reference fails closed at FIRST STORE USE (the
+      lazy pattern), never at import or composition.
+
+    Side-effect boundary (LOAD-BEARING): this seam is DB-inert (``PostgresGatewayAuditStore`` is
+    lazy-connect — construction performs no I/O), serve-inert, and thread-inert; it is NOT
+    socket-inert — when active, ``build_gateway_audit_server`` constructs the plain single-threaded
+    stdlib server which binds + activates a local listening socket at construction (default
+    ``port=0`` → ephemeral). Callers/tests own the socket lifecycle and must close it. Starting the
+    request loop is NEVER done here.
+
+    No overclaim: it composes the ingest server *object* bound to the durable store; it does NOT
+    serve requests, run a production service, apply DDL, open a database, prove live durability
+    (the MANUAL_ONLY disposable proof scope), close any B5 blocker, or change the activation gate.
+    """
+    host = (os.environ.get(SP2_CP_GATEWAY_AUDIT_HOST) or "").strip()
+    if not host:
+        return None
+    if host not in _GATEWAY_AUDIT_LOOPBACK_HOSTS:
+        raise ValueError(
+            f"invalid {SP2_CP_GATEWAY_AUDIT_HOST}; the Gateway-audit ingest edge is internal-only and"
+            f" must bind one of {_GATEWAY_AUDIT_LOOPBACK_HOSTS} (fail closed — the configured value is"
+            " not echoed)"
+        )
+    port = _gateway_audit_port_from_env()
+    store_ref = (os.environ.get(CONTROL_STORE_DSN_REF_ENV) or DEFAULT_CONTROL_STORE_DSN_REF).strip()
+    if not store_ref:
+        raise ValueError(
+            f"blank {CONTROL_STORE_DSN_REF_ENV}; the durable Gateway-audit store requires the"
+            " control-store secret REFERENCE (references only — never a raw descriptor value)"
+        )
+    # The shared reference-only control-store secret binding (D-14): a resolver whose allow-list is
+    # widened for the control-store ref ONLY, plus the reference itself — never a resolved value.
+    secrets = EnvReferenceSecretStore(allowed=frozenset({*DEFAULT_ALLOWED, store_ref}))
+    ref = SecretRef(store_ref=store_ref, version="1")
+    # Function-local provider imports (Driver Containment Standard / transport containment): the
+    # composition root binds no DB driver and no transport module at module load.
+    from .adapters.providers.http_gateway_audit_api import build_gateway_audit_server
+    from .adapters.providers.postgres_store import PostgresGatewayAuditStore
+
+    store = PostgresGatewayAuditStore(secrets=secrets, ref=ref)
+    return build_gateway_audit_server(store, host=host, port=port)
