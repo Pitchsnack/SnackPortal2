@@ -29,7 +29,7 @@ from .adapters.providers.in_memory_audit_emitter import InMemoryAuditEmitter
 from .adapters.providers.in_memory_metrics import InMemoryMetrics
 from .dispatch import default_classifier
 from .gateway import Gateway
-from .models import DispatchCategory, InboundRequest
+from .models import DispatchCategory, GatewayAuditEvent, InboundRequest
 from .ports import AuditEmitterPort, AuthenticatorPort, ControlPlaneReadPort, MetricsPort, RouterDispatchPort
 from .readiness import liveness
 
@@ -64,6 +64,16 @@ GW_DB_ROUTER_BASE_URL_ENV = "SP2_GW_DB_ROUTER_BASE_URL"
 # fallback from malformed production config).
 GW_CONTROL_READ_BASE_URL_ENV = "SP2_GW_CONTROL_READ_BASE_URL"
 
+# Gateway Audit V1a: the durable operational-audit sink selector (mirrors the 07E-3c/07E-3d/6B
+# selectors). The value is NON-SECRET internal routing config — the loopback/internal Control-Plane
+# Gateway-audit ingest base URL, never a credential — so it is read directly from the environment (no
+# SecretRef, no SecretStore). Unset/empty keeps the default in-memory no-sink emitter (AD-1 Option A;
+# there is deliberately NO loopback default — a default would silently activate a durable transport);
+# a structurally valid internal http URL selects the durable DurableAuditEmitter wrapped in the
+# bounded BoundedGatewayAuditPolicy; anything else raises ValueError before any socket (fail closed —
+# never a silent fallback from malformed production config to the in-memory emitter).
+GW_AUDIT_SINK_BASE_URL_ENV = "SP2_GW_AUDIT_SINK_BASE_URL"
+
 # Served API Gateway Edge V1: the edge bind + browser-policy knobs (NON-SECRET deployment
 # config — a loopback host, a port, and an exact-origin CORS allowlist; never a credential).
 # The three transport selectors above remain the ACTIVATION gate; these knobs are consulted
@@ -74,6 +84,8 @@ GW_EDGE_PORT_ENV = "SP2_GW_EDGE_PORT"
 GW_EDGE_ALLOWED_ORIGINS_ENV = "SP2_GW_EDGE_ALLOWED_ORIGINS"
 
 __all__ = [
+    "BoundedGatewayAuditPolicy",
+    "GW_AUDIT_SINK_BASE_URL_ENV",
     "GW_AUTH_ROUTER_BASE_URL_ENV",
     "GW_CONTROL_READ_BASE_URL_ENV",
     "GW_DB_ROUTER_BASE_URL_ENV",
@@ -81,6 +93,7 @@ __all__ = [
     "GW_EDGE_HOST_ENV",
     "GW_EDGE_PORT_ENV",
     "SERVICE",
+    "build_audit_emitter_from_env",
     "build_authenticator_from_env",
     "build_control_plane_read_from_env",
     "build_gateway",
@@ -226,6 +239,83 @@ def build_control_plane_read_from_env() -> Optional[ControlPlaneReadPort]:
     return HttpControlPlaneRead(raw)
 
 
+class BoundedGatewayAuditPolicy(AuditEmitterPort):
+    """Gateway Audit V1a fail-closed durable-audit policy (the DBR-AR-2C ``BoundedRoutingAuditPolicy``
+    precedent, success-class only).
+
+    Wraps the durable transport emitter behind the same sink-less ``AuditEmitterPort`` and owns the
+    two fail-closed decisions for the single ``workspace_memberships_read`` success-access event:
+
+    * exactly ONE immediate, synchronous, idempotent retry of the SAME event (maximum two total
+      transport calls), and only when the transport failure kind is ``unavailable`` (transient);
+      ``invalid`` and ``conflict`` are NEVER retried. No retry loop, sleep, queue, outbox, thread, or
+      background machinery.
+    * terminal posture: re-raise so the gateway fails the served success closed
+      (audit-before-hand-back — the gateway maps the raise to the typed 503 ``unavailable``; a served
+      success is never handed back unless its durable audit was confirmed). A duplicate replay
+      answered ``DUPLICATE_MATCH`` is success inside the wrapped client and never reaches this
+      policy's failure path.
+    """
+
+    def __init__(self, inner: AuditEmitterPort, *, transport_error: type[Exception]) -> None:
+        self._inner = inner
+        self._transport_error = transport_error
+
+    def _retryable(self, failure: Exception) -> bool:
+        # Exactly the transient transport kind is retryable; invalid/conflict never.
+        return isinstance(failure, self._transport_error) and getattr(failure, "kind", None) == "unavailable"
+
+    def emit(self, event: GatewayAuditEvent) -> None:
+        try:
+            self._inner.emit(event)
+            return
+        except Exception as first:
+            if not self._retryable(first):
+                raise  # invalid/conflict → terminal fail-closed, no retry
+        self._inner.emit(event)  # the single bounded retry: the SAME event (re-raises on terminal)
+
+
+def build_audit_emitter_from_env() -> Optional[AuditEmitterPort]:
+    """The config-selectable durable ``AuditEmitterPort`` seam (Gateway Audit V1a; IC-010 §J /
+    IC-002 class 3b durable persistence over the §M internal transport).
+
+    This helper exposes a production-shaped durable ``AuditEmitterPort`` selection seam. It does not
+    create a runnable production gateway; the durable emitter is wired only at the (deferred/
+    rehearsal) edge composition call site, never as a forced default (B5-BLK-1 preserved).
+
+    Selection (the same fail-closed env-selector pattern as the 07E-3c/07E-3d/6B seams):
+
+    * ``SP2_GW_AUDIT_SINK_BASE_URL`` unset, or empty/whitespace after stripping → ``None`` — the
+      caller keeps the default in-memory no-sink emitter (AD-1 Option A). There is deliberately NO
+      loopback default — a default would silently activate a durable transport.
+    * a structurally valid internal ``http://host[:port]`` value → a ``DurableAuditEmitter`` bound to
+      that base URL, wrapped in the bounded ``BoundedGatewayAuditPolicy`` (one idempotent retry for
+      transient unavailability only; fail-closed re-raise on terminal failure). The transport client
+      is lazy: construction performs no network I/O.
+    * anything else → ``ValueError`` at the composition boundary, raised BEFORE any socket — never a
+      silent fallback from malformed production config to the in-memory emitter.
+
+    Validation is structural only (``urlsplit`` scheme + netloc; the scheme is pinned to ``http`` —
+    this is the internal loopback transport; TLS termination is deployment scope). No network I/O, no
+    ``control_plane`` import, no database access, no secret handling (the base URL is non-secret
+    internal routing config; no SecretRef).
+    """
+    raw = (os.environ.get(GW_AUDIT_SINK_BASE_URL_ENV) or "").strip()
+    if not raw:
+        return None
+    parts = urlsplit(raw)
+    if parts.scheme != "http" or not parts.netloc:
+        raise ValueError(
+            f"unsupported {GW_AUDIT_SINK_BASE_URL_ENV}={raw!r}; expected an internal "
+            "http://host[:port] Gateway operational-audit sink base URL (fail closed — no silent fallback)"
+        )
+    # Lazy relative import (the merged seam shape): the transport client is deferred to selection time
+    # so api_gateway/main.py stays import-light while inactive.
+    from .adapters.providers.durable_audit_emitter import DurableAuditEmitter, DurableAuditTransportError
+
+    return BoundedGatewayAuditPolicy(DurableAuditEmitter(raw), transport_error=DurableAuditTransportError)
+
+
 def _edge_port_from_env() -> int:
     """Parse ``SP2_GW_EDGE_PORT`` fail-closed: unset/empty/whitespace → ``0`` (ephemeral);
     otherwise a base-10 integer in ``[0, 65535]``, else ``ValueError`` — raised BEFORE any
@@ -291,9 +381,14 @@ def build_gateway_edge_server_from_env() -> Optional[Tuple[object, str]]:
     host = (os.environ.get(GW_EDGE_HOST_ENV) or "").strip() or "127.0.0.1"
     port = _edge_port_from_env()
     allowed_origins = _edge_allowed_origins_from_env()
+    # Gateway Audit V1a: the durable operational-audit sink is wired at THIS composition call site
+    # (never a forced default; B5-BLK-1 preserved). Unset SP2_GW_AUDIT_SINK_BASE_URL → None →
+    # build_gateway keeps the in-memory no-sink default (AD-1 Option A); a valid URL → the fail-closed
+    # durable policy. A malformed value raises ValueError here (before any socket bind).
+    audit = build_audit_emitter_from_env()
     # Lazy relative import keeps api_gateway/main.py import-light and server-token-free (the
     # concrete serving edge and its socket live in the adapter, never in the composition root).
     from .adapters.providers.http_gateway_edge import build_gateway_edge_server
 
-    gateway = build_gateway(authenticator=authenticator, router=router, control_read=control_read)
+    gateway = build_gateway(authenticator=authenticator, router=router, control_read=control_read, audit=audit)
     return build_gateway_edge_server(gateway, host=host, port=port, allowed_origins=allowed_origins)

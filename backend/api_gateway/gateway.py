@@ -197,18 +197,30 @@ class Gateway:
                 # never on a denial/failure path, never per membership, never per tenant.
                 # The category gate keeps directory-read success unaudited (§R Reserved).
                 # Self-scoped: actor == subject == the authenticated principal only.
-                self._audit.emit(
-                    GatewayAuditEvent(
-                        action=AuditAction.WORKSPACE_MEMBERSHIPS_READ,
-                        correlation_id=correlation_id,
-                        outcome="success",
-                        actor_ref=auth.principal_ref,
-                        subject_ref=auth.principal_ref,
-                        audit_id=uuid.uuid4().hex,
-                        occurred_at=datetime.now(timezone.utc).isoformat(),
-                        event_version=1,
+                #
+                # Gateway Audit V1a (audit-before-hand-back, fail closed): the emit is wrapped so a
+                # DURABLE audit sink that is terminally unavailable — after the composition's single
+                # bounded retry (BoundedGatewayAuditPolicy, api_gateway/main.py) — collapses to the
+                # existing §L 503 `unavailable` (no new public_code; no raw exception / provider body /
+                # SQL / DB identity leaks). A served MembershipsForPrincipal success is NEVER handed
+                # back unless its workspace_memberships_read event is durably persisted (the DBR-AR-2C
+                # §11 condition-1 posture, re-homed to the gateway success edge). The default in-memory
+                # no-sink emitter never raises, so the pre-V1a non-durable composition is byte-unchanged.
+                try:
+                    self._audit.emit(
+                        GatewayAuditEvent(
+                            action=AuditAction.WORKSPACE_MEMBERSHIPS_READ,
+                            correlation_id=correlation_id,
+                            outcome="success",
+                            actor_ref=auth.principal_ref,
+                            subject_ref=auth.principal_ref,
+                            audit_id=uuid.uuid4().hex,
+                            occurred_at=datetime.now(timezone.utc).isoformat(),
+                            event_version=1,
+                        )
                     )
-                )
+                except Exception:
+                    return GatewayResponse(status=503, public_code="unavailable", category=category)
             return GatewayResponse(status=200, public_code="ok", dispatched=True, category=category, portal_dto=composed)
 
         # Hand off to the Database Router (it selects exactly one DB from the signed claim).

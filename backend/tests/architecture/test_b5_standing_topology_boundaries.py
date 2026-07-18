@@ -79,13 +79,17 @@ _EXPECTED_DDL = (
     "008_distinctness_fingerprint_unique.sql",
     "009_control_tenants_cas_version.sql",
 )
-# DBR-AR-2B: created-not-applied routing-audit DDL. Present on disk beside the canonical
-# apply set, but deliberately NOT enrolled in the standing-topology apply order — applying
-# it is a separately governed later phase (DBR-AR-2D live proof), and the ops module
-# (schema-application code) is unchanged by DBR-AR-2B.
+# Created-not-applied Control DDL. Present on disk beside the canonical apply set, but deliberately
+# NOT enrolled in the standing-topology apply order — applying each is a separately governed later
+# phase, and the ops module (schema-application code) is unchanged:
+#   010/011 routing-audit (DBR-AR-2B; exercised by the DBR-AR-2D disposable live proof);
+#   012/013 Gateway operational-audit (Gateway Audit V1a; control_gateway_audit + its append-only
+#   trigger, exercised only by the MANUAL_ONLY disposable proof test_pg_gateway_audit_durable.py).
 _EXPECTED_UNENROLLED_DDL = (
     "010_routing_audit.sql",
     "011_routing_audit_append_only.sql",
+    "012_gateway_operational_audit.sql",
+    "013_gateway_operational_audit_append_only.sql",
 )
 
 

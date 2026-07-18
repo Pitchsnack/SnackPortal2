@@ -31,6 +31,15 @@ from typing import Any, List, Optional, Tuple
 
 import psycopg  # type: ignore  # noqa: F401  (driver import confined to this zone)
 
+from control_plane.gateway_audit import (
+    GATEWAY_AUDIT_SOURCE_SERVICE,
+    GATEWAY_AUDIT_STORE_ACTIONS,
+    GatewayAuditAppendResult,
+    GatewayAuditConflictError,
+    GatewayAuditInvalidError,
+    GatewayAuditRecord,
+    GatewayAuditStorePort,
+)
 from control_plane.ports import ControlStore, ControlStoreConcurrencyError
 from control_plane.records import (
     ControlAuditRecord,
@@ -676,4 +685,184 @@ class PostgresRoutingAuditStore(RoutingAuditStorePort):
             record.association_store_ref,
             record.association_version,
             record.lane,
+        )
+
+
+# --- Gateway Audit V1a: durable Gateway operational-audit store (dedicated port; ControlStore unchanged) ---
+
+# Caller-bound columns of control_gateway_audit (DDL 012) in INSERT/SELECT order.
+# id and recorded_at are store-assigned and are never bound by the adapter.
+_GATEWAY_AUDIT_COLUMNS = (
+    "audit_id",
+    "event_version",
+    "occurred_at",
+    "correlation_id",
+    "action",
+    "outcome",
+    "source_service",
+    "actor_ref",
+    "subject_ref",
+    "tenant_ref",
+    "carrier_ref",
+)
+
+_GATEWAY_AUDIT_INSERT = (
+    "INSERT INTO control_gateway_audit ("
+    + ", ".join(_GATEWAY_AUDIT_COLUMNS)
+    + ") VALUES ("
+    + ", ".join(["%s"] * len(_GATEWAY_AUDIT_COLUMNS))
+    + ") ON CONFLICT (audit_id) DO NOTHING RETURNING id"
+)
+
+_GATEWAY_AUDIT_SELECT = "SELECT " + ", ".join(_GATEWAY_AUDIT_COLUMNS) + " FROM control_gateway_audit WHERE audit_id = %s"
+
+
+class PostgresGatewayAuditStore(GatewayAuditStorePort):
+    """Durable Gateway operational-audit adapter (Gateway Audit V1a): one idempotent append into control_gateway_audit.
+
+    A DEDICATED adapter behind ``GatewayAuditStorePort`` — deliberately NOT a ``ControlStore`` method
+    (the frozen port is unchanged; the DistinctnessLedger / RoutingAudit precedent). Same conventions
+    as ``PostgresRoutingAuditStore``: lazy-connect (construction performs NO ``psycopg.connect``),
+    dual construction (literal ``dsn=`` OR ``secrets=`` + ``ref=`` reference resolution, D-14),
+    ``autocommit = False``, commit ONLY on a newly inserted row, rollback-then-reraise on any failure,
+    ``release()`` = rollback + close. ``recorded_at`` and ``id`` are assigned by the database (DDL 012)
+    and are never bound here. An exact replay of an existing ``audit_id`` is an idempotent no-op
+    (``DUPLICATE_MATCH``, nothing committed); a same-ID/different-payload replay fails closed with
+    ``GatewayAuditConflictError``. Append-only: this adapter contains no UPDATE, DELETE, read, query,
+    export, or purge surface. Errors are re-raised unchanged and never wrapped with SQL, descriptor,
+    topology, or row content. Uncomposed in production until the Gateway Audit V1a seam is env-selected.
+    """
+
+    def __init__(
+        self,
+        dsn: Optional[str] = None,
+        *,
+        secrets: Optional[SecretStore] = None,
+        ref: Optional[SecretRef] = None,
+    ) -> None:
+        # Lazy-connect: record inputs only; NO psycopg.connect here (B7B-D11 convention).
+        if (dsn is None) == (ref is None):
+            raise ValueError("PostgresGatewayAuditStore requires exactly one of dsn= or (secrets=, ref=)")
+        if ref is not None and secrets is None:
+            raise ValueError("PostgresGatewayAuditStore ref= requires a SecretStore (secrets=)")
+        self._dsn = dsn
+        self._secrets = secrets
+        self._ref = ref
+        self._conn_cache: Any = None
+
+    @property
+    def _conn(self) -> Any:
+        """Lazily open and cache the Control-DB connection (no I/O until first use)."""
+        if self._conn_cache is None:
+            self._conn_cache = self._open()
+        return self._conn_cache
+
+    def _open(self) -> Any:
+        """Resolve the Control-DB descriptor (by reference or literal) and open the connection.
+
+        Fail-closed: resolution and connect errors propagate — the append is rejected and no partial
+        state is committed. The resolved descriptor is dropped immediately (D-14)."""
+        descriptor: Optional[str] = None
+        try:
+            if self._ref is not None:
+                assert self._secrets is not None  # guaranteed by __init__
+                descriptor = self._secrets.resolve(self._ref).material  # in-memory only
+            else:
+                assert self._dsn is not None  # guaranteed by __init__ (exactly one source)
+                descriptor = self._dsn
+            conn = psycopg.connect(descriptor)
+            conn.autocommit = False  # single-INSERT transaction; commit only on a new row
+            return conn
+        finally:
+            descriptor = None  # never retained on the adapter
+
+    def release(self) -> None:
+        """Roll back any open transaction and close the cached connection (idempotent)."""
+        conn = self._conn_cache
+        if conn is None:
+            return
+        self._conn_cache = None
+        try:
+            conn.rollback()
+        except Exception:
+            pass  # broken connection: no transaction survives it
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    def append_gateway_audit(self, record: GatewayAuditRecord) -> GatewayAuditAppendResult:
+        self._validate(record)
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(_GATEWAY_AUDIT_INSERT, self._params(record))
+                inserted = cur.fetchone() is not None
+                stored = None
+                if not inserted:
+                    cur.execute(_GATEWAY_AUDIT_SELECT, (record.audit_id,))
+                    stored = cur.fetchone()
+            if inserted:
+                self._conn.commit()  # the ONLY commit: exactly one new durable row
+                return GatewayAuditAppendResult.INSERTED
+            # Replay path: nothing durable to persist — end the transaction WITHOUT committing.
+            self._conn.rollback()
+            if stored is not None and self._replay_matches(stored, record):
+                return GatewayAuditAppendResult.DUPLICATE_MATCH
+            raise GatewayAuditConflictError("gateway-audit idempotency conflict for a replayed audit_id")
+        except (GatewayAuditConflictError, GatewayAuditInvalidError):
+            raise  # bounded errors: transaction already closed above
+        except Exception:
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass  # connection-level failure: the original error below is the signal
+            raise
+
+    @staticmethod
+    def _validate(record: GatewayAuditRecord) -> None:
+        """Bounded pre-insert validation (fail closed BEFORE any durable write)."""
+        if record.action not in GATEWAY_AUDIT_STORE_ACTIONS:
+            raise GatewayAuditInvalidError("gateway-audit record rejected: unknown action")
+        if record.event_version <= 0:
+            raise GatewayAuditInvalidError("gateway-audit record rejected: non-positive event_version")
+        if record.source_service != GATEWAY_AUDIT_SOURCE_SERVICE:
+            raise GatewayAuditInvalidError("gateway-audit record rejected: unknown source_service")
+        for name in ("audit_id", "occurred_at", "correlation_id", "outcome"):
+            if not getattr(record, name):
+                raise GatewayAuditInvalidError("gateway-audit record rejected: missing required field")
+
+    @staticmethod
+    def _params(record: GatewayAuditRecord) -> Tuple[Any, ...]:
+        return (
+            record.audit_id,
+            record.event_version,
+            record.occurred_at,
+            record.correlation_id,
+            record.action,
+            record.outcome,
+            record.source_service,
+            record.actor_ref,
+            record.subject_ref,
+            record.tenant_ref,
+            record.carrier_ref,
+        )
+
+    @staticmethod
+    def _replay_matches(row: Tuple[Any, ...], record: GatewayAuditRecord) -> bool:
+        """Exact field comparison of a stored row against a replayed record (idempotent-conflict rule)."""
+        if str(row[0]).lower() != record.audit_id.lower():
+            return False  # defensive: the select is keyed by audit_id
+        if int(row[1]) != record.event_version:
+            return False
+        if not _same_instant(row[2], record.occurred_at):
+            return False
+        return tuple(row[3:11]) == (
+            record.correlation_id,
+            record.action,
+            record.outcome,
+            record.source_service,
+            record.actor_ref,
+            record.subject_ref,
+            record.tenant_ref,
+            record.carrier_ref,
         )
