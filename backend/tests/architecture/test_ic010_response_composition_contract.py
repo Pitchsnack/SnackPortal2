@@ -143,7 +143,12 @@ _A_IC009_OWNERSHIP: Tuple[str, ...] = (
     "does not itself implement dtos, ports, handlers, transports, or serving edges",
 )
 _A_IC007_DEFERRAL: Tuple[str, ...] = (
-    "ic-007 remains a deferral boundary only",
+    # Needle-sync (PRD D-38, 2026-07-18): IC-010 §V.4 is carved out for the four adopted
+    # Governed Sharing categories, so the first needle tracks the amended §V.4 wording.
+    # Needles [1]/[2] are preserved VERBATIM by the amendment — outside the four adopted
+    # categories §V still authorizes no positive cross-tenant capability/route/…/DTO, and
+    # positive IC-007 design beyond them remains separately governed.
+    "ic-007 is a deferral boundary carved out solely for the four adopted governed sharing categories",
     "no positive cross-tenant capability, route, fan-out, workflow, or dto",
     "positive ic-007 design remains separately governed",
 )
