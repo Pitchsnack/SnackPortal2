@@ -613,6 +613,55 @@ def test_router_dispatch_composition_guard_nonvacuity() -> None:
     )
 
 
+# --- Served API Gateway Edge V1: admit the served-edge composition seam (boundary-clean) ----------
+# The composition root gains ONE more selection seam — build_gateway_edge_server_from_env — the
+# env-composition surface for the served northbound edge (the serving code + socket live in the
+# api_gateway/adapters/providers edge module, never here). This guard ADMITS the seam (it exists,
+# it composes the FULL real Gateway from all three transport seams — no stub/None) while re-proving
+# main.py stays server-free (no serve loop, no server type token, no network I/O, import surface
+# unchanged). Evolve, never weaken: the pre-existing composition guards above are untouched.
+_GW_EDGE_SEAM = "build_gateway_edge_server_from_env"
+_GW_EDGE_SELECTORS = ("SP2_GW_EDGE_HOST", "SP2_GW_EDGE_PORT", "SP2_GW_EDGE_ALLOWED_ORIGINS")
+_GW_EDGE_TRANSPORT_SEAMS = ("build_authenticator_from_env", "build_control_plane_read_from_env", "build_router_dispatch_from_env")
+
+
+def test_gateway_edge_server_composition_seam_boundary_guard() -> None:
+    text = _GATEWAY_MAIN.read_text(encoding="utf-8")
+    tree = _tree(_GATEWAY_MAIN)
+    # The seam is ADMITTED: it exists as a top-level def and pins the three edge selectors.
+    assert _GW_EDGE_SEAM in _top_level_defs(tree), "main.py must define the served gateway-edge composition seam"
+    for selector in _GW_EDGE_SELECTORS:
+        assert selector in text, f"main.py must pin the {selector} edge selector"
+    # Complete real composition (gate-first): the seam composes the Gateway from all three
+    # transport seams — build_gateway receives no stub/None (no silent in-memory fallback).
+    names = _names_used(tree)
+    for transport_seam in _GW_EDGE_TRANSPORT_SEAMS:
+        assert transport_seam in names, f"the edge seam must compose the real {transport_seam} transport"
+    assert "build_gateway" in names, "the edge seam must compose the Gateway via build_gateway"
+    # Import surface UNCHANGED (the served-edge server import is lazy/relative — skipped by _scan);
+    # no banned sibling-service/driver/concurrency import enters the composition root.
+    tops = _import_tops(_GATEWAY_MAIN)
+    assert not (tops - _GW_MAIN_IMPORT_TOPS_ALLOW), (
+        f"the edge seam must not widen the stdlib import surface: {sorted(tops - _GW_MAIN_IMPORT_TOPS_ALLOW)}"
+    )
+    assert not (tops & _CLIENT_FORBIDDEN_TOPS), "the edge seam must import no sibling service / driver / concurrency machinery"
+    # main.py stays SERVER-FREE: no network I/O and no serve-loop / server-type token anywhere.
+    assert not _urlopen_calls(tree), "the composition root must perform no network I/O (lazy transport)"
+    lowered = text.lower()
+    for needle in ("serve_forever", "threadinghttpserver", "httpserver", "basehttprequesthandler"):
+        assert needle not in lowered, f"main.py must carry no serve-loop / server-type token ({needle})"
+
+
+def test_gateway_edge_seam_guard_nonvacuity() -> None:
+    # Seam-presence + server-token checks are non-vacuous (flag a planted regression sample).
+    assert _GW_EDGE_SEAM not in _top_level_defs(_parse("def other():\n    pass\n")), "seam guard must flag a root missing the edge seam"
+    assert "httpserver" in "srv = HTTPServer(addr, h)\n".lower(), "seam guard must detect a planted HTTPServer token"
+    assert "serve_forever" in "s.serve_forever()\n".lower(), "seam guard must detect a planted serve loop"
+    assert "build_authenticator_from_env" not in _names_used(_parse("x = other_seam()\n")), (
+        "seam guard must distinguish the real transport seam"
+    )
+
+
 if __name__ == "__main__":
     _scan.run(
         [
@@ -627,5 +676,7 @@ if __name__ == "__main__":
             test_composition_guard_nonvacuity,
             test_router_dispatch_composition_boundary_guard,
             test_router_dispatch_composition_guard_nonvacuity,
+            test_gateway_edge_server_composition_seam_boundary_guard,
+            test_gateway_edge_seam_guard_nonvacuity,
         ]
     )

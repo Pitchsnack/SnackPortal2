@@ -82,15 +82,18 @@ _THREADING_ALLOWED = {"database_router/pool.py"}
 # per-module exemption — never a directory/substring open, and it never blesses ``serve_forever``.
 _READ_EDGE_MAKE_SERVER_BLESSED = {"control_plane/main.py"}
 
-# The production serve-loop census (B5-2 Guard Evolution Matrix). ``http_read_api.py`` (the 07E-1
-# ``serve_read_api`` precedent) is the read adapter itself, skipped in the census by identity and
-# retained unchanged; B5-2 blesses exactly TWO more blocking entrypoints — each module may
+# The production serve-loop census (B5-2 Guard Evolution Matrix, EVOLVED by Served API Gateway
+# Edge V1). ``http_read_api.py`` (the 07E-1 ``serve_read_api`` precedent) is the read adapter
+# itself, skipped in the census by identity and retained unchanged; B5-2 blessed two more blocking
+# entrypoints, and Served API Gateway Edge V1 blesses ONE more — the served northbound edge
+# ``serve_gateway_edge`` — for a total of THREE blessed adapter entrypoints. Each module may
 # reference ``serve_forever`` ONLY inside its single named entrypoint, exactly once. Narrow, named,
 # per-module (module -> sole approved entrypoint) — never a directory/substring open.
 # ``ThreadingHTTPServer`` is never blessed anywhere (AT-D15T1-10 single-threaded HARD-GATE).
 _SERVE_LOOP_BLESSED = {
     "auth_router/adapters/providers/http_authenticate_api.py": "serve_authenticate_api",
     "database_router/adapters/providers/http_dispatch_api.py": "serve_dispatch_api",
+    "api_gateway/adapters/providers/http_gateway_edge.py": "serve_gateway_edge",
 }
 
 # The 5 production CAS callers frozen by the 07D-3 planning census (V-4).
@@ -424,7 +427,8 @@ def test_serve_loop_census_blessed_entrypoints_are_real() -> None:
     assert set(_SERVE_LOOP_BLESSED) == {
         "auth_router/adapters/providers/http_authenticate_api.py",
         "database_router/adapters/providers/http_dispatch_api.py",
-    }, "the serve-loop blessing must stay exactly the two named adapter modules"
+        "api_gateway/adapters/providers/http_gateway_edge.py",
+    }, "the serve-loop blessing must stay exactly the three named adapter modules"
     for relp, entrypoint in _SERVE_LOOP_BLESSED.items():
         path = _scan.BACKEND_ROOT / relp
         assert path.is_file(), f"serve-blessed module missing: {relp}"
