@@ -19,7 +19,7 @@ gateway resolves no database (IC-010 §X) and full production Gateway compositio
 from __future__ import annotations
 
 import os
-from typing import Callable, Optional
+from typing import Callable, Optional, Tuple
 from urllib.parse import urlsplit
 
 from .adapters.providers.http_authenticator import HttpAuthenticator
@@ -64,14 +64,27 @@ GW_DB_ROUTER_BASE_URL_ENV = "SP2_GW_DB_ROUTER_BASE_URL"
 # fallback from malformed production config).
 GW_CONTROL_READ_BASE_URL_ENV = "SP2_GW_CONTROL_READ_BASE_URL"
 
+# Served API Gateway Edge V1: the edge bind + browser-policy knobs (NON-SECRET deployment
+# config — a loopback host, a port, and an exact-origin CORS allowlist; never a credential).
+# The three transport selectors above remain the ACTIVATION gate; these knobs are consulted
+# only once the complete real composition is present (gate-first, mirroring the auth/dispatch
+# server seams). None of these is a secret, so all are read directly from the environment.
+GW_EDGE_HOST_ENV = "SP2_GW_EDGE_HOST"
+GW_EDGE_PORT_ENV = "SP2_GW_EDGE_PORT"
+GW_EDGE_ALLOWED_ORIGINS_ENV = "SP2_GW_EDGE_ALLOWED_ORIGINS"
+
 __all__ = [
     "GW_AUTH_ROUTER_BASE_URL_ENV",
     "GW_CONTROL_READ_BASE_URL_ENV",
     "GW_DB_ROUTER_BASE_URL_ENV",
+    "GW_EDGE_ALLOWED_ORIGINS_ENV",
+    "GW_EDGE_HOST_ENV",
+    "GW_EDGE_PORT_ENV",
     "SERVICE",
     "build_authenticator_from_env",
     "build_control_plane_read_from_env",
     "build_gateway",
+    "build_gateway_edge_server_from_env",
     "build_router_dispatch_from_env",
     "liveness",
 ]
@@ -211,3 +224,76 @@ def build_control_plane_read_from_env() -> Optional[ControlPlaneReadPort]:
             "http://host[:port] Control-Plane read base URL (fail closed — no silent fallback)"
         )
     return HttpControlPlaneRead(raw)
+
+
+def _edge_port_from_env() -> int:
+    """Parse ``SP2_GW_EDGE_PORT`` fail-closed: unset/empty/whitespace → ``0`` (ephemeral);
+    otherwise a base-10 integer in ``[0, 65535]``, else ``ValueError`` — raised BEFORE any
+    socket bind so malformed config never opens a listener."""
+    raw = (os.environ.get(GW_EDGE_PORT_ENV) or "").strip()
+    if not raw:
+        return 0
+    try:
+        port = int(raw, 10)
+    except ValueError:
+        raise ValueError(f"invalid {GW_EDGE_PORT_ENV}={raw!r}; expected an integer in [0, 65535]") from None
+    if not (0 <= port <= 65535):
+        raise ValueError(f"invalid {GW_EDGE_PORT_ENV}={raw!r}; port out of range [0, 65535]")
+    return port
+
+
+def _edge_allowed_origins_from_env() -> Tuple[str, ...]:
+    """The exact-origin CORS allowlist from ``SP2_GW_EDGE_ALLOWED_ORIGINS`` (comma-separated).
+    Unset/empty → an EMPTY allowlist (every cross-origin request is denied — fail closed; the
+    browser blocks it). No wildcard handling: the edge never emits credentialed CORS, so no
+    entry can produce a wildcard-with-credentials response."""
+    raw = os.environ.get(GW_EDGE_ALLOWED_ORIGINS_ENV) or ""
+    return tuple(origin.strip() for origin in raw.split(",") if origin.strip())
+
+
+def build_gateway_edge_server_from_env() -> Optional[Tuple[object, str]]:
+    """The served northbound gateway-edge composition seam (Served API Gateway Edge V1).
+
+    Composition-gate-first: assemble the COMPLETE real Gateway from the three existing
+    transport seams — ``build_authenticator_from_env`` (IC-005), ``build_router_dispatch_from_env``
+    (IC-010 §H), and ``build_control_plane_read_from_env`` (IC-010 §V) — before any bind knob is
+    read. ``build_gateway`` structurally requires all three ports; the served edge therefore
+    activates ONLY on a complete real composition and NEVER on a partial one or a silent
+    in-memory stub. If ANY of the three transport selectors is unset/empty, this seam returns
+    ``None`` (serve-inert; no bind knob consulted, no socket bound). A malformed transport URL
+    raises ``ValueError`` (inherited) before any host/port parse.
+
+    When the composition is complete, the bind + browser knobs are read:
+
+    * ``SP2_GW_EDGE_HOST`` — optional; unset/empty/whitespace → ``127.0.0.1`` (internal loopback,
+      IC-010 §R; TLS terminates at a reverse proxy — deployment scope). Passed through otherwise
+      (an unbindable host surfaces as ``OSError`` at construction — deployment scope).
+    * ``SP2_GW_EDGE_PORT`` — optional; unset/empty → ``0`` (ephemeral); otherwise an integer in
+      ``[0, 65535]``; non-integer / negative / out-of-range → ``ValueError`` raised BEFORE the
+      edge server is built so a bad port never binds a socket.
+    * ``SP2_GW_EDGE_ALLOWED_ORIGINS`` — optional; the exact-origin CORS allowlist (comma-separated);
+      unset/empty → deny every cross-origin request.
+
+    Side-effect boundary (LOAD-BEARING): this seam is DB-inert, network-read-inert, and
+    serve-inert — it opens no database, performs no network client read, and starts no serve
+    loop, thread, daemon, or service. But it is NOT socket-inert: when active,
+    ``build_gateway_edge_server`` binds + activates a local listening socket at construction
+    (default ``port=0`` → ephemeral). Callers/tests own the socket lifecycle and must close it.
+
+    No overclaim: it composes a served edge *object* from config; it does NOT serve requests,
+    run a production service, terminate TLS, activate production, or close any B5 blocker.
+    """
+    authenticator = build_authenticator_from_env()
+    control_read = build_control_plane_read_from_env()
+    router = build_router_dispatch_from_env()
+    if authenticator is None or control_read is None or router is None:
+        return None
+    host = (os.environ.get(GW_EDGE_HOST_ENV) or "").strip() or "127.0.0.1"
+    port = _edge_port_from_env()
+    allowed_origins = _edge_allowed_origins_from_env()
+    # Lazy relative import keeps api_gateway/main.py import-light and server-token-free (the
+    # concrete serving edge and its socket live in the adapter, never in the composition root).
+    from .adapters.providers.http_gateway_edge import build_gateway_edge_server
+
+    gateway = build_gateway(authenticator=authenticator, router=router, control_read=control_read)
+    return build_gateway_edge_server(gateway, host=host, port=port, allowed_origins=allowed_origins)
