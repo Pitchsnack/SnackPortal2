@@ -9,6 +9,7 @@ ignored here and never read by any backend component as a tenant selector
 
 from __future__ import annotations
 
+import ipaddress
 from typing import List, Optional
 
 from .models import InboundRequest
@@ -19,8 +20,37 @@ _CARRIER_REF_MAX_LEN = 64
 
 
 def _subdomain(host: str) -> Optional[str]:
-    h = host.split(":")[0].strip().lower()  # drop any port suffix
+    """The tenant subdomain carrier (the leading DNS label) of a genuine multi-label DNS
+    host, else None.
+
+    A host-derived carrier is a tenant DNS subdomain ONLY (IC-005 D-33; IC-010 §E). A
+    transport address is never a tenant carrier: IPv4 and IPv6 LITERAL hosts (bracketed
+    or not, with or without a port), single-label hosts (e.g. ``localhost``), empty, and
+    malformed hosts assert NO host carrier and fail closed to None. Genuine multi-label
+    DNS hosts (``tenant.base.tld``) are unchanged — the leading label is the carrier and
+    a trailing ``:port`` never alters it.
+    """
+    h = host.strip().lower()
     if not h:
+        return None
+    # Drop an optional port and IPv6 brackets WITHOUT corrupting a bracketed IPv6 literal
+    # (a naive ``split(":")`` would): "[v6]"/"[v6]:port" → the bracketed literal; an
+    # unterminated bracket is malformed → fail closed; "host"/"host:port" → the host.
+    if h.startswith("["):
+        end = h.find("]")
+        if end == -1:
+            return None
+        h = h[1:end]
+    elif h.count(":") == 1:
+        h = h.split(":", 1)[0]
+    if not h:
+        return None
+    # An IPv4/IPv6 literal is a transport address, not a tenant DNS subdomain carrier.
+    try:
+        ipaddress.ip_address(h)
+    except ValueError:
+        pass  # not an IP literal → may be a DNS host
+    else:
         return None
     labels = h.split(".")
     # tenant.base.tld → the leading label is the tenant subdomain carrier.
