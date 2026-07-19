@@ -5,7 +5,8 @@ Control-plane-owned. After a tenant database is provisioned (CREATE DATABASE by 
 database's schema so the readiness probe can observe `schema_version`. It applies the EXISTING,
 reviewed DDL templates — `infrastructure/db/provisioning/00[1-3]`, then
 `infrastructure/db/lineage/00[1-3]`, then (PRD 07B.1) the seven 07C tenant business templates
-`infrastructure/db/tenant/00[1-7]` in TENANT_DDL_APPLY_ORDER — and authors NO DDL of its own.
+`infrastructure/db/tenant/00[1-7]` plus the W1a `008_startups_global_startup_id_unique.sql`
+(eight tenant templates `00[1-8]`) in TENANT_DDL_APPLY_ORDER — and authors NO DDL of its own.
 After the DDL loop and inside the SAME transaction it seeds exactly one System Primary Agent
 (PRD 07B.1; the `agents` table and its constraints are owned by PRD 07C V5 §9 — the seed shape
 below is the one 001_agents.sql declares it accepts verbatim).
@@ -43,8 +44,9 @@ def default_tenant_schema_ddl_paths() -> List[pathlib.Path]:
     then the 07C tenant business schema).
 
     These are the EXISTING reviewed DDL files; the applicator authors none of them and never
-    modifies them (read-only). PRD 07B.1 appends the seven 07C tenant business files AFTER the
-    six 07B bootstrap templates, sequenced by citation to 07C's machine-readable authority
+    modifies them (read-only). PRD 07B.1 appends the seven 07C tenant business files (plus the W1a
+    008 startups uniqueness index — eight tenant files) AFTER the six 07B bootstrap templates,
+    sequenced by citation to 07C's machine-readable authority
     (TENANT_DDL_APPLY_ORDER in tests/architecture/test_tenant_ddl_blob_drift.py — 07C owns the
     order and the blob pins; C7 Option 2: 07B.1 asserts membership/order, it duplicates no pins).
     Order is load-bearing (FK chain: agents <- ai_agents <- entities <- ownership <- links)."""
@@ -62,6 +64,7 @@ def default_tenant_schema_ddl_paths() -> List[pathlib.Path]:
         _DB / "tenant" / "005_deals.sql",
         _DB / "tenant" / "006_ownership.sql",
         _DB / "tenant" / "007_links.sql",
+        _DB / "tenant" / "008_startups_global_startup_id_unique.sql",  # W1a: startups.global_startup_id uniqueness
     ]
 
 

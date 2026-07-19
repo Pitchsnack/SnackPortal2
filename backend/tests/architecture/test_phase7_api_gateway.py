@@ -117,6 +117,7 @@ _PORTAL_SHAPES = [
     "MembershipEntryDTO",
     "WorkspaceMembershipDTO",
     "ImportInitiationDTO",
+    "ImportResultDTO",
     "ErrorDTO",
 ]
 

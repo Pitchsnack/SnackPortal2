@@ -128,7 +128,7 @@ _GW_SELECTOR_ENV = "SP2_GW_AUTH_ROUTER_BASE_URL"
 _GW_DB_ROUTER_SELECTOR_ENV = "SP2_GW_DB_ROUTER_BASE_URL"  # 07E-3d dispatch seam
 # B5-BLK-6B: `control_read` joins at index 2, DEFAULTED (the IC-010 §V read seam is opt-in;
 # None preserves the pre-6B pipeline). authenticator + router stay REQUIRED (indices 0-1).
-_GW_BUILD_GATEWAY_KWONLY = ["authenticator", "router", "control_read", "classify", "audit", "metrics"]
+_GW_BUILD_GATEWAY_KWONLY = ["authenticator", "router", "control_read", "classify", "audit", "metrics", "import_initiation"]
 
 _CLIENT_TOPLEVEL_ALLOW = frozenset({"_is_optional_str", "HttpAuthenticator"})
 _SERVER_TOPLEVEL_ALLOW = frozenset(

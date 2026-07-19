@@ -341,19 +341,19 @@ def test_schema_applicator_postgres_selectable_and_unknown_fails_closed() -> Non
 
 
 # --- PRD 07B.1: composed 13-file sequencing + in-transaction System Primary seed ------------------
-def test_07b1_default_paths_compose_13_files_bootstrap_then_tenant() -> None:
+def test_07b1_default_paths_compose_14_files_bootstrap_then_tenant() -> None:
     paths = applicator_mod.default_tenant_schema_ddl_paths()
     names = [p.name for p in paths]
-    assert len(names) == 13, f"composed Step-2b DDL path count must be 13, got {len(names)}: {names}"
+    assert len(names) == 14, f"composed Step-2b DDL path count must be 14, got {len(names)}: {names}"
     assert names[:6] == _BOOTSTRAP_SIX, f"the six 07B bootstrap templates must come FIRST: {names[:6]}"
     families = [p.parent.name for p in paths]
-    assert families == ["provisioning"] * 3 + ["lineage"] * 3 + ["tenant"] * 7, families
+    assert families == ["provisioning"] * 3 + ["lineage"] * 3 + ["tenant"] * 8, families
     missing = [str(p) for p in paths if not p.is_file()]
     assert not missing, f"referenced (read-only) DDL templates must exist: {missing}"
 
 
 def test_07b1_tenant_order_matches_07c_authority() -> None:
-    # C7 Option 2: the appended seven MUST equal 07C's machine-readable TENANT_DDL_APPLY_ORDER,
+    # C7 Option 2: the appended eight MUST equal 07C's machine-readable TENANT_DDL_APPLY_ORDER,
     # read from the guard itself (07C owns the order and the blob pins; 07B.1 duplicates neither).
     names = [p.name for p in applicator_mod.default_tenant_schema_ddl_paths()]
     assert names[6:] == _tenant_apply_order_from_guard(), (
@@ -378,8 +378,8 @@ def test_07b1_seed_executes_after_ddl_loop_before_commit() -> None:
     _apply_with_fake_conn(conn)
     seed = applicator_mod._SYSTEM_PRIMARY_SEED_SQL
     expected_ddl = [p.read_text(encoding="utf-8") for p in applicator_mod.default_tenant_schema_ddl_paths()]
-    assert conn.executed[:13] == expected_ddl, "all 13 templates must execute first, in order"
-    assert conn.executed[13] == seed, "the seed must execute immediately AFTER the DDL loop"
+    assert conn.executed[:14] == expected_ddl, "all 14 templates must execute first, in order"
+    assert conn.executed[14] == seed, "the seed must execute immediately AFTER the DDL loop"
     # position-pinned commit (AT-07B1-2): the seed strictly precedes the single COMMIT marker —
     # a commit-before-seed mutant fails here (counters alone cannot see ordering).
     assert conn.executed.count("COMMIT") == 1 and conn.executed.count("ROLLBACK") == 0
@@ -392,7 +392,7 @@ def test_07b1_seed_executes_after_ddl_loop_before_commit() -> None:
 def test_07b1_seed_failure_wrapped_fail_closed() -> None:
     # a failing SEED (the exact statement — not a DDL template) must roll the WHOLE transaction back
     # and surface as TenantSchemaApplicationError. The exact-equality hook cannot fire on 001_agents.sql's
-    # header comment, so the failure provably occurs AT the seed, after all 13 templates executed.
+    # header comment, so the failure provably occurs AT the seed, after all 14 templates executed.
     seed = applicator_mod._SYSTEM_PRIMARY_SEED_SQL
     conn = _RecordingConn(fail_on_exact=seed)
     raised = False
@@ -402,7 +402,7 @@ def test_07b1_seed_failure_wrapped_fail_closed() -> None:
         raised = True
     assert raised, "a seed failure must be classified as TenantSchemaApplicationError (fail-closed)"
     expected_ddl = [p.read_text(encoding="utf-8") for p in applicator_mod.default_tenant_schema_ddl_paths()]
-    assert conn.executed[:13] == expected_ddl, "ALL 13 templates must have executed BEFORE the seed failed"
+    assert conn.executed[:14] == expected_ddl, "ALL 14 templates must have executed BEFORE the seed failed"
     assert seed not in conn.executed, "the seed raised before recording — it was the FAILING statement"
     assert conn.executed[-1] == "ROLLBACK" and conn.executed.count("COMMIT") == 0, "seed failure: rollback recorded, never a commit"
     assert conn.commits == 0 and conn.rollbacks == 1, "seed failure: rollback, never commit"
@@ -428,7 +428,7 @@ _TESTS = [
     test_non_vacuity_step2b_is_load_bearing,
     test_schema_applicator_default_in_memory,
     test_schema_applicator_postgres_selectable_and_unknown_fails_closed,
-    test_07b1_default_paths_compose_13_files_bootstrap_then_tenant,
+    test_07b1_default_paths_compose_14_files_bootstrap_then_tenant,
     test_07b1_tenant_order_matches_07c_authority,
     test_07b1_seed_sql_shape,
     test_07b1_seed_executes_after_ddl_loop_before_commit,

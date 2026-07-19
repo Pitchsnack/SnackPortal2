@@ -67,3 +67,4 @@ class ImportStatus:
     rejected_count: int
     last_error_summary: str  # non-sensitive
     correlation_id: str
+    replayed: bool = False  # True only for an operation-level idempotent replay (W1a; additive, default-safe)

@@ -105,6 +105,17 @@ _DDL_013 = _CONTROL / "013_gateway_operational_audit_append_only.sql"
 _PIN_012 = "5df1ae4edb7a943b33f36fc3800d81c8cb75804b"
 _PIN_013 = "199664d1afb9e6e0a37e8609f42e4e1528771472"
 _GATEWAY_AUDIT_HARNESS = _scan.BACKEND_ROOT / "tests" / "control_plane" / "requires_pg" / "test_pg_gateway_audit_durable.py"
+# W1a: pin the Import operational-audit DDL pair — 014 (control_import_audit table) and 015 (its append-only
+# trigger). Both are created-not-applied repository artifacts, deliberately NOT enrolled in the B5-4
+# standing-topology apply order (see test_b5_standing_topology_boundaries.py). The MANUAL_ONLY disposable proof
+# (test_pg_import_copy_durable.py) pins the SAME blobs under _REVIEWED_014_BLOB / _REVIEWED_015_BLOB and STOPs
+# before connecting/applying on a mismatch; the cross-check below enforces repository pin == proof-harness
+# reviewed pin == committed blob (b7c1r2 INV-A/INV-B lockstep). The disposable proof does NOT standing-apply the DDL.
+_DDL_014 = _CONTROL / "014_import_operational_audit.sql"
+_DDL_015 = _CONTROL / "015_import_operational_audit_append_only.sql"
+_PIN_014 = "73436f9681163c8a86ee230f51206062b06735c5"
+_PIN_015 = "ba594e3cd6eb070790bde6015f5225960c0d62ed"
+_IMPORT_AUDIT_HARNESS = _scan.BACKEND_ROOT / "tests" / "control_plane" / "requires_pg" / "test_pg_import_copy_durable.py"
 _MCC_HARNESS = _scan.BACKEND_ROOT / "tests" / "control_plane" / "requires_pg" / "test_pg_control_schema_mcc.py"
 # (harness var name, guard pin, DDL path) — var names are LITERAL so the b7c1r2 meta-guard's pin-var scan sees them.
 _MCC_PINS = [
@@ -226,6 +237,33 @@ def test_gateway_audit_harness_pins_match_current_ddl() -> None:
     )
 
 
+def test_import_operational_audit_ddl_blobs_match_known_pins() -> None:
+    # W1a: created-not-applied Import operational-audit DDL. A governed DDL change must update these pins in
+    # lockstep with the bytes (LF-normalized git-blob SHA-1, as above).
+    assert _git_blob_sha1(_DDL_014) == _PIN_014, (
+        f"014_import_operational_audit.sql drifted from pin {_PIN_014}; a governed DDL change must update this guard in lockstep"
+    )
+    assert _git_blob_sha1(_DDL_015) == _PIN_015, (
+        f"015_import_operational_audit_append_only.sql drifted from pin {_PIN_015}; update this guard in lockstep"
+    )
+
+
+def test_import_audit_harness_pins_match_current_ddl() -> None:
+    # W1a lockstep: the MANUAL_ONLY disposable proof pins 014/015 under _REVIEWED_014_BLOB / _REVIEWED_015_BLOB;
+    # each harness pin must equal the CURRENT blob of its DDL (single source of truth = the DDL bytes; the guard
+    # pins above move in the same PR).
+    text = _IMPORT_AUDIT_HARNESS.read_text(encoding="utf-8")
+    m014 = re.search(r'_REVIEWED_014_BLOB\s*=\s*"([0-9a-f]{40})"', text)
+    m015 = re.search(r'_REVIEWED_015_BLOB\s*=\s*"([0-9a-f]{40})"', text)
+    assert m014 and m015, "test_pg_import_copy_durable.py must pin _REVIEWED_014_BLOB and _REVIEWED_015_BLOB"
+    assert m014.group(1) == _git_blob_sha1(_DDL_014), (
+        "test_pg_import_copy_durable.py _REVIEWED_014_BLOB diverges from the current 014 DDL blob"
+    )
+    assert m015.group(1) == _git_blob_sha1(_DDL_015), (
+        "test_pg_import_copy_durable.py _REVIEWED_015_BLOB diverges from the current 015 DDL blob"
+    )
+
+
 def test_dbr_ar_2d_harness_pins_match_current_ddl() -> None:
     # PRD DBR-AR-2D V2 §7.1 lockstep: the disposable live proof pins 010/011 under
     # _REVIEWED_010_BLOB / _REVIEWED_011_BLOB; each harness pin must equal the CURRENT blob of
@@ -265,6 +303,8 @@ if __name__ == "__main__":
             test_routing_audit_ddl_blobs_match_known_pins,
             test_gateway_operational_audit_ddl_blobs_match_known_pins,
             test_gateway_audit_harness_pins_match_current_ddl,
+            test_import_operational_audit_ddl_blobs_match_known_pins,
+            test_import_audit_harness_pins_match_current_ddl,
             test_dbr_ar_2d_harness_pins_match_current_ddl,
             test_mcc_harness_pins_match_current_ddl,
         ]

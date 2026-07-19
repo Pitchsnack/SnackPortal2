@@ -30,7 +30,14 @@ from .adapters.providers.in_memory_metrics import InMemoryMetrics
 from .dispatch import default_classifier
 from .gateway import Gateway
 from .models import DispatchCategory, GatewayAuditEvent, InboundRequest
-from .ports import AuditEmitterPort, AuthenticatorPort, ControlPlaneReadPort, MetricsPort, RouterDispatchPort
+from .ports import (
+    AuditEmitterPort,
+    AuthenticatorPort,
+    ControlPlaneReadPort,
+    ImportInitiationPort,
+    MetricsPort,
+    RouterDispatchPort,
+)
 from .readiness import liveness
 
 SERVICE = "api_gateway"
@@ -74,6 +81,16 @@ GW_CONTROL_READ_BASE_URL_ENV = "SP2_GW_CONTROL_READ_BASE_URL"
 # never a silent fallback from malformed production config to the in-memory emitter).
 GW_AUDIT_SINK_BASE_URL_ENV = "SP2_GW_AUDIT_SINK_BASE_URL"
 
+# W1a composed-core: the Gateway→Import-Service initiate selector (mirrors the 07E-3c/07E-3d/6B/audit
+# selectors). The value is NON-SECRET internal routing config — the loopback/internal Import Service initiate
+# base URL, never a credential — so it is read directly from the environment (no SecretRef, no SecretStore).
+# Unset/empty keeps the port-absent default composition (IMPORT_INITIATION returns the accepted-initiation
+# envelope; there is deliberately NO loopback default — a default would silently activate real import
+# execution); a structurally valid internal http URL selects the transport ``HttpImportInitiation`` client;
+# anything else raises ValueError before any socket (fail closed — never a silent fallback from malformed
+# production config to the envelope default).
+GW_IMPORT_BASE_URL_ENV = "SP2_GW_IMPORT_BASE_URL"
+
 # Served API Gateway Edge V1: the edge bind + browser-policy knobs (NON-SECRET deployment
 # config — a loopback host, a port, and an exact-origin CORS allowlist; never a credential).
 # The three transport selectors above remain the ACTIVATION gate; these knobs are consulted
@@ -92,12 +109,14 @@ __all__ = [
     "GW_EDGE_ALLOWED_ORIGINS_ENV",
     "GW_EDGE_HOST_ENV",
     "GW_EDGE_PORT_ENV",
+    "GW_IMPORT_BASE_URL_ENV",
     "SERVICE",
     "build_audit_emitter_from_env",
     "build_authenticator_from_env",
     "build_control_plane_read_from_env",
     "build_gateway",
     "build_gateway_edge_server_from_env",
+    "build_import_initiation_from_env",
     "build_router_dispatch_from_env",
     "liveness",
 ]
@@ -111,12 +130,16 @@ def build_gateway(
     classify: Optional[Callable[[InboundRequest], DispatchCategory]] = None,
     audit: Optional[AuditEmitterPort] = None,
     metrics: Optional[MetricsPort] = None,
+    import_initiation: Optional[ImportInitiationPort] = None,
 ) -> Gateway:
     """Compose the gateway. The audit + metrics defaults are the no-sink / vendor-neutral
     in-memory adapters (AD-1 Option A; WP-11). ``control_read`` (B5-BLK-6B) is OPTIONAL
     and defaulted: None keeps the pre-6B pipeline unchanged (every category through the
     router; ``portal_dto`` always None) — the IC-010 §V composition seam activates only
-    when a typed Control-Plane read port is explicitly injected or env-selected."""
+    when a typed Control-Plane read port is explicitly injected or env-selected.
+    ``import_initiation`` (W1a) is OPTIONAL and defaulted: None keeps the IMPORT_INITIATION
+    accepted-initiation envelope path byte-behavior-unchanged; when injected, IMPORT_INITIATION
+    executes the real composed-core import (single-route; no router dispatch on that path)."""
     return Gateway(
         authenticator=authenticator,
         router=router,
@@ -124,6 +147,7 @@ def build_gateway(
         classify=classify if classify is not None else default_classifier,
         audit=audit if audit is not None else InMemoryAuditEmitter(),
         metrics=metrics if metrics is not None else InMemoryMetrics(),
+        import_initiation=import_initiation,
     )
 
 
@@ -237,6 +261,47 @@ def build_control_plane_read_from_env() -> Optional[ControlPlaneReadPort]:
             "http://host[:port] Control-Plane read base URL (fail closed — no silent fallback)"
         )
     return HttpControlPlaneRead(raw)
+
+
+def build_import_initiation_from_env() -> Optional[ImportInitiationPort]:
+    """The config-selectable ``ImportInitiationPort`` seam (W1a composed-core; IC-003 over the §M internal
+    transport).
+
+    This helper exposes a production-shaped ``ImportInitiationPort`` selection seam. It does not create a
+    runnable production gateway; the transport client is wired only at the (deferred/rehearsal) edge
+    composition call site, never as a forced default.
+
+    Selection (the same fail-closed env-selector pattern as the 07E-3c/07E-3d/6B/audit seams):
+
+    * ``SP2_GW_IMPORT_BASE_URL`` unset, or empty/whitespace after stripping → ``None`` — the caller keeps the
+      port-absent default (IMPORT_INITIATION returns the accepted-initiation envelope). There is deliberately
+      NO loopback default — a default would silently activate real import execution.
+    * a structurally valid internal ``http://host[:port]`` value → an ``HttpImportInitiation`` bound to that
+      base URL. The transport client is lazy: construction performs no network I/O; every call-time failure
+      collapses fail-closed to a non-ok outcome (the gateway maps it to 503 ``unavailable``; no new
+      public_code).
+    * anything else → ``ValueError`` at the composition boundary, raised BEFORE any socket — never a silent
+      fallback from malformed production config.
+
+    Validation is structural only (``urlsplit`` scheme + netloc; the scheme is pinned to ``http`` — this is
+    the internal loopback transport; TLS termination is deployment scope). No network I/O, no
+    ``import_service`` import, no database access, no secret handling (the base URL is non-secret internal
+    routing config; no SecretRef).
+    """
+    raw = (os.environ.get(GW_IMPORT_BASE_URL_ENV) or "").strip()
+    if not raw:
+        return None
+    parts = urlsplit(raw)
+    if parts.scheme != "http" or not parts.netloc:
+        raise ValueError(
+            f"unsupported {GW_IMPORT_BASE_URL_ENV}={raw!r}; expected an internal "
+            "http://host[:port] Import Service initiate base URL (fail closed — no silent fallback)"
+        )
+    # Lazy relative import (the merged seam shape): the transport client is deferred to selection time so
+    # api_gateway/main.py's stdlib import-tops stay {__future__, os, typing, urllib} while inactive.
+    from .adapters.providers.http_import_initiation import HttpImportInitiation
+
+    return HttpImportInitiation(raw)
 
 
 class BoundedGatewayAuditPolicy(AuditEmitterPort):
@@ -386,9 +451,20 @@ def build_gateway_edge_server_from_env() -> Optional[Tuple[object, str]]:
     # build_gateway keeps the in-memory no-sink default (AD-1 Option A); a valid URL → the fail-closed
     # durable policy. A malformed value raises ValueError here (before any socket bind).
     audit = build_audit_emitter_from_env()
+    # W1a composed-core: the Gateway→Import transport port is wired at THIS composition call site (never a
+    # forced default). Unset SP2_GW_IMPORT_BASE_URL → None → the IMPORT_INITIATION accepted-initiation
+    # envelope default; a valid URL → the transport HttpImportInitiation client; malformed → ValueError here
+    # (before any socket bind).
+    import_initiation = build_import_initiation_from_env()
     # Lazy relative import keeps api_gateway/main.py import-light and server-token-free (the
     # concrete serving edge and its socket live in the adapter, never in the composition root).
     from .adapters.providers.http_gateway_edge import build_gateway_edge_server
 
-    gateway = build_gateway(authenticator=authenticator, router=router, control_read=control_read, audit=audit)
+    gateway = build_gateway(
+        authenticator=authenticator,
+        router=router,
+        control_read=control_read,
+        audit=audit,
+        import_initiation=import_initiation,
+    )
     return build_gateway_edge_server(gateway, host=host, port=port, allowed_origins=allowed_origins)

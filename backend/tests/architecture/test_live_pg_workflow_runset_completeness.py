@@ -97,6 +97,15 @@ MANUAL_ONLY_EXCEPTIONS = {
         "infrastructure/runbooks/gateway_operational_audit_live_proof.md and pinned by "
         "tests/architecture/test_gateway_operational_audit_boundaries.py"
     ),
+    "tests/control_plane/requires_pg/test_pg_import_copy_durable.py": (
+        "W1a composed-core import copy + durable Import Audit disposable proof: single-cluster capable "
+        "(creates and drops its own disposable databases sp2_w1a_import_proof_control / _t1 / _t2, applies "
+        "control 014/015 + the 14-file tenant template to them only), but deliberately MANUAL_ONLY — loop "
+        "enrollment would require editing the live-pg workflow (plus the EXPECTED_HARNESS_COUNT/b7c2-doc "
+        "lockstep), which is outside the W1a authorized surface (no .github changes); operator-run per "
+        "infrastructure/runbooks/import_copy_live_proof.md and pinned by "
+        "tests/architecture/test_import_write_path_boundaries.py"
+    ),
 }
 
 # SAME loop idiom as the AT-5 / ATR-4 guards (replicated for self-containment, not imported).

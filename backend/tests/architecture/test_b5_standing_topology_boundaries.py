@@ -84,12 +84,16 @@ _EXPECTED_DDL = (
 # phase, and the ops module (schema-application code) is unchanged:
 #   010/011 routing-audit (DBR-AR-2B; exercised by the DBR-AR-2D disposable live proof);
 #   012/013 Gateway operational-audit (Gateway Audit V1a; control_gateway_audit + its append-only
-#   trigger, exercised only by the MANUAL_ONLY disposable proof test_pg_gateway_audit_durable.py).
+#   trigger, exercised only by the MANUAL_ONLY disposable proof test_pg_gateway_audit_durable.py);
+#   014/015 Import operational-audit (W1a; control_import_audit + its append-only trigger, exercised
+#   only by the MANUAL_ONLY disposable proof test_pg_import_copy_durable.py).
 _EXPECTED_UNENROLLED_DDL = (
     "010_routing_audit.sql",
     "011_routing_audit_append_only.sql",
     "012_gateway_operational_audit.sql",
     "013_gateway_operational_audit_append_only.sql",
+    "014_import_operational_audit.sql",
+    "015_import_operational_audit_append_only.sql",
 )
 
 
