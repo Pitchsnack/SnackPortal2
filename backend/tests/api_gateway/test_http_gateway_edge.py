@@ -20,7 +20,7 @@ import json
 import pathlib
 import sys
 import threading
-from typing import Dict, Iterator, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import contextlib  # noqa: E402
@@ -37,10 +37,39 @@ from api_gateway.adapters.providers.http_gateway_edge import build_gateway_edge_
 from api_gateway.main import build_gateway  # noqa: E402
 from api_gateway.models import AuditAction  # noqa: E402
 from api_gateway.portal import MembershipEntryDTO  # noqa: E402
+from api_gateway.ports import ImportInitiationOutcome, ImportInitiationPort, ImportInitiationRequest  # noqa: E402
 
 _CTL_TOKEN = "tok-ctl"
 _TENANT_TOKEN = "tok-t1"
 _MEMBERSHIP = MembershipEntryDTO(tenant_id="t1", role="TENANT_AGENT", display_ref="ref:tenant/t1/display")
+
+
+class _StubImportInitiation(ImportInitiationPort):
+    """W1b local references-only ``ImportInitiationPort`` double (stays inside this file — the shared
+    ``_gateway_doubles.py`` remains byte-unchanged). Records the request(s) the gateway hands over and
+    returns a canned ``ImportInitiationOutcome`` (no network, no database, no real Import Service)."""
+
+    def __init__(self, outcome: ImportInitiationOutcome) -> None:
+        self._outcome = outcome
+        self.requests: List[ImportInitiationRequest] = []
+
+    def initiate(self, request: ImportInitiationRequest) -> ImportInitiationOutcome:
+        self.requests.append(request)
+        return self._outcome
+
+
+def _import_outcome(
+    *,
+    ok: bool = True,
+    state: str = "applied",
+    replayed: bool = False,
+    applied_count: int = 1,
+    noop_count: int = 0,
+    import_id: str = "job-1",
+) -> ImportInitiationOutcome:
+    return ImportInitiationOutcome(
+        ok=ok, state=state, replayed=replayed, applied_count=applied_count, noop_count=noop_count, import_id=import_id
+    )
 
 
 class _CountingGateway:
@@ -56,7 +85,12 @@ class _CountingGateway:
 
 
 @contextlib.contextmanager
-def _serve(control_read: object, *, allowed_origins: Tuple[str, ...] = ()) -> Iterator[Tuple[str, _CountingGateway, RecordingAuditEmitter]]:
+def _serve(
+    control_read: object,
+    *,
+    allowed_origins: Tuple[str, ...] = (),
+    import_initiation: Optional[ImportInitiationPort] = None,
+) -> Iterator[Tuple[str, _CountingGateway, RecordingAuditEmitter]]:
     authn = StubAuthenticator()
     # The stub keys tokens by the verbatim Authorization value the edge forwards (the core does not
     # strip "Bearer " — the real IC-005 authenticator does; the stub stands in for it), so register
@@ -65,7 +99,7 @@ def _serve(control_read: object, *, allowed_origins: Tuple[str, ...] = ()) -> It
     authn.add_token("Bearer " + _TENANT_TOKEN, principal="p1", tenant="t1", role="TENANT_AGENT")
     router = StubRouterDispatch()
     audit = RecordingAuditEmitter()
-    gateway = build_gateway(authenticator=authn, router=router, control_read=control_read, audit=audit)
+    gateway = build_gateway(authenticator=authn, router=router, control_read=control_read, audit=audit, import_initiation=import_initiation)
     counting = _CountingGateway(gateway)
     server, base_url = build_gateway_edge_server(counting, host="127.0.0.1", port=0, allowed_origins=allowed_origins)  # type: ignore[arg-type]
     netloc = base_url.split("://", 1)[1]
@@ -311,6 +345,162 @@ def test_readiness_is_200_without_overclaim() -> None:
     assert counting.calls == 0, "readiness must never reach the core"
 
 
+# --- served import route (W1b): POST /import/<source_ref> --------------------------------------------
+# The port-composed import success (200 + ImportResultDTO). A bounded, traversal-safe MULTI-segment
+# source_ref is accepted; the core executes exactly once and the edge serializes only the real result.
+def test_post_import_multisegment_source_created_returns_200_result_dto_and_calls_handle_once() -> None:
+    stub = _StubImportInitiation(_import_outcome(applied_count=1, noop_count=0, import_id="job-9"))
+    with _serve(StubControlPlaneRead(mode="success"), import_initiation=stub) as (netloc, counting, _a):
+        status, hdrs, body = _request(netloc, "/import/global-startup/rec-9", method="POST", headers=_bearer(_TENANT_TOKEN))
+    assert status == 200, f"a created import must be 200; got {status}"
+    assert hdrs.get("content-type") == "application/json" and hdrs.get("cache-control") == "no-store"
+    payload = json.loads(body)
+    assert payload["outcome"] == "created", "an applied import composes the created ImportResultDTO"
+    assert payload["source_ref"] == "global-startup/rec-9" and payload["target_tenant_ref"] == "t1"
+    assert payload["tenant_record_ref"] == "t1:startups:global-startup/rec-9", "the multi-segment source_ref flows through verbatim"
+    assert counting.calls == 1, "Gateway.handle must be called exactly once for a valid import request"
+    assert len(stub.requests) == 1 and stub.requests[0].source_ref == "global-startup/rec-9"
+
+
+def test_post_import_replayed_returns_200() -> None:
+    stub = _StubImportInitiation(_import_outcome(replayed=True, applied_count=0, noop_count=1))
+    with _serve(StubControlPlaneRead(mode="success"), import_initiation=stub) as (netloc, _c, _a):
+        status, _hdrs, body = _request(netloc, "/import/g1", method="POST", headers=_bearer(_TENANT_TOKEN))
+    assert status == 200 and json.loads(body)["outcome"] == "replayed", "a replayed import is a lawful 200 ImportResultDTO"
+
+
+def test_post_import_noop_returns_200() -> None:
+    stub = _StubImportInitiation(_import_outcome(replayed=False, applied_count=0, noop_count=1))
+    with _serve(StubControlPlaneRead(mode="success"), import_initiation=stub) as (netloc, _c, _a):
+        status, _hdrs, body = _request(netloc, "/import/g1", method="POST", headers=_bearer(_TENANT_TOKEN))
+    assert status == 200 and json.loads(body)["outcome"] == "noop", "a noop import is a lawful 200 ImportResultDTO"
+
+
+def test_post_import_zero_record_is_403_no_body() -> None:
+    # A zero-record completion (applied=0, noop=0) is the LW-1 consistent denial: 403, no body, no DTO.
+    stub = _StubImportInitiation(_import_outcome(applied_count=0, noop_count=0))
+    with _serve(StubControlPlaneRead(mode="success"), import_initiation=stub) as (netloc, _c, _a):
+        status, _hdrs, body = _request(netloc, "/import/g1", method="POST", headers=_bearer(_TENANT_TOKEN))
+    assert status == 403 and body == b"", "a zero-record import must be a 403 with no body"
+
+
+def test_post_import_engine_failure_is_503_no_body() -> None:
+    # A transport/engine failure (ok=False) collapses fail-closed to 503, empty body — no detail.
+    stub = _StubImportInitiation(_import_outcome(ok=False, state="", applied_count=0, noop_count=0, import_id=""))
+    with _serve(StubControlPlaneRead(mode="success"), import_initiation=stub) as (netloc, _c, _a):
+        status, _hdrs, body = _request(netloc, "/import/g1", method="POST", headers=_bearer(_TENANT_TOKEN))
+    assert status == 503 and body == b"", "an engine/transport failure must be a 503 with no body"
+
+
+def test_post_import_missing_bearer_is_401() -> None:
+    stub = _StubImportInitiation(_import_outcome())
+    with _serve(StubControlPlaneRead(mode="success"), import_initiation=stub) as (netloc, _c, _a):
+        status, _hdrs, body = _request(netloc, "/import/g1", method="POST")
+    assert status == 401 and body == b"", "a missing bearer on the import route must be a 401 with no body"
+    assert stub.requests == [], "an unauthenticated import must never reach the import port"
+
+
+def test_post_import_control_scope_token_is_403_tenant_context_required() -> None:
+    # A tenantless CONTROL token has no signed active tenant -> the import (a TENANT-domain write) is
+    # denied pre-port with 403, empty body. Tenant authority is never taken from the path/headers.
+    stub = _StubImportInitiation(_import_outcome())
+    with _serve(StubControlPlaneRead(mode="success"), import_initiation=stub) as (netloc, _c, _a):
+        status, _hdrs, body = _request(netloc, "/import/g1", method="POST", headers=_bearer(_CTL_TOKEN))
+    assert status == 403 and body == b"", "a control-scope token (no active tenant) must be a 403 with no body"
+    assert stub.requests == [], "a pre-port tenant-context denial must never invoke the import port"
+
+
+def test_post_import_carrier_mismatch_is_403() -> None:
+    # A tenant token (t1) + a DIFFERENT single carrier (X-Tenant-Id t2) -> carrier_mismatch (403).
+    stub = _StubImportInitiation(_import_outcome())
+    with _serve(StubControlPlaneRead(mode="success"), import_initiation=stub) as (netloc, _c, _a):
+        headers = {**_bearer(_TENANT_TOKEN), "X-Tenant-Id": "t2"}
+        status, _hdrs, body = _request(netloc, "/import/g1", method="POST", headers=headers, host="example.com")
+    assert status == 403 and body == b"", "a carrier mismatch must be a 403 with no body"
+    assert stub.requests == [], "a carrier-mismatch denial must never invoke the import port"
+
+
+def test_post_import_operation_key_is_forwarded() -> None:
+    # The optional x-operation-key header is forwarded to the core, which hands it to the import port
+    # (operation-level idempotency, D-20). The edge derives no tenant/actor authority from it.
+    stub = _StubImportInitiation(_import_outcome())
+    with _serve(StubControlPlaneRead(mode="success"), import_initiation=stub) as (netloc, _c, _a):
+        headers = {**_bearer(_TENANT_TOKEN), "X-Operation-Key": "op-hdr-123"}
+        status, _hdrs, _body = _request(netloc, "/import/g1", method="POST", headers=headers)
+    assert status == 200
+    assert len(stub.requests) == 1 and stub.requests[0].operation_key == "op-hdr-123", "a client x-operation-key must be forwarded"
+
+
+def test_post_import_port_absent_envelope_is_failclosed_503() -> None:
+    # Port ABSENT (no ImportInitiationPort) + control_read present: the core dispatches and composes the
+    # accepted-initiation ImportInitiationDTO envelope (200). The edge must NEVER serve that as success —
+    # only a real ImportResultDTO is a served import success — so it fails closed to 503, empty body.
+    with _serve(StubControlPlaneRead(mode="success")) as (netloc, counting, _a):
+        status, _hdrs, body = _request(netloc, "/import/g1", method="POST", headers=_bearer(_TENANT_TOKEN))
+    assert status == 503 and body == b"", "a port-absent ImportInitiationDTO envelope must fail closed to 503, empty body"
+    assert counting.calls == 1, "the core is still invoked once; the non-ImportResultDTO envelope is fail-closed at the edge"
+
+
+def test_get_valid_import_target_is_405_pre_core() -> None:
+    with _serve(StubControlPlaneRead(mode="success")) as (netloc, counting, _a):
+        status, _hdrs, _body = _request(netloc, "/import/g1", headers=_bearer(_TENANT_TOKEN))  # GET
+    assert status == 405, "GET on a valid import target must be 405 (POST/OPTIONS only)"
+    assert counting.calls == 0, "a method rejection must never reach the core"
+
+
+def test_bare_and_empty_import_targets_are_404_pre_core() -> None:
+    with _serve(StubControlPlaneRead(mode="success")) as (netloc, counting, _a):
+        for path in ("/import", "/import/", "/import//rec-9"):
+            status, _hdrs, _body = _request(netloc, path, method="POST", headers=_bearer(_TENANT_TOKEN))
+            assert status == 404, f"a bare/empty import target {path!r} must be 404 pre-core; got {status}"
+    assert counting.calls == 0, "a route rejection must never reach the core"
+
+
+def test_malformed_traversal_and_encoded_import_targets_are_404_pre_core() -> None:
+    malformed = (
+        "/import/../rec-9",  # dot-dot traversal segment
+        "/import/global-startup/../rec-9",  # interior dot-dot traversal
+        "/import/%2e%2e/rec-9",  # percent-encoded dot-dot
+        "/import/global-startup%2Frec-9",  # percent-encoded delimiter
+        "/import/global-startup\\rec-9",  # backslash
+        "/import/g1?tenant=t1",  # query form (tenant authority is never from the query)
+    )
+    with _serve(StubControlPlaneRead(mode="success")) as (netloc, counting, _a):
+        for path in malformed:
+            status, _hdrs, _body = _request(netloc, path, method="POST", headers=_bearer(_TENANT_TOKEN))
+            assert status == 404, f"a malformed/encoded import target {path!r} must be 404 pre-core; got {status}"
+    assert counting.calls == 0, "a malformed-target rejection must never reach the core"
+
+
+def test_post_import_with_body_is_413_pre_core() -> None:
+    with _serve(StubControlPlaneRead(mode="success")) as (netloc, counting, _a):
+        status, _hdrs, _body = _request(netloc, "/import/g1", method="POST", headers=_bearer(_TENANT_TOKEN), body=b"x")
+    assert status == 413, "a non-empty body on the body-less import route must be 413 pre-core"
+    assert counting.calls == 0, "a bounds rejection must never reach the core"
+
+
+def test_options_import_preflight_is_204_with_post_methods() -> None:
+    origin = "https://ok.example"
+    with _serve(StubControlPlaneRead(mode="success"), allowed_origins=(origin,)) as (netloc, counting, _a):
+        status, hdrs, _body = _request(netloc, "/import/g1", method="OPTIONS", headers={"Origin": origin})
+    assert status == 204, f"an allowed import preflight must be 204; got {status}"
+    assert hdrs.get("access-control-allow-origin") == origin, "the exact origin must be echoed"
+    assert hdrs.get("access-control-allow-methods") == "POST, OPTIONS", "the import preflight must advertise POST, OPTIONS"
+    assert hdrs.get("access-control-allow-credentials") == "false", "credentialed CORS must never be enabled"
+    assert "x-operation-key" in (hdrs.get("access-control-allow-headers") or "").lower(), (
+        "x-operation-key must be an allowed request header"
+    )
+    assert counting.calls == 0, "a CORS preflight must never reach the core"
+
+
+def test_post_import_correlation_id_is_echoed() -> None:
+    stub = _StubImportInitiation(_import_outcome())
+    with _serve(StubControlPlaneRead(mode="success"), import_initiation=stub) as (netloc, _c, _a):
+        headers = {**_bearer(_TENANT_TOKEN), "X-Correlation-Id": "imp-corr.9"}
+        status, hdrs, _body = _request(netloc, "/import/g1", method="POST", headers=headers)
+    assert status == 200 and hdrs.get("x-correlation-id") == "imp-corr.9", "a valid correlation id must be echoed on the import route"
+
+
 if __name__ == "__main__":
     _h.run(
         [
@@ -337,5 +527,21 @@ if __name__ == "__main__":
             test_success_response_to_denied_origin_carries_no_cors,
             test_health_is_200_and_core_untouched,
             test_readiness_is_200_without_overclaim,
+            test_post_import_multisegment_source_created_returns_200_result_dto_and_calls_handle_once,
+            test_post_import_replayed_returns_200,
+            test_post_import_noop_returns_200,
+            test_post_import_zero_record_is_403_no_body,
+            test_post_import_engine_failure_is_503_no_body,
+            test_post_import_missing_bearer_is_401,
+            test_post_import_control_scope_token_is_403_tenant_context_required,
+            test_post_import_carrier_mismatch_is_403,
+            test_post_import_operation_key_is_forwarded,
+            test_post_import_port_absent_envelope_is_failclosed_503,
+            test_get_valid_import_target_is_405_pre_core,
+            test_bare_and_empty_import_targets_are_404_pre_core,
+            test_malformed_traversal_and_encoded_import_targets_are_404_pre_core,
+            test_post_import_with_body_is_413_pre_core,
+            test_options_import_preflight_is_204_with_post_methods,
+            test_post_import_correlation_id_is_echoed,
         ]
     )

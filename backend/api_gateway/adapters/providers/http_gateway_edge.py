@@ -1,4 +1,4 @@
-"""Served northbound API Gateway HTTP edge (stdlib http.server) — Served API Gateway Edge V1.
+"""Served northbound API Gateway HTTP edge (stdlib http.server) — Served API Gateway Edge V1 (+ W1b import).
 
 The single thin, single-threaded serving edge that converts a real HTTP request into the
 existing framework-neutral Gateway core (IC-010 §A/§N) and back. It owns TRANSPORT ONLY:
@@ -8,14 +8,22 @@ an exact-origin CORS allowlist, and the mapping ``InboundRequest`` -> ``Gateway.
 mint principals, authorize, classify routes for business, select tenants, route databases,
 compose portal DTOs, decide audit, or run business logic — every one of those stays inside
 the composed Gateway core it fronts (``ports.py`` / ``gateway.py`` / ``dispatch.py`` /
-``portal.py``). The edge calls exactly ONE thing: ``Gateway.handle``.
+``portal.py``). The edge calls exactly ONE thing: ``Gateway.handle`` (one shared call site).
 
-Exposed surface (V1): ``GET /memberships`` (the only business route — self-scoped
-MembershipsForPrincipal), ``GET /health``, ``GET /readiness``, and ``OPTIONS /memberships``
-(the CORS preflight). Every other path is ``404`` route-not-exposed and every non-allowed
-method is ``405`` — decided BEFORE the core is ever reached. ``Gateway.handle`` is invoked
-exactly once, and only for a valid ``GET /memberships`` business request; operational routes
-and pre-core rejections never reach it.
+Exposed surface: the business routes ``GET /memberships`` (self-scoped MembershipsForPrincipal)
+and ``POST /import/<source_ref>`` (the bounded, traversal-safe served import route — W1b), the
+operational ``GET /health`` / ``GET /readiness``, and the matching CORS preflights ``OPTIONS
+/memberships`` (GET, OPTIONS) and ``OPTIONS /import/<source_ref>`` (POST, OPTIONS). Every other
+path is ``404`` route-not-exposed and every non-allowed method is ``405`` — decided BEFORE the
+core is ever reached. ``Gateway.handle`` is invoked through exactly ONE shared call site and at
+most once per accepted business request; operational routes, preflights, and pre-core rejections
+never reach it. Both business routes are body-less (``_MAX_BODY_BYTES = 0``).
+
+The served import route is denial-fidelity terminal (W1b, IC-010 §L/§V.2): a success serializes
+ONLY a real, core-composed ``ImportResultDTO``; a genuine ``status >= 400`` is preserved with an
+empty body; every residual non-error result that is NOT an ``ImportResultDTO`` — including a
+port-absent ``ImportInitiationDTO`` accepted-initiation envelope — fails closed to ``503`` with an
+empty body. The edge never serializes an ``ImportInitiationDTO`` on the served import route.
 
 Runtime: plain single-threaded stdlib ``HTTPServer`` + ``BaseHTTPRequestHandler`` bound to
 ``127.0.0.1`` by default (TLS terminates at a reverse proxy — deployment scope; this edge
@@ -40,7 +48,7 @@ from typing import Dict, Mapping, Optional, Tuple, cast
 
 from api_gateway.gateway import Gateway
 from api_gateway.models import GatewayResponse, InboundRequest
-from api_gateway.portal import serialize_portal_dto
+from api_gateway.portal import ImportResultDTO, serialize_portal_dto
 from api_gateway.readiness import liveness, readiness
 
 # --- transport constants (conservative, review-pinned; test-pinned by the boundary guard) ---
@@ -53,27 +61,61 @@ _SAFE_CORRELATION = re.compile(r"[A-Za-z0-9._\-]+")  # anti-log-injection / anti
 _MAX_REQUEST_TARGET_BYTES = 2048  # request-target (path + any query) byte cap
 _MAX_HEADER_COUNT = 64  # header-count cap (below the stdlib 100-header parse limit)
 _MAX_TOTAL_HEADER_BYTES = 16384  # 16 KiB total accepted header bytes
-_MAX_BODY_BYTES = 0  # the exposed GETs carry no business body; any non-empty body is rejected
+_MAX_BODY_BYTES = 0  # both business routes (GET /memberships, POST /import/<ref>) are body-less; any non-empty body is rejected
 _MAX_DRAIN_BYTES = 65536  # bounded read of a rejected body so the response delivers without a reset
 
 # The closed transport route allowlist: exact request-target -> the methods it exposes. Any
 # other target is 404 (route not exposed); a non-listed method on a listed target is 405.
-# Everything here is decided BEFORE the Gateway core is invoked.
+# Everything here is decided BEFORE the Gateway core is invoked. The parameterized import
+# route (below) is deliberately NOT here — it carries a source_ref and is matched separately.
 _EXPOSED_ROUTES: Mapping[str, "frozenset[str]"] = {
     "/memberships": frozenset({"GET", "OPTIONS"}),
     "/health": frozenset({"GET"}),
     "/readiness": frozenset({"GET"}),
 }
 
+# --- the bounded served import route (W1b) — NOT a static allowlist entry (it carries a
+# parameter) and NOT a generic router. A dedicated matcher recognizes exactly
+# ``/import/<source_ref>`` where source_ref is a bounded, traversal-safe suffix (PRD §4.1).
+_IMPORT_PREFIX = "/import/"  # the served import target is exactly this prefix + a valid source_ref suffix
+_MAX_SOURCE_REF_BYTES = 512  # the source_ref suffix byte cap (1..512 UTF-8 bytes)
+_IMPORT_TARGET_METHODS = frozenset({"POST", "OPTIONS"})  # the ONLY methods the import target exposes
+_OPERATION_KEY_HEADER = "x-operation-key"  # forwarded (when present) for the core's operation-level idempotency (D-20)
+# Each source_ref segment: an alnum lead then alnum/dot/dash/underscore. No empty / "." / ".." /
+# percent-encoded / backslash / query / fragment form can match — traversal- and injection-safe by
+# construction (a "." or ".." segment fails the alnum-lead rule; "%", "\\", "?", "#" are outside the charset).
+_SAFE_IMPORT_SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._\-]*")
+
+
+def _is_valid_import_target(target: str) -> bool:
+    """True iff ``target`` is a bounded, traversal-safe ``/import/<source_ref>`` served import target
+    (W1b; PRD §4.1). ``source_ref`` is the exact request-target suffix after ``/import/``: 1..512 UTF-8
+    bytes of one or more ``/``-separated segments, each ``[A-Za-z0-9][A-Za-z0-9._-]*``. Every bare / empty /
+    ``.`` / ``..`` / percent-encoded / backslash / query / fragment form fails to match and is ``404``
+    pre-core. A bounded parameterized matcher — NEVER a generic wildcard or prefix router (the static
+    allowlist stays closed to {/memberships, /health, /readiness})."""
+    if not target.startswith(_IMPORT_PREFIX):
+        return False
+    suffix = target[len(_IMPORT_PREFIX) :]
+    if not 1 <= len(suffix.encode("utf-8")) <= _MAX_SOURCE_REF_BYTES:
+        return False
+    return all(_SAFE_IMPORT_SEGMENT.fullmatch(segment) for segment in suffix.split("/"))
+
 
 def _make_handler(gateway: Gateway, allowed_origins: Tuple[str, ...]) -> "type[BaseHTTPRequestHandler]":
     """Build the request handler bound to a composed ``Gateway`` and the exact-origin CORS
-    allowlist. The handler owns transport only; it calls ``gateway.handle`` exactly once for a
-    valid ``GET /memberships`` business request and never for a rejection or operational route."""
+    allowlist. The handler owns transport only; it calls ``gateway.handle`` (through the single
+    shared ``_invoke_core`` site) exactly once for a valid ``/memberships`` or ``/import`` business
+    request and never for a rejection, preflight, or operational route."""
 
     class _GatewayEdgeHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 (http.server API)
             self._dispatch("GET")
+
+        def do_POST(self) -> None:  # noqa: N802 (http.server API)
+            # POST is a served method for the bounded /import/<source_ref> route only; _dispatch
+            # yields 405 on a POST to any other listed target and 404 on an unlisted one (pre-core).
+            self._dispatch("POST")
 
         def do_OPTIONS(self) -> None:  # noqa: N802 (http.server API)
             self._dispatch("OPTIONS")
@@ -83,8 +125,9 @@ def _make_handler(gateway: Gateway, allowed_origins: Tuple[str, ...]) -> "type[B
             # and an unlisted target yields 404 (both pre-core, fixed status, empty body).
             self._dispatch(self.command)
 
-        # Refuse (not serve) other methods; do_GET/do_OPTIONS stay the only served handlers.
-        do_POST = do_PUT = do_DELETE = do_PATCH = do_HEAD = _method_not_allowed
+        # do_GET / do_POST / do_OPTIONS are the served handlers; every other method dispatches by
+        # its real command name and resolves to 405 (listed target) or 404 (unlisted).
+        do_PUT = do_DELETE = do_PATCH = do_HEAD = _method_not_allowed
 
         def _dispatch(self, method: str) -> None:
             correlation_id = self._correlation_id()
@@ -97,31 +140,59 @@ def _make_handler(gateway: Gateway, allowed_origins: Tuple[str, ...]) -> "type[B
             if bounds_status is not None:
                 self._respond(bounds_status, correlation_id, origin)
                 return
-            target = self.path  # exact request-target: a stray ?query never equals a listed route
+            target = self.path  # exact request-target: a stray ?query never equals a listed route or a valid import target
             allowed_methods = _EXPOSED_ROUTES.get(target)
-            if allowed_methods is None:
-                self._respond(404, correlation_id, origin)  # route not exposed (pre-core)
+            if allowed_methods is not None:
+                # The closed static allowlist: /memberships (business) + /health + /readiness (operational).
+                if method not in allowed_methods:
+                    self._respond(405, correlation_id, origin)  # method not allowed (pre-core)
+                    return
+                if method == "OPTIONS":
+                    # CORS preflight for /memberships: 204, GET+OPTIONS, exact-origin headers only when
+                    # the origin is allowlisted. The Gateway core is NEVER invoked for a preflight.
+                    self._respond(
+                        204,
+                        correlation_id,
+                        origin,
+                        preflight=True,
+                        cors_methods="GET, OPTIONS",
+                        cors_headers="Authorization, x-correlation-id",
+                    )
+                    return
+                if target == "/health":
+                    self._respond_json(200, json.dumps(liveness()).encode("utf-8"), correlation_id, origin)
+                    return
+                if target == "/readiness":
+                    # In-process liveness/state only — NOT a full production-readiness proof.
+                    self._respond_json(200, json.dumps(readiness()).encode("utf-8"), correlation_id, origin)
+                    return
+                self._handle_memberships(correlation_id, origin)
                 return
-            if method not in allowed_methods:
-                self._respond(405, correlation_id, origin)  # method not allowed (pre-core)
+            if _is_valid_import_target(target):
+                # The bounded /import/<source_ref> business route (W1b): POST executes, OPTIONS preflights.
+                if method not in _IMPORT_TARGET_METHODS:
+                    self._respond(405, correlation_id, origin)  # method not allowed (pre-core)
+                    return
+                if method == "OPTIONS":
+                    # CORS preflight for /import: 204, POST+OPTIONS. The Gateway core is NEVER invoked
+                    # for a preflight; x-operation-key is added to the allowed request headers.
+                    self._respond(
+                        204,
+                        correlation_id,
+                        origin,
+                        preflight=True,
+                        cors_methods="POST, OPTIONS",
+                        cors_headers="Authorization, x-correlation-id, x-operation-key",
+                    )
+                    return
+                self._handle_import(correlation_id, origin)
                 return
-            if method == "OPTIONS":
-                # CORS preflight for /memberships: 204, exact-origin headers only when the
-                # origin is allowlisted. The Gateway core is NEVER invoked for a preflight.
-                self._respond(204, correlation_id, origin, preflight=True)
-                return
-            if target == "/health":
-                self._respond_json(200, json.dumps(liveness()).encode("utf-8"), correlation_id, origin)
-                return
-            if target == "/readiness":
-                # In-process liveness/state only — NOT a full production-readiness proof.
-                self._respond_json(200, json.dumps(readiness()).encode("utf-8"), correlation_id, origin)
-                return
-            self._handle_memberships(correlation_id, origin)
+            self._respond(404, correlation_id, origin)  # route not exposed (pre-core)
 
         def _handle_memberships(self, correlation_id: str, origin: Optional[str]) -> None:
-            # The ONE business path: build the typed InboundRequest and call the core exactly
-            # once. The edge validates nothing about identity/tenant/route beyond transport.
+            # The self-scoped MembershipsForPrincipal business path: build the typed InboundRequest and
+            # invoke the core through the ONE shared call site. The edge validates nothing about
+            # identity/tenant/route beyond transport.
             request = InboundRequest(
                 method="GET",
                 path="/memberships",
@@ -129,7 +200,7 @@ def _make_handler(gateway: Gateway, allowed_origins: Tuple[str, ...]) -> "type[B
                 headers=self._forwarded_headers(correlation_id),
                 authorization=self.headers.get("Authorization"),
             )
-            response: GatewayResponse = gateway.handle(request)
+            response = self._invoke_core(request)
             if response.status == 200 and response.portal_dto is not None:
                 # Success bodies come ONLY from the core-owned serializer (catalogue-closed).
                 self._respond_json(200, serialize_portal_dto(response.portal_dto), correlation_id, origin)
@@ -137,6 +208,38 @@ def _make_handler(gateway: Gateway, allowed_origins: Tuple[str, ...]) -> "type[B
             # Every denial/unavailable -> fixed status, EMPTY body, no detail (fail closed).
             status = response.status if response.status >= 400 else 503
             self._respond(status, correlation_id, origin)
+
+        def _handle_import(self, correlation_id: str, origin: Optional[str]) -> None:
+            # The bounded /import/<source_ref> business path (W1b): build the typed InboundRequest from
+            # the validated request target + the existing bearer, and invoke the core through the ONE
+            # shared call site. Tenant/actor authority stays SIGNED-CONTEXT owned inside the core — the
+            # edge derives it from nothing (never the path, body, query, cookie, or carrier). The optional
+            # x-operation-key is forwarded for the core's operation-level idempotency.
+            request = InboundRequest(
+                method="POST",
+                path=self.path,
+                host=self.headers.get("Host", "") or "",
+                headers=self._import_forwarded_headers(correlation_id),
+                authorization=self.headers.get("Authorization"),
+            )
+            response = self._invoke_core(request)
+            # Denial-fidelity terminal (PRD §6.4): only a real, core-composed ImportResultDTO success
+            # serializes; a genuine >=400 status is preserved (empty body); every residual non-error
+            # result that is NOT an ImportResultDTO — including a port-absent ImportInitiationDTO envelope
+            # — fails closed to 503 (empty body). The edge references ImportResultDTO ONLY for this type
+            # check: it never constructs one and never serializes an ImportInitiationDTO on this route.
+            if response.status == 200 and isinstance(response.portal_dto, ImportResultDTO):
+                self._respond_json(200, serialize_portal_dto(response.portal_dto), correlation_id, origin)
+                return
+            status = response.status if response.status >= 400 else 503
+            self._respond(status, correlation_id, origin)
+
+        def _invoke_core(self, request: InboundRequest) -> GatewayResponse:
+            # The ONE shared Gateway-core invocation site for EVERY business route (Memberships + Import):
+            # exactly one textual ``gateway.handle`` call in the whole module (IC-010 §A — the edge calls
+            # exactly ONE thing). No loop, no retry, no DTO construction, no authentication, no database —
+            # each accepted request reaches the core exactly once.
+            return gateway.handle(request)
 
         def _forwarded_headers(self, correlation_id: str) -> Dict[str, str]:
             # Faithful, minimal pass-through: the edge OWNS x-correlation-id (accept/mint) and
@@ -147,6 +250,16 @@ def _make_handler(gateway: Gateway, allowed_origins: Tuple[str, ...]) -> "type[B
             tenant = self.headers.get(_TENANT_HEADER)
             if tenant is not None:
                 headers[_TENANT_HEADER] = tenant
+            return headers
+
+        def _import_forwarded_headers(self, correlation_id: str) -> Dict[str, str]:
+            # The import route additionally forwards the optional x-operation-key carrier (references
+            # only; bounded/minted INSIDE the core) on top of the base correlation + X-Tenant-Id
+            # pass-through. Tenant authority is never derived from this or any other header at the edge.
+            headers = self._forwarded_headers(correlation_id)
+            operation_key = self.headers.get(_OPERATION_KEY_HEADER)
+            if operation_key is not None:
+                headers[_OPERATION_KEY_HEADER] = operation_key
             return headers
 
         def _correlation_id(self) -> str:
@@ -184,7 +297,7 @@ def _make_handler(gateway: Gateway, allowed_origins: Tuple[str, ...]) -> "type[B
             if len(str(self.headers).encode("utf-8")) > _MAX_TOTAL_HEADER_BYTES:
                 return 413
             if self.headers.get("Transfer-Encoding"):
-                return 413  # chunked/streamed bodies are not accepted on these GETs
+                return 413  # chunked/streamed bodies are not accepted on these body-less routes
             raw_len = self.headers.get("Content-Length")
             if raw_len is not None:
                 try:
@@ -192,16 +305,25 @@ def _make_handler(gateway: Gateway, allowed_origins: Tuple[str, ...]) -> "type[B
                 except ValueError:
                     return 400  # malformed transport request
                 if length > _MAX_BODY_BYTES:
-                    return 413  # a non-empty body on a body-less GET
+                    return 413  # a non-empty body on a body-less route
             return None
 
-        def _respond(self, status: int, correlation_id: str, origin: Optional[str], *, preflight: bool = False) -> None:
+        def _respond(
+            self,
+            status: int,
+            correlation_id: str,
+            origin: Optional[str],
+            *,
+            preflight: bool = False,
+            cors_methods: str = "GET, OPTIONS",
+            cors_headers: str = "Authorization, x-correlation-id",
+        ) -> None:
             # Fixed safe response, EMPTY body — the only shape for every denial/rejection/preflight.
             self.send_response(status)
             self.send_header("Content-Length", "0")
             self.send_header("Cache-Control", "no-store")
             self.send_header(_CORRELATION_HEADER, correlation_id)
-            self._write_cors_headers(origin, preflight=preflight)
+            self._write_cors_headers(origin, preflight=preflight, cors_methods=cors_methods, cors_headers=cors_headers)
             self.end_headers()
 
         def _respond_json(self, status: int, payload: bytes, correlation_id: str, origin: Optional[str]) -> None:
@@ -214,7 +336,14 @@ def _make_handler(gateway: Gateway, allowed_origins: Tuple[str, ...]) -> "type[B
             self.end_headers()
             self.wfile.write(payload)
 
-        def _write_cors_headers(self, origin: Optional[str], *, preflight: bool) -> None:
+        def _write_cors_headers(
+            self,
+            origin: Optional[str],
+            *,
+            preflight: bool,
+            cors_methods: str = "GET, OPTIONS",
+            cors_headers: str = "Authorization, x-correlation-id",
+        ) -> None:
             # Exact-origin allowlist only. A denied or absent origin receives NO CORS headers
             # (the browser blocks the response). NEVER a wildcard; NEVER credentialed CORS.
             if origin is None or origin not in allowed_origins:
@@ -223,8 +352,8 @@ def _make_handler(gateway: Gateway, allowed_origins: Tuple[str, ...]) -> "type[B
             self.send_header("Access-Control-Allow-Credentials", "false")
             self.send_header("Vary", "Origin")
             if preflight:
-                self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
-                self.send_header("Access-Control-Allow-Headers", "Authorization, x-correlation-id")
+                self.send_header("Access-Control-Allow-Methods", cors_methods)
+                self.send_header("Access-Control-Allow-Headers", cors_headers)
 
         def log_message(self, *args: object) -> None:  # silence default stderr logging (no token/payload leak)
             return

@@ -8,10 +8,13 @@ census carries a companion proving it flags a bad sample. It enforces:
 * single-threaded stdlib only — plain ``HTTPServer`` (never ``ThreadingHTTPServer``), no threading /
   asyncio / web framework, no new dependency;
 * no sibling-service / database-driver / vendor-SDK / crypto import (edge-only enforcement boundary);
-* the Gateway core is called EXACTLY ONCE (``gateway.handle``) — the edge owns no auth / authorization /
-  routing / tenant selection / DTO composition / business logic;
-* a CLOSED transport route allowlist == {/memberships, /health, /readiness} — /tenant, /directory,
-  /import and any unknown path never appear;
+* the Gateway core is called EXACTLY ONCE (``gateway.handle``, through the one shared ``_invoke_core``
+  site reached by both business paths) — the edge owns no auth / authorization / routing / tenant
+  selection / DTO composition / business logic;
+* a CLOSED static transport route allowlist == {/memberships, /health, /readiness} — /tenant, /directory
+  and any unknown path never appear; plus the W1b bounded, traversal-safe ``POST /import/<source_ref>``
+  route (multi-segment, 512-byte-capped, POST+OPTIONS only) served via a DEDICATED matcher, never as a
+  static allowlist key;
 * correlation accept/mint/echo is present (the ``x-correlation-id`` header, a mint via ``uuid4``);
 * CORS is exact-origin only — never a wildcard origin, never credentialed CORS
   (``Access-Control-Allow-Credentials: false``);
@@ -34,6 +37,17 @@ from typing import List, Optional, Set
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import _scan  # noqa: E402
+
+if str(_scan.BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(_scan.BACKEND_ROOT))
+
+# W1b: the edge's bounded import matcher + its pins are pure, socket-free values — imported and
+# exercised directly by the import-route guard below (no bind, no network, no database).
+from api_gateway.adapters.providers.http_gateway_edge import (  # noqa: E402
+    _IMPORT_TARGET_METHODS,
+    _MAX_SOURCE_REF_BYTES,
+    _is_valid_import_target,
+)
 
 _EDGE = _scan.BACKEND_ROOT / "api_gateway" / "adapters" / "providers" / "http_gateway_edge.py"
 
@@ -207,20 +221,63 @@ def test_edge_calls_gateway_handle_exactly_once() -> None:
     used = _names_used(tree)
     for banned_name in ("authenticate", "decide", "dispatch", "compose_portal_dto", "recognized_carriers", "build_request_context"):
         assert banned_name not in used, f"the edge must not perform core logic ({banned_name})"
-    # No retry loop may wrap the single Gateway.handle call — the enclosing _handle_memberships
-    # business path must contain no loop (an automatic downstream retry is rejected here, and also
-    # by the behavioral exactly-once handle counting).
-    mm = _def(tree, "_handle_memberships")
-    assert mm is not None, "the edge must own the _handle_memberships business path"
-    assert not _has_loop(mm), "the Gateway.handle call must not be wrapped in a retry loop"
+    # W1b: the sole Gateway.handle call lives in the ONE shared _invoke_core site; BOTH business paths
+    # (_handle_memberships + _handle_import) reach the core through it, and NONE of the three wraps the
+    # call in a retry loop (an automatic downstream retry is rejected here, and also by the behavioral
+    # exactly-once handle counting).
+    shared = _def(tree, "_invoke_core")
+    assert shared is not None, "the edge must own the single shared _invoke_core handle site"
+    assert _attr_call_count(shared, "handle") == 1, "the sole gateway.handle call must live inside _invoke_core"
+    for path_name in ("_invoke_core", "_handle_memberships", "_handle_import"):
+        node = _def(tree, path_name)
+        assert node is not None, f"the edge must own the {path_name} business path"
+        assert not _has_loop(node), f"the Gateway.handle call must not be wrapped in a retry loop ({path_name})"
 
 
 def test_edge_route_allowlist_is_closed() -> None:
     keys = _dict_string_keys(_tree(_EDGE), "_EXPOSED_ROUTES")
     assert keys is not None, "the edge must define the _EXPOSED_ROUTES allowlist dict"
     assert keys == set(_EXPECTED_ROUTES), f"the route allowlist must be exactly {sorted(_EXPECTED_ROUTES)}; got {sorted(keys)}"
-    for hidden in ("/tenant", "/directory", "/import"):
+    # /tenant and /directory are never exposed. The W1b import route carries a source_ref parameter and
+    # is served ONLY via the dedicated bounded matcher (test_edge_import_route_...), NEVER as a static
+    # allowlist key — so no "/import"* literal may appear in the static dict.
+    for hidden in ("/tenant", "/directory"):
         assert hidden not in keys, f"the edge must never expose {hidden}"
+    assert not any(k.startswith("/import") for k in keys), "the parameterized import route must not be a static allowlist key"
+
+
+def test_edge_import_route_is_bounded_multisegment_and_post_only() -> None:
+    # W1b: the served /import/<source_ref> matcher is a BOUNDED, traversal-safe, multi-segment route —
+    # never a wildcard/prefix router — exercised directly (a pure, socket-free function).
+    for ok in ("/import/g1", "/import/global-startup/rec-9", "/import/a.b_c-d/e1"):
+        assert _is_valid_import_target(ok), f"{ok!r} must be an accepted bounded import target"
+    for bad in (
+        "/import",  # bare (no source_ref)
+        "/import/",  # empty suffix
+        "/import//rec-9",  # empty segment
+        "/import/../rec-9",  # dot-dot traversal
+        "/import/global-startup/../rec-9",  # interior dot-dot traversal
+        "/import/%2e%2e/rec-9",  # percent-encoded dot-dot
+        "/import/global-startup%2Frec-9",  # percent-encoded delimiter
+        "/import/global-startup\\rec-9",  # backslash
+        "/import/g1?tenant=t1",  # query form
+        "/import/g1#frag",  # fragment form
+        "/memberships",  # a different route
+        "/importx/g1",  # prefix look-alike (not /import/)
+    ):
+        assert not _is_valid_import_target(bad), f"{bad!r} must be rejected by the bounded import matcher"
+    # The source_ref byte bound is pinned at 512: at-bound accepted, over-bound rejected.
+    assert _MAX_SOURCE_REF_BYTES == 512, "the source_ref byte bound must be pinned at 512"
+    assert _is_valid_import_target("/import/" + "a" * 512), "a 512-byte source_ref is at the bound (accepted)"
+    assert not _is_valid_import_target("/import/" + "a" * 513), "a 513-byte source_ref exceeds the bound (rejected)"
+    # POST + OPTIONS only — never GET/PUT/PATCH/DELETE/HEAD.
+    assert _IMPORT_TARGET_METHODS == frozenset({"POST", "OPTIONS"}), "the import target must expose exactly POST, OPTIONS"
+    # The matcher is wired into the edge dispatch, and the static allowlist stays closed (no /import key).
+    text = _EDGE.read_text(encoding="utf-8")
+    assert "_is_valid_import_target(target)" in text, "the edge dispatch must gate the import route on the bounded matcher"
+    assert _dict_string_keys(_tree(_EDGE), "_EXPOSED_ROUTES") == set(_EXPECTED_ROUTES), (
+        "the static allowlist must not carry a parameterized import key"
+    )
 
 
 def test_edge_correlation_accept_mint_echo() -> None:
@@ -242,10 +299,17 @@ def test_edge_cors_exact_origin_no_credentialed_wildcard() -> None:
 
 
 def test_edge_serialize_portal_dto_is_only_success_serializer() -> None:
-    used = _names_used(_tree(_EDGE))
+    tree = _tree(_EDGE)
+    used = _names_used(tree)
     assert "serialize_portal_dto" in used, "success bodies must be produced by the core-owned serialize_portal_dto"
     hand_rolled = _FORBIDDEN_DTO_NAMES & used
     assert not hand_rolled, f"the edge must not construct/compose portal DTOs itself: {sorted(hand_rolled)}"
+    # W1b: the edge may REFERENCE ImportResultDTO for the served-import success type check only — never
+    # CONSTRUCT one — and must NEVER reference/serialize an ImportInitiationDTO on the served import route
+    # (a port-absent ImportInitiationDTO envelope is fail-closed to 503, not serialized).
+    assert "ImportResultDTO" in used, "the import terminal must type-check the success DTO (ImportResultDTO)"
+    assert _name_call_count(tree, "ImportResultDTO") == 0, "the edge must never construct an ImportResultDTO"
+    assert "ImportInitiationDTO" not in used, "the edge must never reference/serialize ImportInitiationDTO"
 
 
 def test_edge_no_raw_error_or_secret_leakage() -> None:
@@ -305,6 +369,11 @@ def test_edge_boundary_guard_nonvacuity() -> None:
     # A retry loop wrapping the handle call is detectable (and a loop-free body passes).
     assert _has_loop(_parse("def _handle_memberships():\n    while True:\n        g.handle(r)\n")), "a retry loop must be detectable"
     assert not _has_loop(_parse("def _handle_memberships():\n    g.handle(r)\n")), "a loop-free business path must pass"
+    # W1b: the bounded import matcher accepts a multi-segment ref and rejects wildcard/traversal/bare
+    # forms — so a widened matcher (accepting "/import/../x" or a bare "/import") is detectable.
+    assert _is_valid_import_target("/import/global-startup/rec-9"), "a bounded multi-segment ref must be accepted"
+    assert not _is_valid_import_target("/import/../rec-9"), "a traversal ref must be rejected (non-vacuous)"
+    assert not _is_valid_import_target("/import"), "a bare /import must be rejected (non-vacuous)"
 
 
 if __name__ == "__main__":
@@ -313,6 +382,7 @@ if __name__ == "__main__":
             test_edge_is_single_threaded_stdlib_only,
             test_edge_calls_gateway_handle_exactly_once,
             test_edge_route_allowlist_is_closed,
+            test_edge_import_route_is_bounded_multisegment_and_post_only,
             test_edge_correlation_accept_mint_echo,
             test_edge_cors_exact_origin_no_credentialed_wildcard,
             test_edge_serialize_portal_dto_is_only_success_serializer,
