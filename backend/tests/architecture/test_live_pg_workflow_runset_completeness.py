@@ -106,6 +106,16 @@ MANUAL_ONLY_EXCEPTIONS = {
         "infrastructure/runbooks/import_copy_live_proof.md and pinned by "
         "tests/architecture/test_import_write_path_boundaries.py"
     ),
+    "tests/control_plane/requires_pg/test_pg_controlled_served_write_rehearsal.py": (
+        "controlled served-write rehearsal harness (the W1b served Gateway Edge joined to the W1a composed "
+        "real-PostgreSQL import path in one test-owned deployment root): single-cluster capable (creates and "
+        "drops its own disposable databases sp2_rehearsal_control / _alpha / _beta), but deliberately "
+        "MANUAL_ONLY — an operator-run, disposable-topology rehearsal that requires an explicit human "
+        "START-GATE (Dan) before any execution, never an automatic CI proof; loop enrollment would "
+        "additionally require editing the live-pg workflow (plus the EXPECTED_HARNESS_COUNT/b7c2-doc "
+        "lockstep), which is outside the rehearsal slice's authorized surface (no .github changes); "
+        "operator-run per infrastructure/runbooks/controlled_served_write_rehearsal.md"
+    ),
 }
 
 # SAME loop idiom as the AT-5 / ATR-4 guards (replicated for self-containment, not imported).
