@@ -74,11 +74,20 @@ class ConnectionPoolManager:
                 idle.conn.close()  # discard broken; never hand to another tenant
             if len(pool.in_use) >= pool.max_size:
                 raise PoolExhausted("per-tenant pool exhausted")
-            conn = open_fn()
-            # Defense in depth: the minted connection must be bound to this key.
-            if conn.tenant_id != tenant_id or conn.association_version != association_version:
-                conn.close()
-                raise PoolExhausted("connection bound to the wrong tenant/version")
+            try:
+                conn = open_fn()
+                # Defense in depth: the minted connection must be bound to this key.
+                if conn.tenant_id != tenant_id or conn.association_version != association_version:
+                    conn.close()
+                    raise PoolExhausted("connection bound to the wrong tenant/version")
+            except Exception:
+                # A failed acquisition must not leave an empty reserved pool key behind
+                # (no phantom (tenant, version) key; D-13/D-30 pool hygiene). Remove ONLY
+                # this same candidate pool, and ONLY while it still holds nothing, then
+                # re-raise the original exception unchanged.
+                if self._pools.get(key) is pool and not pool.idle and not pool.in_use:
+                    self._pools.pop(key, None)
+                raise
             pool.in_use.add(conn)
             return conn
 
