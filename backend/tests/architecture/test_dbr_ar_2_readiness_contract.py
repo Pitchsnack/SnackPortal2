@@ -66,7 +66,7 @@ _V1_STATUS_SENTENCE = (
 )
 _DECISION_A_SENTENCE = "decision a (b5-e, 2026-07-12, dan-authorized): b5-blk-4 — closed — evidence-bound governance decision"
 _DECISION_B_SENTENCE = "decision b (b5-e, 2026-07-12, dan-authorized): physical multi-database mvp — accepted at database granularity"
-_FAIL_CLOSED_SENTENCE = "production runtime activation remains not ready / do-not-activate — 8 of 9 activation blockers remain open"
+_FAIL_CLOSED_SENTENCE = "production runtime activation remains not ready / do-not-activate — 7 of 9 activation blockers remain open"
 _LOVABLE_SENTENCE = "the lovable cutover remains open"
 _ARCH_SENTENCE = "selected architecture: option b — control-plane-owned durable routing-audit store behind a service boundary"
 _NO_ATOMICITY_SENTENCE = (
@@ -964,14 +964,14 @@ _BLOCKER_COUNT_RE = re.compile(r"\b(\d+)\s+of\s+9\s+activation\s+blockers\b")
 
 def test_dbr2_m23_blocker_count_unchanged() -> None:
     counts = _BLOCKER_COUNT_RE.findall(_norm(_both()))
-    assert counts, "the 8-of-9 activation-blocker sentence must be present"
-    assert all(c == "8" for c in counts), f"activation blocker count must remain 8 of 9, got: {counts}"
+    assert counts, "the 7-of-9 activation-blocker sentence must be present"
+    assert all(c == "7" for c in counts), f"activation blocker count must be 7 of 9 after the B5-BLK-6 closure, got: {counts}"
 
 
 def test_dbr2_m23_nonvacuity() -> None:
-    assert _BLOCKER_COUNT_RE.findall("7 of 9 activation blockers remain open") == ["7"]
+    assert _BLOCKER_COUNT_RE.findall("8 of 9 activation blockers remain open") == ["8"]
     assert _BLOCKER_COUNT_RE.findall("9 of 9 activation blockers remain open") == ["9"]
-    assert not all(c == "8" for c in _BLOCKER_COUNT_RE.findall("7 of 9 activation blockers"))
+    assert not all(c == "7" for c in _BLOCKER_COUNT_RE.findall("8 of 9 activation blockers"))
 
 
 # Mutation 24 — one document loses the exact V1 status sentence: covered per-document by

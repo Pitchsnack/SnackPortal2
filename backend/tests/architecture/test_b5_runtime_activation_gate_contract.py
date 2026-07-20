@@ -132,7 +132,7 @@ _DBR_V1_STATUS_SENTENCE = (
     "this v1 records the implementation contract only. no durable routing-audit adapter,"
     " schema, production wiring or activation change is delivered by v1."
 )
-_FAIL_CLOSED_SENTENCE = "production runtime activation remains not ready / do-not-activate — 8 of 9 activation blockers remain open"
+_FAIL_CLOSED_SENTENCE = "production runtime activation remains not ready / do-not-activate — 7 of 9 activation blockers remain open"
 _NEXT_STEP_SENTENCE = "next step: the next dan-authorized governed slice"
 _IC002_STATES = (
     "Registered",
@@ -1062,13 +1062,14 @@ def test_b5d_12_next_step_nonvacuity() -> None:
         assert _NEXT_STEP_SENTENCE not in norm_doc.replace(_NEXT_STEP_SENTENCE, ""), doc.name
 
 
-# --- G13 (B5-E): unrelated blockers keep their exact live statuses -----------
-_OTHER_BLOCKER_IDS = tuple(f"b5-blk-{i}" for i in (1, 2, 3, 5, 6, 7, 8, 9))
+# --- G13 (B5-E + B5-BLK-6 closure): remaining OPEN blockers keep their statuses ---
+_OTHER_BLOCKER_IDS = tuple(f"b5-blk-{i}" for i in (1, 2, 3, 5, 7, 8, 9))
 
 
 def _other_blocker_marked_closed(text: str) -> bool:
-    """No blocker other than B5-BLK-4 may carry closure wording — B5-E has no
-    authority over them and there is no anchored allowance for any other id."""
+    """No blocker other than B5-BLK-4 and B5-BLK-6 may carry closure wording — B5-E
+    and the B5-BLK-6 governance-effect closure are the only closure authorities, and
+    there is no anchored allowance for any other id."""
     for raw in text.lower().splitlines():
         if not any(b in raw for b in _OTHER_BLOCKER_IDS):
             continue
@@ -1088,12 +1089,23 @@ def _register_row_is_open(register_text: str, blocker_id: str) -> bool:
     return False
 
 
+def _register_row_records_b5blk6_closure(register_text: str) -> bool:
+    """The register's B5-BLK-6 table row must carry the effected CLOSED status cell
+    (B5-BLK-4 and B5-BLK-6 are the two CLOSED blockers after the governance-effect closure)."""
+    for raw in register_text.lower().splitlines():
+        stripped = raw.replace("*", "").strip()
+        if stripped.startswith("| b5-blk-6"):
+            return "closed" in stripped
+    return False
+
+
 def test_b5e_13_unrelated_blockers_unchanged() -> None:
     t = _gate_docs_text()
-    assert not _other_blocker_marked_closed(t), "no blocker other than B5-BLK-4 may be marked closed by the B5-E decision"
+    assert not _other_blocker_marked_closed(t), "no blocker other than B5-BLK-4 and B5-BLK-6 may be marked closed"
     reg = _BLOCKERS_DOC.read_text(encoding="utf-8")
-    for i in (1, 2, 3, 5, 6, 7, 8, 9):
+    for i in (1, 2, 3, 5, 7, 8, 9):
         assert _register_row_is_open(reg, f"b5-blk-{i}"), f"B5-BLK-{i} must remain OPEN on its register row"
+    assert _register_row_records_b5blk6_closure(reg), "B5-BLK-6 must record the effected CLOSED status on its register row"
 
 
 def test_b5e_13_unrelated_blockers_nonvacuity() -> None:
@@ -1108,6 +1120,12 @@ def test_b5e_13_unrelated_blockers_nonvacuity() -> None:
     assert _register_row_is_open("| **B5-BLK-2** | desc | Critical | Infra | evidence | OPEN | YES |", "b5-blk-2")
     assert not _register_row_is_open("| **B5-BLK-2** | desc | Critical | Infra | evidence | CLOSED | YES |", "b5-blk-2")
     assert not _register_row_is_open("no such row", "b5-blk-2")
+    # B5-BLK-6 governance-effect closure: the register row records the effected CLOSED status.
+    assert _register_row_records_b5blk6_closure(
+        "| **B5-BLK-6** | desc | Major | Architecture | evidence | **CLOSED (governance-effect closure)** | NO |"
+    )
+    assert not _register_row_records_b5blk6_closure("| **B5-BLK-6** | desc | Major | Architecture | evidence | OPEN | YES |")
+    assert not _register_row_records_b5blk6_closure("a register with no B5-BLK-6 row at all")
 
 
 # --- G14 (B5-E): blocker counts agree and activation stays fail-closed -------
@@ -1135,7 +1153,7 @@ def test_b5e_14_fail_closed_and_counts() -> None:
     assert not _claims_activation_ready(t), "production activation must not be claimed ready while blockers remain open"
     assert "9 / 9" not in t, "the stale 9 / 9 blocker count must not persist after the B5-E closure"
     reg = _BLOCKERS_DOC.read_text(encoding="utf-8")
-    assert "NOT READY (8 / 9 blockers OPEN" in reg, "the register must record the recalculated 8 / 9 open count"
+    assert "NOT READY (7 / 9 blockers OPEN" in reg, "the register must record the recalculated 7 / 9 open count"
     for doc in _GATE_DOCS:
         assert _FAIL_CLOSED_SENTENCE in _normalized_doc(doc.read_text(encoding="utf-8")), (
             f"the fail-closed activation sentence must be present in {doc.name} itself"

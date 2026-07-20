@@ -158,7 +158,7 @@ _REQUIRED_DOC_STATEMENTS = (
     _CLOSURE_PIN,
     "dbr-ar-2e closes zero activation blockers.",
     "the b5 activation-blocker census remains nine.",
-    "eight of nine blockers remain open.",
+    "seven of nine blockers remain open.",
     "no production activation decision is made.",
     "no production access or production mutation occurred.",
     "the separate dan-authorized dbr-ar-2 closure decision is recorded in §13 (2026-07-16).",
@@ -166,7 +166,7 @@ _REQUIRED_DOC_STATEMENTS = (
 )
 _MC1_BLOCK_PIN = (
     "dbr-ar-2e closes zero b5 activation blockers. the activation-blocker census remains nine. the"
-    " open-blocker count remains 8 of 9. production remains not ready / do-not-activate."
+    " open-blocker count remains 7 of 9. production remains not ready / do-not-activate."
 )
 _OBS_DESCRIPTION_PIN = (
     "obs-v3-pm-1 proposes stronger ast-level and reviewed-blob pinning for the already-executed"
@@ -183,13 +183,14 @@ _FORBIDDEN_CLAIM_PHRASES = (
     "evidence sufficient for separate activation decision",
 )
 
-# Byte-identity pins: the three B5 gate documents were re-stamped by the Dan-authorized DBR-AR-2
-# closure decision (2026-07-16 — MC-CD-4, exactly the edited documents); the B5 evidence template
-# stays at its pre-closure blob (untouched by 2E and by the closure).
+# Byte-identity pins: the three B5 gate documents were re-stamped by the B5-BLK-6 governance-effect
+# closure (2026-07-20, Dan-authorized — exactly the current-standing census flip to 7 of 9 OPEN and the
+# B5-BLK-6 register/taxonomy CLOSED rows); the B5 evidence template stays at its blob (untouched by 2E
+# and by both closures).
 _B5_GATE_BLOBS = {
-    "docs/runtime/b5_production_runtime_activation_gate.md": "a4b59230120716c408d86dd4608a05cdb058d06e",
-    "docs/runtime/b5_activation_blockers.md": "b050e323e16dc391a63f5f9a91680b99cec1cfe7",
-    "docs/runtime/b5_runtime_readiness_matrix.md": "9fd007d30622ff03f616eb283a503d17a79b5a2c",
+    "docs/runtime/b5_production_runtime_activation_gate.md": "d9baf96e1e3c8918e4a995df1d8f1bf3c75ce27c",
+    "docs/runtime/b5_activation_blockers.md": "bdf413a58243a20fbfc932ca82ec26a1bcbdadc8",
+    "docs/runtime/b5_runtime_readiness_matrix.md": "4d8edbdfe3e770aa4c4b19b65db2c4b8848ba187",
     "docs/runtime/b5_activation_evidence_template.md": "be6ac381feb074741c33ae77511c8aba7b768e60",
 }
 _DDL_BLOBS = {
@@ -282,15 +283,16 @@ def test_2e_index_top_shape() -> None:
     assert top["schema"] == "dbr-ar-2e-activation-evidence-index" and top["schema_version"] == 1
     assert top["baseline_commit"] == _BASELINE_COMMIT and top["baseline_tree"] == _BASELINE_TREE
     assert top["outcome"] == _OUTCOME, "the index outcome must be Outcome A verbatim"
-    assert (top["blocker_census"], top["blockers_open"], top["blockers_closed"]) == (9, 8, 1), (
-        "the blocker census must remain exactly nine with eight OPEN and one CLOSED"
+    assert (top["blocker_census"], top["blockers_open"], top["blockers_closed"]) == (9, 7, 2), (
+        "the blocker census must be exactly nine with seven OPEN and two CLOSED after the B5-BLK-6 closure"
     )
     assert top["dbr_ar_2_status"] == _INDEX_CLOSED_STATUS, "the index dbr_ar_2_status must be exactly the MC-CD-2 closed value"
 
 
 def test_2e_index_top_nonvacuity() -> None:
-    assert (10, 8, 1) != (9, 8, 1), "a census-10 mutation must be detectable"
-    assert (9, 7, 2) != (9, 8, 1), "an extra-closure mutation must be detectable"
+    assert (10, 7, 2) != (9, 7, 2), "a census-10 mutation must be detectable"
+    assert (9, 8, 1) != (9, 7, 2), "a reverted 8-open / 1-closed mutation must be detectable"
+    assert (9, 6, 3) != (9, 7, 2), "an extra-closure (6-open / 3-closed) mutation must be detectable"
     assert "EVIDENCE SUFFICIENT FOR SEPARATE ACTIVATION DECISION" != _OUTCOME, "an Outcome-B swap must be detectable"
     assert "OPEN" != _INDEX_CLOSED_STATUS, "a reverted-OPEN index status must be detectable"
     assert "CLOSED" != _INDEX_CLOSED_STATUS, "a bare-CLOSED index status must be detectable"
@@ -387,12 +389,12 @@ def test_2e_register_census_pins() -> None:
     register = _text(_BLOCKERS_DOC)
     for i in range(1, 10):
         assert f"B5-BLK-{i}" in register, f"the register must carry B5-BLK-{i}"
-    assert "NOT READY (8 / 9 blockers OPEN" in register, "the register standing decision must remain 8 / 9 OPEN"
+    assert "NOT READY (7 / 9 blockers OPEN" in register, "the register standing decision must record 7 / 9 OPEN"
     norm = _norm(register)
     assert "b5-blk-4" in norm and "closed (b5-e" in norm, "exactly the B5-E-anchored B5-BLK-4 closure must be recorded"
-    fail_closed = "production runtime activation remains not ready / do-not-activate — 8 of 9 activation blockers remain open"
+    fail_closed = "production runtime activation remains not ready / do-not-activate — 7 of 9 activation blockers remain open"
     for doc in (_BLOCKERS_DOC, _GATE_DOC, _MATRIX_DOC):
-        assert fail_closed in _norm(_text(doc)), f"{doc.name} must keep the fail-closed 8-of-9 sentence"
+        assert fail_closed in _norm(_text(doc)), f"{doc.name} must keep the fail-closed 7-of-9 sentence"
 
 
 def test_2e_no_invented_blocker_and_mc1_note() -> None:
@@ -510,8 +512,8 @@ def test_cd_recarry_nonvacuity() -> None:
 def test_2e_blocker_mapping_nonvacuity() -> None:
     assert "B5-BLK-10" not in _ALLOWED_BLOCKERS and "B5-BLK-0" not in _ALLOWED_BLOCKERS, "an invented id must be detectable"
     assert _MC1_NOTE not in "DBR-AR-2 maps to blocker B5-BLK-10.", "a fabricated mapping note must be detectable"
-    assert "NOT READY (8 / 9 blockers OPEN" not in "NOT READY (7 / 9 blockers OPEN", "a count change must be detectable"
-    assert "NOT READY (8 / 9 blockers OPEN" not in "NOT READY (8 / 10 blockers OPEN", "a census change must be detectable"
+    assert "NOT READY (7 / 9 blockers OPEN" not in "NOT READY (8 / 9 blockers OPEN", "a reverted-count change must be detectable"
+    assert "NOT READY (7 / 9 blockers OPEN" not in "NOT READY (7 / 10 blockers OPEN", "a census change must be detectable"
     assert "CLOSED" != "OPEN", "an ATR/OBS closure flip must be detectable"
 
 

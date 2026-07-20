@@ -1,9 +1,9 @@
 """B5-BLK-6C-D — closure-evidence-matrix text-drift guard (default suite; no DB, no network).
 
-Static text-only boundary pins for the evidence-only closure matrix
+Static text-only boundary pins for the effected closure matrix
 ``docs/runtime/b5_blk6_closure_evidence_matrix.md``. This guard binds no runtime, imports no database
 driver, opens no socket, and touches no database. It exists to keep the matrix an honest
-PROPOSED-EVIDENCE-ONLY assembly and to fail CLOSED on any future overclaim drift.
+EFFECTED-CLOSURE-EVIDENCE record and to fail CLOSED on any reverted-proposal or overclaim drift.
 
 Exactly six tests:
 
@@ -11,21 +11,22 @@ Exactly six tests:
 2. test_closure_evidence_matrix_pins_accepted_evidence_references
 3. test_closure_evidence_matrix_preserves_required_qualifiers
 4. test_closure_evidence_matrix_lists_all_four_live_locations
-5. test_closure_evidence_matrix_is_proposal_only_and_keeps_blocker_open
-6. test_closure_evidence_matrix_rejects_effected_closure_and_production_overclaims
+5. test_closure_evidence_matrix_is_effected_and_closes_blocker
+6. test_closure_evidence_matrix_rejects_proposal_only_and_production_overclaims
 
 The guard POSITIVELY REQUIRES the foundation-tier / composed-Gateway-core / in-memory-recorder /
-disposable-PostgreSQL / composition-level-isolation / Deferred / OUT OF SCOPE / PROPOSED-EVIDENCE-ONLY /
-"B5-BLK-6 remains OPEN" / "8 of 9 OPEN" / "NOT READY / DO-NOT-ACTIVATE" needles, and REJECTS the effected
-present/past-tense closure, 7-of-9 census, served/durable/write "complete", positive-IC-007-capability,
-and production-ready overclaims. It distinguishes a PROPOSED future decision from an EFFECTED current-state
-claim: the matrix may legitimately *propose* a future reconciliation, but must never *assert* an effected
-closure.
+disposable-PostgreSQL / composition-level-isolation / Deferred / OUT OF SCOPE / EFFECTED-CLOSURE-EVIDENCE /
+"B5-BLK-6 CLOSED" / "7 of 9 OPEN" / "NOT READY / DO-NOT-ACTIVATE" needles, and REJECTS the reverted
+proposal-only / current-open-B5-BLK-6 / current-8-of-9 framing plus the B5-BLK-5-closure,
+served/durable/write "complete", positive-IC-007-capability, and production-ready overclaims. It records
+the EFFECTED B5-BLK-6 reconciliation: the matrix asserts the effected closure and the recounted 7-of-9
+census, while B5-BLK-5 stays OPEN and production stays DO-NOT-ACTIVATE.
 
 Pure stdlib; standalone-runnable:
   python tests/architecture/test_b5_blk6_closure_evidence_matrix_boundaries.py
 
-B5-BLK-6 remains OPEN; production remains NOT READY / DO-NOT-ACTIVATE. This guard closes no blocker.
+B5-BLK-6 is CLOSED on this branch (census 7 of 9 OPEN) pending Dan's merge; B5-BLK-5 remains OPEN and
+production remains NOT READY / DO-NOT-ACTIVATE. This guard closes no blocker by itself.
 """
 
 from __future__ import annotations
@@ -85,34 +86,34 @@ _LIVE_LOCATION_DESCRIPTORS = [
     "traceability row",
 ]
 _LIVE_LOCATION_LABELS = [
-    "reconciled by governance evidence record",
-    "not edited by 6c-d",
-    "current live status remains open",
+    "reconciled by the b5-blk-6 governance-effect closure",
+    "effected by this closure slice",
+    "current live status now effected",
 ]
 _LIVE_LOCATION_COUNT = 4
 
-# Positively required governance + proposal-framing needles (Test 5).
+# Positively required governance + effected-framing needles (Test 5).
 _REQUIRED_GOVERNANCE = [
-    "proposed evidence only",
-    "b5-blk-6 remains open",
-    "8 of 9 open",
+    "effected closure evidence",
+    "b5-blk-6 - closed",
+    "7 of 9 open",
     "not ready / do-not-activate",
 ]
-_PROPOSAL_FRAMING = [
-    "proposed future governance decision",
-    "not effected by this document",
+_EFFECTED_FRAMING = [
+    "effected governance decision",
+    "effected by this document",
 ]
 
-# Rejected effected-state / overclaim patterns (Test 6). Matched against the normalized text.
-# Each pattern targets an EFFECTED assertion; the matrix's PROPOSED framing must never trip these.
+# Rejected reverted-state / overclaim patterns (Test 6). Matched against the normalized text.
+# Each pattern targets a REVERTED proposal-only / current-open / current-8-of-9 state or a
+# B5-BLK-5-closure / production overclaim; the matrix's EFFECTED closure framing must never trip these.
 _FORBIDDEN_PATTERNS = [
-    (r"b5-?blk-?6\s+is\s+closed", "effected 'B5-BLK-6 is CLOSED'"),
-    (r"b5-?blk-?6\s+has\s+been\s+closed", "effected 'B5-BLK-6 has been closed'"),
-    (r"b5-?blk-?6\s+is\s+currently\s+closed", "effected 'B5-BLK-6 is currently CLOSED'"),
-    (r"b5-?blk-?6\s*[:=]\s*closed", "effected 'B5-BLK-6: CLOSED'"),
-    (r"b5-?blk-?6\s*->\s*closed", "effected 'B5-BLK-6 -> CLOSED'"),
-    (r"status\s*:\s*closed", "effected 'Status: CLOSED'"),
-    (r"\b7\s*(?:of|/)\s*9\b", "census overclaim '7 of 9'"),
+    (r"proposed\s+evidence\s+only", "reverted 'PROPOSED EVIDENCE ONLY' framing"),
+    (r"b5-?blk-?6\s+remains\s+open", "reverted 'B5-BLK-6 remains OPEN'"),
+    (r"not\s+effected\s+by\s+this\s+document", "reverted 'not effected by this document'"),
+    (r"\b8\s*(?:of|/)\s*9\b", "reverted current census '8 of 9'"),
+    (r"b5-?blk-?5\s+is\s+closed", "false 'B5-BLK-5 is CLOSED' overclaim"),
+    (r"b5-?blk-?5\s*[:=]\s*closed", "false 'B5-BLK-5: CLOSED' overclaim"),
     (r"\bproduction\s+ready\b", "'production ready' overclaim"),
     (r"production\s+activation\s+authorized", "'production activation authorized' overclaim"),
     (r"served\s+northbound\s+ingress\s+complete", "'served northbound ingress complete' overclaim"),
@@ -173,18 +174,18 @@ def test_closure_evidence_matrix_lists_all_four_live_locations() -> None:
         assert norm.count(label) >= _LIVE_LOCATION_COUNT, f"label {label!r} must appear once per live location (>= {_LIVE_LOCATION_COUNT})"
 
 
-def test_closure_evidence_matrix_is_proposal_only_and_keeps_blocker_open() -> None:
+def test_closure_evidence_matrix_is_effected_and_closes_blocker() -> None:
     norm = _norm(_text())
     for needle in _REQUIRED_GOVERNANCE:
         assert needle in norm, f"missing required governance needle: {needle!r}"
-    for needle in _PROPOSAL_FRAMING:
-        assert needle in norm, f"missing proposal-framing needle: {needle!r}"
+    for needle in _EFFECTED_FRAMING:
+        assert needle in norm, f"missing effected-framing needle: {needle!r}"
 
 
-def test_closure_evidence_matrix_rejects_effected_closure_and_production_overclaims() -> None:
+def test_closure_evidence_matrix_rejects_proposal_only_and_production_overclaims() -> None:
     norm = _norm(_text())
     for pattern, label in _FORBIDDEN_PATTERNS:
-        assert re.search(pattern, norm) is None, f"forbidden effected/overclaim wording present ({label}): matched /{pattern}/"
+        assert re.search(pattern, norm) is None, f"forbidden reverted/overclaim wording present ({label}): matched /{pattern}/"
 
 
 if __name__ == "__main__":
@@ -194,7 +195,7 @@ if __name__ == "__main__":
             test_closure_evidence_matrix_pins_accepted_evidence_references,
             test_closure_evidence_matrix_preserves_required_qualifiers,
             test_closure_evidence_matrix_lists_all_four_live_locations,
-            test_closure_evidence_matrix_is_proposal_only_and_keeps_blocker_open,
-            test_closure_evidence_matrix_rejects_effected_closure_and_production_overclaims,
+            test_closure_evidence_matrix_is_effected_and_closes_blocker,
+            test_closure_evidence_matrix_rejects_proposal_only_and_production_overclaims,
         ]
     )
