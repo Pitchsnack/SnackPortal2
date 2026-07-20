@@ -10,7 +10,7 @@ any listening process. This harness hosts no server, opens no HTTP client connec
 material, and sets only Control-Plane composition selectors (never a gateway / auth / database-router /
 import served-edge selector).
 
-Phases S0..S9 + finally (R-A disposal):
+Phases S0..S9 + finally (R-A disposal) + S-final (single-final-write):
 
     S0  control 001-009 blob-pin STOP-before-connect (LF-normalized git-blob SHA-1; never "fix" the DDL here)
     S1  three disposable, physically distinct databases created fresh with a safe current_database() readback:
@@ -33,11 +33,17 @@ Phases S0..S9 + finally (R-A disposal):
         the deferred in-memory default (in-memory store + provisioning operator + distinctness ledger) whose
         construction performs no I/O (the recorder observes ``calls == []``; NO exception-type assertion is
         made)
-    S9  AFTER_DATA_DIGEST captured for both tenants; before == after (D-24 non-destructive), the adjacent
-        tenant proven untouched (D-30 per-tenant isolation), and a single references-only JSON evidence
-        bundle written OUTSIDE the repository
+    S9  AFTER_DATA_DIGEST captured for both tenants; before == after (D-24 non-destructive) and the adjacent
+        tenant proven untouched (D-30 per-tenant isolation); the 22-field rollback record and its
+        references-only evidence entries are completed IN MEMORY — the single authoritative JSON is NOT
+        written here (see S-final)
     finally / R-A  disposal of the COMPLETE disposable topology (pg_terminate_backend + DROP DATABASE IF
         EXISTS for each of the three), asserting the retained disposable datname census == 0
+    S-final  reached ONLY when S0-S9 AND the finally disposal both succeed (any assertion — including
+        ``retained == 0`` — re-raises through the finally and skips this step): DISPOSAL_ASSERTION and
+        FINAL_VERDICT are finalized to PASS (retained=0) / ROLLBACK-PROVEN-LOCAL and the single
+        references-only JSON evidence bundle is written EXACTLY ONCE OUTSIDE the repository, so a failed run
+        or a failed disposal can never retain a false-PASS record
 
 ISOLATION & SAFETY. Everything runs in the rehearsal-owned scratch databases sp2_rollback_control /
 sp2_rollback_target / sp2_rollback_adjacent created from the SNACKPORTAL_TEST_DSN admin connection at start
@@ -389,7 +395,6 @@ def test_pg_controlled_rollback_rehearsal(admin_dsn: str) -> None:
     env = _EnvPatch()
     ctl_conn = target_conn = adjacent_conn = None
     secret_dir: Optional[str] = None
-    evidence_dir: Optional[str] = None
 
     try:
         # PROOF S1 — three disposable, physically distinct databases, lifecycle-owned by THIS run.
@@ -570,7 +575,8 @@ def test_pg_controlled_rollback_rehearsal(admin_dsn: str) -> None:
         print("PASS: S8 composition rollback to the deferred in-memory default (in-memory adapters; construction performs no I/O)")
 
         # PROOF S9 — AFTER_DATA_DIGEST for both tenants; before == after (D-24 non-destructive); adjacent
-        # untouched (D-30); write the single references-only JSON evidence bundle OUTSIDE the repository.
+        # untouched (D-30); complete the 22-field rollback record + references-only evidence IN MEMORY. The
+        # single authoritative JSON is finalized only AFTER the finally disposal succeeds (see S-final).
         after_target = _digest(target_conn)
         after_adjacent = _digest(adjacent_conn)
         assert after_target == before_target, "S9: the target tenant data must be unchanged (before == after; D-24 non-destructive)"
@@ -603,14 +609,11 @@ def test_pg_controlled_rollback_rehearsal(admin_dsn: str) -> None:
             "AUDIT_RECORD_REF": "ref:evidence#EV-RBK-AUDIT-01",
             "SECRET_REFERENCE_ONLY_ASSERTION": "PASS",
             "DEFERRED_COMPOSITION_ASSERTION": "PASS",
-            "DISPOSAL_ASSERTION": "PASS (retained=0)",
-            "FINAL_VERDICT": "ROLLBACK-PROVEN-LOCAL",
         }
-        evidence_dir = tempfile.mkdtemp(prefix="sp2_rollback_evidence_")  # OUTSIDE the repository (system temp)
-        bundle_path = pathlib.Path(evidence_dir) / f"b5_blk8b_rollback_rehearsal_evidence_{record['EXECUTION_ID']}.json"
-        _write_evidence_bundle(bundle_path, record, evidence)
-        assert not bundle_path.resolve().is_relative_to(_REPO_ROOT), "the evidence bundle is written OUTSIDE the repository (repo clean)"
-        print(f"PASS: S9 before == after (D-24); adjacent untouched (D-30); references-only evidence bundle written ({bundle_path.name})")
+        print(
+            "PASS: S9 before == after (D-24); adjacent untouched (D-30); 22-field record completed in memory"
+            " (authoritative JSON deferred to S-final)"
+        )
     finally:
         # PROOF finally / R-A — disposal of the COMPLETE disposable topology (after success OR failure).
         # Pool-held connections are severed by pg_terminate_backend before each DROP DATABASE. This is R-A
@@ -632,6 +635,21 @@ def test_pg_controlled_rollback_rehearsal(admin_dsn: str) -> None:
         print(f"PASS: finally R-A disposal of the complete disposable topology (retained disposable datname count = {retained})")
         admin.close()
         assert retained == 0, "R-A: every disposable rollback database must be removed after the run"
+
+    # PROOF S-final — SINGLE-FINAL-WRITE. Reached ONLY when S0-S9 AND the finally R-A disposal both succeed:
+    # any S0-S9 assertion or any disposal failure (including ``retained == 0`` above) re-raises through the
+    # finally and this block never runs. Only now are the disposal/verdict verdicts finalized and the single
+    # authoritative references-only JSON written EXACTLY ONCE, OUTSIDE the repository — so a failed run or a
+    # failed disposal can never retain a false-PASS record.
+    record["DISPOSAL_ASSERTION"] = "PASS (retained=0)"
+    record["FINAL_VERDICT"] = "ROLLBACK-PROVEN-LOCAL"
+    evidence_dir = tempfile.mkdtemp(prefix="sp2_rollback_evidence_")  # OUTSIDE the repository (system temp)
+    bundle_path = pathlib.Path(evidence_dir) / f"b5_blk8b_rollback_rehearsal_evidence_{record['EXECUTION_ID']}.json"
+    _write_evidence_bundle(bundle_path, record, evidence)
+    assert bundle_path.is_file() and not bundle_path.resolve().is_relative_to(_REPO_ROOT), (
+        "S-final: the single authoritative references-only evidence bundle must exist OUTSIDE the repository"
+    )
+    print(f"PASS: S-final single references-only evidence bundle written AFTER disposal ({bundle_path.name})")
 
 
 if __name__ == "__main__":

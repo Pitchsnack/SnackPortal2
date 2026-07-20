@@ -11,7 +11,7 @@ fails CLOSED on any Gateway/Auth/served-edge reintroduction, standing/production
 census drift, or production/closure/destructive overclaim. It references the 8A rollback runbook, the 8A
 evidence template, and the served-write runbook as reference-delta targets (existence only).
 
-Exactly seventeen tests (1:1 with the accepted boundary battery):
+Exactly eighteen tests (the accepted 17-test boundary battery + the 8B evidence-finalization-order corrective pin):
 
  1. test_manifest_surfaces_exist
  2. test_harness_is_manual_only_requires_pg_and_start_gated
@@ -30,6 +30,7 @@ Exactly seventeen tests (1:1 with the accepted boundary battery):
 15. test_surfaces_reject_production_and_closure_overclaims
 16. test_surfaces_preserve_blk8_open_census_and_do_not_activate
 17. test_harness_touches_no_contract_adr_or_workflow_surface
+18. test_harness_finalizes_authoritative_evidence_only_after_disposal
 
 This guard closes no blocker. B5-BLK-8 remains OPEN; the live blocker census remains 7 of 9 OPEN; production
 remains NOT READY / DO-NOT-ACTIVATE. The guard positively requires exactly that and rejects any drift.
@@ -352,6 +353,251 @@ def test_harness_touches_no_contract_adr_or_workflow_surface() -> None:
     assert any(m.startswith(_FORBIDDEN_RUNTIME_IMPORTS) for m in ["import_service.main"]), "the runtime-import detector must fire"
 
 
+# --- 8B evidence-finalization-order corrective pin (single-final-write) --------------------------
+def _rehearsal_fn(tree: ast.AST) -> ast.FunctionDef:
+    """The one ``test_pg_controlled_rollback_rehearsal`` function node in a rehearsal-shaped module tree."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "test_pg_controlled_rollback_rehearsal":
+            return node
+    raise AssertionError("the rehearsal harness must define test_pg_controlled_rollback_rehearsal")
+
+
+def _subscript_assign_lines(scope: ast.AST, base: str, key: str) -> list[int]:
+    """Line numbers of ``base["key"] = ...`` assignment statements within ``scope`` (sorted)."""
+    lines: list[int] = []
+    for node in ast.walk(scope):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if (
+                isinstance(target, ast.Subscript)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == base
+                and isinstance(target.slice, ast.Constant)
+                and target.slice.value == key
+            ):
+                lines.append(node.lineno)
+    return sorted(lines)
+
+
+def _finalization_positions(fn: ast.FunctionDef) -> tuple[int, int, int, int, int]:
+    """Return ``(try_end, retained_ln, disposal_ln, verdict_ln, write_ln)`` for a rehearsal-shaped function,
+    raising AssertionError when a required single-final-write element is missing or duplicated:
+      * exactly one top-level ``try/finally`` disposal block (its end line);
+      * exactly one ``retained == 0`` assertion inside that finally;
+      * exactly one ``_write_evidence_bundle(...)`` call in the whole function;
+      * exactly one ``record["DISPOSAL_ASSERTION"] = ...`` and one ``record["FINAL_VERDICT"] = ...`` assignment.
+    """
+    outer_try = next((n for n in fn.body if isinstance(n, ast.Try) and n.finalbody), None)
+    assert outer_try is not None and outer_try.end_lineno is not None, "a top-level try/finally disposal block is required"
+    retained = [
+        n.lineno
+        for n in ast.walk(outer_try)
+        if isinstance(n, ast.Assert)
+        and isinstance(n.test, ast.Compare)
+        and isinstance(n.test.left, ast.Name)
+        and n.test.left.id == "retained"
+        and len(n.test.ops) == 1
+        and isinstance(n.test.ops[0], ast.Eq)
+        and len(n.test.comparators) == 1
+        and isinstance(n.test.comparators[0], ast.Constant)
+        and n.test.comparators[0].value == 0
+    ]
+    assert len(retained) == 1, f"exactly one 'retained == 0' finally assertion is required (found {len(retained)})"
+    writes = [
+        n.lineno for n in ast.walk(fn) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "_write_evidence_bundle"
+    ]
+    assert len(writes) == 1, f"exactly one authoritative _write_evidence_bundle(...) call is required (found {len(writes)})"
+    disposal = _subscript_assign_lines(fn, "record", "DISPOSAL_ASSERTION")
+    verdict = _subscript_assign_lines(fn, "record", "FINAL_VERDICT")
+    assert len(disposal) == 1, f"record['DISPOSAL_ASSERTION'] must be assigned exactly once (found {len(disposal)})"
+    assert len(verdict) == 1, f"record['FINAL_VERDICT'] must be assigned exactly once (found {len(verdict)})"
+    return outer_try.end_lineno, retained[0], disposal[0], verdict[0], writes[0]
+
+
+def _valid_finalization_order(fn: ast.FunctionDef) -> bool:
+    """True iff the sole write and BOTH the PASS/verdict assignments occur strictly after the ``retained == 0``
+    assertion AND outside (after) the cleanup finally — the single-final-write invariant."""
+    try:
+        try_end, retained_ln, disposal_ln, verdict_ln, write_ln = _finalization_positions(fn)
+    except AssertionError:
+        return False
+    return (
+        retained_ln <= try_end
+        and disposal_ln > try_end
+        and verdict_ln > try_end
+        and write_ln > try_end
+        and retained_ln < disposal_ln < write_ln
+        and retained_ln < verdict_ln < write_ln
+    )
+
+
+# One minimal single-final-write chronology (valid) + five rejected chronologies (each an independent
+# violation the corrective pin must refuse). Parsed with ast for the non-vacuity companion — never executed.
+_GOOD_FINALIZATION = """
+def test_pg_controlled_rollback_rehearsal(admin_dsn):
+    record = {}
+    evidence = []
+    try:
+        record = {"BEFORE_DATA_DIGEST": "x"}
+    finally:
+        retained = 0
+        assert retained == 0
+    record["DISPOSAL_ASSERTION"] = "PASS (retained=0)"
+    record["FINAL_VERDICT"] = "ROLLBACK-PROVEN-LOCAL"
+    _write_evidence_bundle(bundle_path, record, evidence)
+"""
+
+_REJECT_WRITE_IN_S9 = """
+def test_pg_controlled_rollback_rehearsal(admin_dsn):
+    record = {}
+    evidence = []
+    try:
+        record = {"BEFORE_DATA_DIGEST": "x"}
+        _write_evidence_bundle(bundle_path, record, evidence)
+    finally:
+        retained = 0
+        assert retained == 0
+    record["DISPOSAL_ASSERTION"] = "PASS (retained=0)"
+    record["FINAL_VERDICT"] = "ROLLBACK-PROVEN-LOCAL"
+"""
+
+_REJECT_WRITE_BEFORE_DISPOSAL = """
+def test_pg_controlled_rollback_rehearsal(admin_dsn):
+    record = {}
+    evidence = []
+    try:
+        record = {"BEFORE_DATA_DIGEST": "x"}
+    finally:
+        _write_evidence_bundle(bundle_path, record, evidence)
+        retained = 0
+        assert retained == 0
+    record["DISPOSAL_ASSERTION"] = "PASS (retained=0)"
+    record["FINAL_VERDICT"] = "ROLLBACK-PROVEN-LOCAL"
+"""
+
+_REJECT_PASS_BEFORE_RETAINED = """
+def test_pg_controlled_rollback_rehearsal(admin_dsn):
+    record = {}
+    evidence = []
+    try:
+        record = {"BEFORE_DATA_DIGEST": "x"}
+    finally:
+        record["DISPOSAL_ASSERTION"] = "PASS (retained=0)"
+        retained = 0
+        assert retained == 0
+    record["FINAL_VERDICT"] = "ROLLBACK-PROVEN-LOCAL"
+    _write_evidence_bundle(bundle_path, record, evidence)
+"""
+
+_REJECT_VERDICT_BEFORE_RETAINED = """
+def test_pg_controlled_rollback_rehearsal(admin_dsn):
+    record = {}
+    evidence = []
+    try:
+        record = {"BEFORE_DATA_DIGEST": "x"}
+    finally:
+        record["FINAL_VERDICT"] = "ROLLBACK-PROVEN-LOCAL"
+        retained = 0
+        assert retained == 0
+    record["DISPOSAL_ASSERTION"] = "PASS (retained=0)"
+    _write_evidence_bundle(bundle_path, record, evidence)
+"""
+
+_REJECT_DUPLICATE_WRITE = """
+def test_pg_controlled_rollback_rehearsal(admin_dsn):
+    record = {}
+    evidence = []
+    try:
+        record = {"BEFORE_DATA_DIGEST": "x"}
+    finally:
+        retained = 0
+        assert retained == 0
+    record["DISPOSAL_ASSERTION"] = "PASS (retained=0)"
+    record["FINAL_VERDICT"] = "ROLLBACK-PROVEN-LOCAL"
+    _write_evidence_bundle(bundle_path, record, evidence)
+    _write_evidence_bundle(bundle_path, record, evidence)
+"""
+
+_REJECTED_FINALIZATIONS = (
+    ("write inside S9 (before disposal)", _REJECT_WRITE_IN_S9),
+    ("write in finally before retained==0", _REJECT_WRITE_BEFORE_DISPOSAL),
+    ("DISPOSAL_ASSERTION=PASS before retained==0", _REJECT_PASS_BEFORE_RETAINED),
+    ("FINAL_VERDICT before retained==0", _REJECT_VERDICT_BEFORE_RETAINED),
+    ("duplicate authoritative write", _REJECT_DUPLICATE_WRITE),
+)
+
+
+def test_harness_finalizes_authoritative_evidence_only_after_disposal() -> None:
+    """8B corrective single-final-write pin: the sole ``_write_evidence_bundle(...)`` call AND both the
+    ``record["DISPOSAL_ASSERTION"] = "PASS (retained=0)"`` and ``record["FINAL_VERDICT"] =
+    "ROLLBACK-PROVEN-LOCAL"`` assignments must occur strictly AFTER the finally disposal's ``retained == 0``
+    assertion and OUTSIDE the cleanup finally — so a failed run or a failed disposal can never retain a
+    false-PASS record. Rejects a premature PASS, a premature ROLLBACK-PROVEN-LOCAL, a write before disposal,
+    a write inside S9, and a duplicate authoritative write."""
+    fn = _rehearsal_fn(_harness_tree())
+    try_end, retained_ln, disposal_ln, verdict_ln, write_ln = _finalization_positions(fn)
+    assert retained_ln <= try_end, "the retained==0 assertion must live inside the cleanup finally"
+    assert disposal_ln > try_end, "DISPOSAL_ASSERTION must be assigned OUTSIDE (after) the cleanup finally"
+    assert verdict_ln > try_end, "FINAL_VERDICT must be assigned OUTSIDE (after) the cleanup finally"
+    assert write_ln > try_end, "the sole authoritative write must occur OUTSIDE (after) the cleanup finally"
+    assert retained_ln < disposal_ln, "DISPOSAL_ASSERTION=PASS must be set AFTER the retained==0 assertion"
+    assert retained_ln < verdict_ln, "FINAL_VERDICT must be set AFTER the retained==0 assertion"
+    assert disposal_ln < write_ln, "the authoritative write must occur AFTER the DISPOSAL_ASSERTION assignment"
+    assert verdict_ln < write_ln, "the authoritative write must occur AFTER the FINAL_VERDICT assignment"
+    assert _valid_finalization_order(fn), "the harness must satisfy the single-final-write finalization order"
+
+    # the finalized authoritative tokens are exactly the accepted values (no wording drift).
+    src = _text(_HARNESS)
+    assert 'record["DISPOSAL_ASSERTION"] = "PASS (retained=0)"' in src, "DISPOSAL_ASSERTION must finalize to 'PASS (retained=0)'"
+    assert 'record["FINAL_VERDICT"] = "ROLLBACK-PROVEN-LOCAL"' in src, "FINAL_VERDICT must finalize to 'ROLLBACK-PROVEN-LOCAL'"
+
+    # the DISPOSAL_ASSERTION / FINAL_VERDICT tokens must appear ONLY after the finally (never as an S9 dict key).
+    for token in ("DISPOSAL_ASSERTION", "FINAL_VERDICT"):
+        occ = sorted(
+            node.lineno for node in ast.walk(fn) if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value == token
+        )
+        assert occ, f"the {token} finalization token must be present in the rehearsal body"
+        assert min(occ) > try_end, f"{token} must be finalized only AFTER the cleanup finally (found one at/inside it)"
+
+    # C9 pin: the authoritative bundle is written to a FRESH, post-disposal evidence mkdtemp — never the
+    # scratch-secret dir; the scratch-secret dir is not referenced anywhere in the post-disposal finalization.
+    assert 'tempfile.mkdtemp(prefix="sp2_rollback_evidence_")' in src, (
+        "S-final must create a dedicated evidence dir (not reuse the scratch-secret dir)"
+    )
+    evidence_dir_lines = sorted(
+        node.lineno
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "mkdtemp"
+        and any(
+            kw.arg == "prefix" and isinstance(kw.value, ast.Constant) and kw.value.value == "sp2_rollback_evidence_" for kw in node.keywords
+        )
+    )
+    assert len(evidence_dir_lines) == 1 and evidence_dir_lines[0] > try_end, (
+        "the evidence dir must be created exactly once, AFTER the finally disposal"
+    )
+    assert not any(isinstance(node, ast.Name) and node.id == "secret_dir" and node.lineno > try_end for node in ast.walk(fn)), (
+        "the scratch-secret dir must not be referenced in the post-disposal finalization (C9)"
+    )
+
+    # C10 pin: a post-write existence assertion guards the finalized bundle and must follow the write.
+    existence_asserts = [
+        node.lineno
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Assert) and any(isinstance(c, ast.Attribute) and c.attr == "is_file" for c in ast.walk(node.test))
+    ]
+    assert existence_asserts and min(existence_asserts) > write_ln, (
+        "a post-write bundle_path.is_file() existence assertion must follow the write (C10)"
+    )
+
+    # non-vacuity: the good chronology validates and every rejected chronology is refused.
+    assert _valid_finalization_order(_rehearsal_fn(ast.parse(_GOOD_FINALIZATION))), "the single-final-write chronology must validate"
+    for label, snippet in _REJECTED_FINALIZATIONS:
+        assert not _valid_finalization_order(_rehearsal_fn(ast.parse(snippet))), f"a rejected chronology must be refused: {label}"
+
+
 if __name__ == "__main__":
     _scan.run(
         [
@@ -372,5 +618,6 @@ if __name__ == "__main__":
             test_surfaces_reject_production_and_closure_overclaims,
             test_surfaces_preserve_blk8_open_census_and_do_not_activate,
             test_harness_touches_no_contract_adr_or_workflow_surface,
+            test_harness_finalizes_authoritative_evidence_only_after_disposal,
         ]
     )
