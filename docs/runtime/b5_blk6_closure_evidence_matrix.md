@@ -1,4 +1,4 @@
-# B5-BLK-6 Closure Evidence Matrix (PROPOSED EVIDENCE ONLY)
+# B5-BLK-6 Closure Evidence Matrix (EFFECTED CLOSURE EVIDENCE)
 
 > **Slice:** B5-BLK-6C-D — evidence-only runtime-binding closure.
 > **Nature:** governance evidence assembly + text-drift guard. This document is documentation only:
@@ -7,19 +7,19 @@
 ## Governance status
 
 ```text
-Governance status: PROPOSED EVIDENCE ONLY
-B5-BLK-6 remains OPEN
-Current blocker census remains 8 of 9 OPEN
+Governance status: EFFECTED CLOSURE EVIDENCE
+B5-BLK-6 — CLOSED (B5-BLK-6 governance-effect closure, 2026-07-20, Dan-authorized)
+Current blocker census is now 7 of 9 OPEN (B5-BLK-4 and B5-BLK-6 are the only CLOSED blockers)
 Production remains NOT READY / DO-NOT-ACTIVATE
-This document has no blocker-state effect by itself
+This document records the effected B5-BLK-6 runtime-binding closure
 ```
 
 This matrix **assembles and cites** the already-accepted, already-merged 6A → 6B → 6C-A → 6C-B → 6C-C
-runtime-binding evidence for B5-BLK-6 and **proposes** — as a future governance decision only — that the
-assembled evidence be considered for a later B5-BLK-6 reconciliation. It **does not** effect that
-reconciliation. It flips no live register status and recounts no census. The single unresolved item this
-slice addresses is **R6-6** (evidence assembly / reconciliation record); R6-1 through R6-4 are already
-proven at the composed Gateway core, and R6-5 is out of scope by the IC-007 contract.
+runtime-binding evidence for B5-BLK-6 and **effects** — as this separately-authorized governance-effect
+closure slice — the B5-BLK-6 reconciliation. It flips the live B5-BLK-6 register status to CLOSED and
+recounts the live census to 7 of 9 OPEN. The single reconciliation item this slice effects is **R6-6**
+(evidence assembly / reconciliation record, now EFFECTED); R6-1 through R6-4 are proven at the composed
+Gateway core and served edge, and R6-5 is out of scope by the IC-007 contract.
 
 ## Accepted baseline identity (independently re-derived)
 
@@ -121,51 +121,51 @@ prohibited, the binding qualifier, and the status.
 
 ### R6-6 — Register, contract, ADR/index and evidence text reconciliation
 
-- **Accepted PR:** this matrix (the 6C-D residual)
+- **Accepted PR:** this governance-effect closure slice (the effected 6C-D residual)
 - **Source / proof path:** `docs/runtime/b5_blk6_closure_evidence_matrix.md`
-- **SAFE statement:** this matrix **assembles** R6-1 … R6-5 against the landed proofs and **proposes** the
-  future B5-BLK-6 reconciliation; the proposal has **no governance effect** until the full arc completes and
-  GPT and Dan take a separate blocker-state decision.
-- **PROHIBITED overclaim:** must NOT present B5-BLK-6 closure as an effected current-state fact; must NOT
-  change the census away from 8 of 9 OPEN; must NOT lift DO-NOT-ACTIVATE.
-- **Qualifier:** proposes reconciliation only; does not effect closure.
-- **Status:** PROPOSED — the sole 6C-D residual (evidence assembled; reconciliation not effected).
+- **SAFE statement:** this matrix **assembles** R6-1 … R6-5 against the landed proofs and **effects** the
+  B5-BLK-6 reconciliation as the separately-authorized governance-effect closure slice: the live B5-BLK-6
+  register status is CLOSED, the live census is recounted to 7 of 9 OPEN, and the DBR-AR-2 traceability row
+  and coupled census guards are reconciled in lockstep.
+- **PROHIBITED overclaim:** must NOT lift DO-NOT-ACTIVATE; must NOT claim B5-BLK-5 closure; must NOT claim
+  any positive IC-007 capability or production readiness.
+- **Qualifier:** effects the reconciliation; the runtime binding is already merged (adds no runtime code).
+- **Status:** EFFECTED — the B5-BLK-6 runtime-binding reconciliation is effected by this slice.
 
 ---
 
-## Four live stale locations (reconciled by governance evidence record; NOT edited by 6C-D)
+## Four live locations (reconciled and effected by the B5-BLK-6 governance-effect closure)
 
-The following four live statements presently assert a "not runtime-bound" / open state that is now
-superseded by the landed R6-1 … R6-4 runtime binding. **6C-D edits none of them.** Each is enumerated here
-verbatim-in-substance and left exactly as-is on disk; its reconciliation belongs to a later, separately
-authorized governance-effect step, never to this evidence-only slice.
+The following four live statements previously asserted a "not runtime-bound" / open state, superseded by
+the landed R6-1 … R6-4 runtime binding. **This governance-effect closure slice reconciles all four**,
+flipping the live B5-BLK-6 register status to CLOSED and recounting the live census to 7 of 9 OPEN.
 
 1. **`docs/runtime/b5_activation_blockers.md` — B5-BLK-6 row** (the blocker-register authority):
-   "IC-009 portal contracts and IC-007 cross-tenant contracts not runtime-bound … OPEN".
-   - RECONCILED BY GOVERNANCE EVIDENCE RECORD
-   - NOT EDITED BY 6C-D
-   - CURRENT LIVE STATUS REMAINS OPEN
+   now "IC-009 portal contracts and IC-007 cross-tenant contracts runtime-bound … CLOSED".
+   - RECONCILED BY THE B5-BLK-6 GOVERNANCE-EFFECT CLOSURE
+   - EFFECTED BY THIS CLOSURE SLICE
+   - CURRENT LIVE STATUS NOW EFFECTED
 
 2. **`docs/runtime/b5_activation_blockers.md` — B5-BLK-6 taxonomy** row:
-   "OPEN — PRODUCT/INTEGRATION TRACK … IC-009 portal / IC-007 cross-tenant contracts not runtime-bound —
-   separate track."
-   - RECONCILED BY GOVERNANCE EVIDENCE RECORD
-   - NOT EDITED BY 6C-D
-   - CURRENT LIVE STATUS REMAINS OPEN
+   now "CLOSED (governance-effect closure, 2026-07-20, Dan-authorized) … IC-009 portal / IC-007 cross-tenant
+   contracts runtime-bound".
+   - RECONCILED BY THE B5-BLK-6 GOVERNANCE-EFFECT CLOSURE
+   - EFFECTED BY THIS CLOSURE SLICE
+   - CURRENT LIVE STATUS NOW EFFECTED
 
 3. **`docs/runtime/b5_activation_blockers.md` — current standing decision** (census):
-   "Current standing decision: NOT READY (8 / 9 blockers OPEN; B5-BLK-4 CLOSED …)." This census is presently
-   **accurate**, not stale — B5-BLK-6 is not yet decided reconciled — and must remain untouched by 6C-D.
-   - RECONCILED BY GOVERNANCE EVIDENCE RECORD
-   - NOT EDITED BY 6C-D
-   - CURRENT LIVE STATUS REMAINS OPEN
+   now "Current standing decision: NOT READY (7 / 9 blockers OPEN; B5-BLK-4 CLOSED …; B5-BLK-6 CLOSED …)."
+   The live census is recounted to 7 / 9 OPEN with B5-BLK-4 and B5-BLK-6 the only CLOSED blockers.
+   - RECONCILED BY THE B5-BLK-6 GOVERNANCE-EFFECT CLOSURE
+   - EFFECTED BY THIS CLOSURE SLICE
+   - CURRENT LIVE STATUS NOW EFFECTED
 
 4. **`docs/runtime/dbr_ar_2_production_activation_evidence.md` — B5-BLK-6 traceability row**:
-   "B5-BLK-6 | IC-009/IC-007 contracts runtime-bound | not runtime-bound | OPEN | portal/cross-tenant
-   behavior unbound | bind contracts under the Gateway …".
-   - RECONCILED BY GOVERNANCE EVIDENCE RECORD
-   - NOT EDITED BY 6C-D
-   - CURRENT LIVE STATUS REMAINS OPEN
+   now "B5-BLK-6 | IC-009/IC-007 contracts runtime-bound | runtime-bound at the composed Gateway core +
+   served edge (R6-1 to R6-4) | CLOSED …".
+   - RECONCILED BY THE B5-BLK-6 GOVERNANCE-EFFECT CLOSURE
+   - EFFECTED BY THIS CLOSURE SLICE
+   - CURRENT LIVE STATUS NOW EFFECTED
 
 ---
 
@@ -193,18 +193,18 @@ local/disposable proof is not production readiness
 
 ---
 
-## Proposed future governance decision (framing)
+## Effected governance decision (framing)
 
 ```text
-PROPOSED FUTURE GOVERNANCE DECISION — NOT EFFECTED BY THIS DOCUMENT
+EFFECTED GOVERNANCE DECISION — EFFECTED BY THIS DOCUMENT
 ```
 
-GPT and Dan **may later decide** whether the assembled R6-1 … R6-5 evidence supports a future B5-BLK-6
-reconciliation. That decision is separate from, and later than, this document. Any actual change to the live
-B5-BLK-6 register status, the `8 of 9` census, the DBR-AR-2 activation-evidence traceability row, and the
-census-guard family is a **distinct, explicitly-authorized governance-effect slice** performed only after
-that GPT + Dan decision — never inside this evidence-only slice. **Implementation completion of 6C-D alone
-never reconciles or changes B5-BLK-6.**
+GPT and Dan authorized this governance-effect closure slice. It effects the B5-BLK-6 reconciliation the
+assembled R6-1 … R6-5 evidence supports: it flips the live B5-BLK-6 register status to CLOSED, recounts the
+live census to 7 of 9 OPEN, reconciles the DBR-AR-2 activation-evidence traceability row, and updates the
+coupled census-guard family in lockstep. It adds no runtime code (R6-1 … R6-4 binding is already merged),
+changes no contract, no DDL, and no production state. **B5-BLK-5 remains OPEN and production remains NOT
+READY / DO-NOT-ACTIVATE.**
 
 ---
 
@@ -216,14 +216,14 @@ This document does **NOT** claim any of the following:
 - It does NOT claim durable audit persistence is complete.
 - It does NOT claim the persistent write path is complete.
 - It does NOT claim the Lovable cutover is complete or that B5-BLK-5 is reconciled.
-- It does NOT claim that any positive IC-007 cross-tenant capability exists.
+- It does NOT claim that any positive IC-007 cross-tenant capability exists; positive IC-007 sharing remains Draft / Proposed, unimplemented, and unauthorized.
 - It does NOT claim production readiness and does NOT lift DO-NOT-ACTIVATE.
-- It does NOT change any blocker row, the blocker census, any contract, any ADR, or any tracker.
+- It does NOT close B5-BLK-5 and does NOT touch any runtime source, DDL, contract, ADR, or tracker.
 
 ```text
 B5-BLK-5 remains OPEN
-B5-BLK-6 remains OPEN
-8 of 9 blockers remain OPEN (census = 8 of 9 OPEN)
+B5-BLK-6 — CLOSED (governance-effect closure, 2026-07-20, Dan-authorized)
+Live census is now 7 of 9 OPEN (B5-BLK-4 and B5-BLK-6 CLOSED)
 Production remains NOT READY / DO-NOT-ACTIVATE
 ```
 
@@ -231,9 +231,9 @@ Production remains NOT READY / DO-NOT-ACTIVATE
 
 ## Guard note
 
-This matrix is protected against future overclaim drift by the architecture text-drift guard
+This matrix is pinned by the architecture text-drift guard
 `backend/tests/architecture/test_b5_blk6_closure_evidence_matrix_boundaries.py`. That guard positively
-requires the evidence references, the binding qualifiers, the four live-location labels, and the proposal /
-pending-governance framing, and it rejects effected-closure, 7-of-9-census, durable/served/write
-"complete", positive-IC-007-capability, and production-ready wording. The guard is a static text scan; it
-binds no runtime, opens no socket, and touches no database.
+requires the evidence references, the binding qualifiers, the four live-location labels, and the
+effected-closure / 7-of-9-census framing, and it rejects the reverted proposal-only, current-open-B5-BLK-6,
+and pre-closure-census framing as well as B5-BLK-5-closure, positive-IC-007-capability, and production-ready
+wording. The guard is a static text scan; it binds no runtime, opens no socket, and touches no database.

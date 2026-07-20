@@ -13,10 +13,10 @@ Authoritative standing status (unchanged by this document):
 
 - **Decision A (B5-E, 2026-07-12, Dan-authorized): B5-BLK-4 — CLOSED — EVIDENCE-BOUND GOVERNANCE DECISION.**
 - **Decision B (B5-E, 2026-07-12, Dan-authorized): Physical Multi-Database MVP — ACCEPTED AT DATABASE GRANULARITY.**
-- Production runtime activation remains NOT READY / DO-NOT-ACTIVATE — 8 of 9 activation blockers remain OPEN.
+- Production runtime activation remains NOT READY / DO-NOT-ACTIVATE — 7 of 9 activation blockers remain OPEN.
 - DBR-AR-2 — CLOSED (Dan-authorized governance decision, 2026-07-16); this closure closes zero B5 activation blockers, the blocker census remains nine with 8 of 9 OPEN, and production remains NOT READY / DO-NOT-ACTIVATE.
 - DBR-AR-2 (durable routing audit) was a separate Database Router follow-on; its closure record is at the end of this §1.
-- The Lovable cutover remains OPEN (B5-BLK-5 / B5-BLK-6; separate track).
+- The Lovable cutover remains OPEN (B5-BLK-5; separate track).
 - The gate §5 activation condition "provisioning audit sink available (B-6) — or an explicit, approved waiver" remains binding at activation time and is not waived by anything in this document.
 
 **DBR-AR-2A / DBR-AR-2B / DBR-AR-2C / DBR-AR-2D status (event contract and port; durable storage capability; composition and failure semantics; live proof — disposable V2 and standing V3):**

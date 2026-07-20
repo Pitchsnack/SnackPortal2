@@ -24,14 +24,14 @@ DBR-AR-2E evidence consolidation is delivered when this PR merges.
 DBR-AR-2 — CLOSED (Dan-authorized governance decision, 2026-07-16); this closure closes zero B5 activation blockers, the blocker census remains nine with 8 of 9 OPEN, and production remains NOT READY / DO-NOT-ACTIVATE.
 DBR-AR-2E closes zero activation blockers.
 The B5 activation-blocker census remains nine.
-Eight of nine blockers remain OPEN.
+Seven of nine blockers remain OPEN.
 No production activation decision is made.
 No production access or production mutation occurred.
 The separate Dan-authorized DBR-AR-2 closure decision is recorded in §13 (2026-07-16).
 A separate production activation decision would still be required.
 
 DBR-AR-2E closes zero B5 activation blockers. The activation-blocker census remains nine. The
-open-blocker count remains 8 of 9. Production remains NOT READY /
+open-blocker count remains 7 of 9. Production remains NOT READY /
 DO-NOT-ACTIVATE.
 
 ## 2. Scope — the exact nine-file implementation surface
@@ -88,7 +88,7 @@ head tree byte-for-byte. The exact-baseline hosted CI (validate · secret-scan �
 | B5-BLK-3 | production-grade secret store resolving `*_REF` | D-14 reference abstraction only (env/file providers) | OPEN | no production secret backend | wire a production-grade pluggable store | Infra | `b5_activation_blockers.md` |
 | B5-BLK-4 | provisioning audit sink available and wired | B-6/B-7/B-7A/B-7B + standing wiring (B5-4/B5-4A/Smoke C V2); AT-D15T1-3 satisfied | CLOSED (B5-E, 2026-07-12, Dan-authorized) — evidence-bound governance decision | gate §5 audit-sink condition still binds at activation time | none (closed); condition re-checked at activation | Control Plane | B5-E record in the three gate docs |
 | B5-BLK-5 | Lovable integrates only through the API Gateway | interim Supabase/RLS (DRIFT-01) | OPEN | frontend bypasses the gateway | execute the cutover plan | Frontend / Gateway | `b5_activation_blockers.md` |
-| B5-BLK-6 | IC-009/IC-007 contracts runtime-bound | not runtime-bound | OPEN | portal/cross-tenant behavior unbound | bind contracts under the Gateway | Architecture | `b5_activation_blockers.md` |
+| B5-BLK-6 | IC-009/IC-007 contracts runtime-bound | runtime-bound at the composed Gateway core + served edge (R6-1 to R6-4); positive IC-007 out of scope by adopted contract (R6-5) | CLOSED (governance-effect closure, 2026-07-20, Dan-authorized) | none (closed) | none (closed); the required Gateway runtime binding is proven | Architecture | `b5_activation_blockers.md` |
 | B5-BLK-7 | production migration / DDL readiness (D-17) | none for production; local DDL discipline proven | OPEN | unproven production schema path | version-gated readiness evidence | Infra / Control Plane | `b5_activation_blockers.md` |
 | B5-BLK-8 | proven isolated non-destructive production rollback | none for production; local selector-unset disable proven | OPEN | unrecoverable activation | rollback proof in the deployment era | Control Plane | `b5_activation_blockers.md` |
 | B5-BLK-9 | production monitoring / alerting | none; two in-memory counters only; no threshold/owner/escalation | OPEN | silent production failure | monitoring + alerting evidence | Ops | `b5_activation_blockers.md` |
