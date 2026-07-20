@@ -116,6 +116,18 @@ MANUAL_ONLY_EXCEPTIONS = {
         "lockstep), which is outside the rehearsal slice's authorized surface (no .github changes); "
         "operator-run per infrastructure/runbooks/controlled_served_write_rehearsal.md"
     ),
+    "tests/control_plane/requires_pg/test_pg_controlled_rollback_rehearsal.py": (
+        "controlled rollback rehearsal harness (composed-core Control Plane + Database Router; disposable "
+        "local rollback-to-deferred-in-memory mechanism proof): single-cluster capable (creates and drops "
+        "its own disposable databases sp2_rollback_control / _target / _adjacent, applies control 001-009 + "
+        "the 14-file tenant template to them only; no audit-store DDL), but deliberately MANUAL_ONLY — an "
+        "operator-run, disposable-topology rehearsal that requires an explicit human START-GATE (Dan) before "
+        "any execution, never an automatic CI proof; loop enrollment would additionally require editing the "
+        "live-pg workflow (plus the EXPECTED_HARNESS_COUNT/b7c2-doc lockstep), which is outside the B5-BLK-8B "
+        "authorized surface (no .github changes); operator-run per "
+        "infrastructure/runbooks/controlled_rollback_rehearsal.md and pinned by "
+        "tests/architecture/test_controlled_rollback_rehearsal_boundaries.py"
+    ),
 }
 
 # SAME loop idiom as the AT-5 / ATR-4 guards (replicated for self-containment, not imported).
