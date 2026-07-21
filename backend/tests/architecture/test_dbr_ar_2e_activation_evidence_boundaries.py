@@ -188,7 +188,7 @@ _FORBIDDEN_CLAIM_PHRASES = (
 # B5-BLK-6 register/taxonomy CLOSED rows); the B5 evidence template stays at its blob (untouched by 2E
 # and by both closures).
 _B5_GATE_BLOBS = {
-    "docs/runtime/b5_production_runtime_activation_gate.md": "d9baf96e1e3c8918e4a995df1d8f1bf3c75ce27c",
+    "docs/runtime/b5_production_runtime_activation_gate.md": "8530d04e67ccadb5614a745b12b296f2257932d3",
     "docs/runtime/b5_activation_blockers.md": "bdf413a58243a20fbfc932ca82ec26a1bcbdadc8",
     "docs/runtime/b5_runtime_readiness_matrix.md": "4d8edbdfe3e770aa4c4b19b65db2c4b8848ba187",
     "docs/runtime/b5_activation_evidence_template.md": "be6ac381feb074741c33ae77511c8aba7b768e60",

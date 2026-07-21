@@ -229,3 +229,35 @@ IC-001 (audit references-only) · IC-002 (8-state lifecycle / readiness) · IC-0
 (physical multi-DB mandatory) / §P (distinctness verification hook) / §H,§M (router boundary) / §I (gateway sole
 ingress) · D-07 (registry-authoritative) · D-14 (secret references) · D-15 (provisioning ownership) · D-17 (schema
 migration) · D-30 (cross-tenant isolation) · CLAUDE.md #4 (infrastructure independent of backend).
+
+## 13. Separately-governed hosted non-production rollback-proof path (IC-011 / D-40)
+
+Beyond the accepted local rollback scaffold (`infrastructure/runbooks/b5_blk8_rollback_to_deferred_composition.md`)
+and the local composed-core rehearsal (`infrastructure/runbooks/controlled_rollback_rehearsal.md`), a **separately-governed
+hosted non-production rollback-proof path** is reserved under **IC-011 — Hosted Rollback Proof Contract** and **D-40** (the
+B5-BLK-8C stage). This path is documentation and governance only; B-5 wires nothing and executes nothing, and this gate
+specification is not itself an execution authorization.
+
+**Requirements (all mandatory; see IC-011 and `infrastructure/runbooks/b5_blk8c_hosted_rollback_proof.md`):**
+
+```
+IC-011 compliance
+a named operator and a named approver are recorded (references only)
+isolated traffic (one served request through the API Gateway; the adjacent tenant is never touched)
+physical multi-database proof (one hosted Control DB + at least two physically distinct hosted Tenant databases)
+a production-grade SecretRef backend (D-14 references only; never a raw descriptor, password, or token)
+a pinned last-known-good reference set (the hosted success target is the last-known-good durable composition)
+a backup and restoration checkpoint (references only; no path, descriptor, credential, or dump content recorded)
+references-only evidence (the hosted extension of b5_blk8_rollback_evidence_template.md)
+restoration and cleanup before the single final write
+```
+
+**Emergency fail-closed target.** If restoration to the last-known-good durable composition cannot be safely achieved, the
+emergency fail-closed target is the **deferred in-memory composition**; that landing earns `ROLLBACK-NOT-PROVEN` plus an
+emergency-safe-state record and never `ROLLBACK-PROVEN-HOSTED-NONPRODUCTION`.
+
+**Locked state (unchanged by this path).** **LIVE PRODUCTION is prohibited.** The activation switch
+(`RUNTIME_ACTIVATION_ENABLED`) remains unchanged and unset — this path adds no readiness and flips no switch. This hosted
+rollback-proof path produces references-only evidence only; it changes no blocker status and no census. **B5-BLK-8 remains
+OPEN.** Only a separate B5-BLK-8D decision may determine any blocker effect; B5-BLK-8C produces evidence and determines none.
+The live blocker census remains **7 of 9 OPEN**. Production remains **NOT READY / DO-NOT-ACTIVATE**.
