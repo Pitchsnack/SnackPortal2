@@ -10,6 +10,12 @@ dist/
 .venv/
 venv/
 env/
+# infrastructure/env is the tracked environment-configuration root (SP2-NEXT-A-PORTABILITY),
+# not a virtualenv — re-include it; operator-local env files inside it stay untracked.
+!infrastructure/env/
+!infrastructure/env/**
+infrastructure/env/*.local
+infrastructure/env/**/*.local
 
 # Tooling caches
 .mypy_cache/

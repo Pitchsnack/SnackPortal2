@@ -1,0 +1,26 @@
+{
+  "schema": "sp2-environment-profile/v1",
+  "profile_id": "sp2-local-mvp",
+  "environment_id": "SP2-LOCAL-MVP-01",
+  "environment_type": "controlled-local-mvp",
+  "logical_databases": [
+    { "logical_id": "control", "endpoint_ref": "ref:db/control/endpoint@1" },
+    { "logical_id": "tenant-acme", "endpoint_ref": "ref:db/tenant-acme/endpoint@1" },
+    { "logical_id": "tenant-zeta", "endpoint_ref": "ref:db/tenant-zeta/endpoint@1" },
+    { "logical_id": "tenant-nova", "endpoint_ref": "ref:db/tenant-nova/endpoint@1" }
+  ],
+  "service_endpoints": [
+    { "service_id": "api-gateway", "endpoint_ref": "service://api-gateway" },
+    { "service_id": "auth-router", "endpoint_ref": "service://auth-router" },
+    { "service_id": "database-router", "endpoint_ref": "service://database-router" },
+    { "service_id": "control-plane", "endpoint_ref": "service://control-plane" }
+  ],
+  "secret_provider": "env-reference",
+  "artifact_destination_ref": "config://artifact-root",
+  "backup_destination_ref": "config://backup-target",
+  "monitoring_exporter": "local-structured-log",
+  "alert_destination_ref": "ref:alerts/operator@1",
+  "tls_mode": "loopback-only",
+  "service_discovery_mode": "static-config",
+  "runtime_health_integration": "http-readiness"
+}
