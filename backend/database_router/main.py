@@ -68,6 +68,14 @@ SP2_DBR_ROUTING_READ_BASE_URL = "SP2_DBR_ROUTING_READ_BASE_URL"
 SP2_DBR_DISPATCH_HOST = "SP2_DBR_DISPATCH_HOST"
 SP2_DBR_DISPATCH_PORT = "SP2_DBR_DISPATCH_PORT"
 
+# The CLM tenant-startup-server bind knobs (D-42 Stage B; the dispatch-knob precedent).
+# Non-secret internal config: the host and port the internal Gateway->Database-Router tenant
+# Startup operations server binds. Both optional — the defaults are the loopback host and an
+# ephemeral port (IC-010 §R internal-only surface). Only consulted when the router seam is
+# active (SP2_DBR_ROUTING_READ_BASE_URL selected).
+SP2_DBR_TENANT_STARTUP_HOST = "SP2_DBR_TENANT_STARTUP_HOST"
+SP2_DBR_TENANT_STARTUP_PORT = "SP2_DBR_TENANT_STARTUP_PORT"
+
 # The DBR-AR-2C durable routing-audit opt-in selector (C2 — explicit opt-in composition).
 # Non-secret internal config: the loopback/internal Control-Plane routing-audit INGEST base
 # URL, never a credential. Consulted ONLY when the outer routing seam
@@ -373,6 +381,68 @@ def build_dispatch_server_from_env() -> Optional[Tuple[object, str]]:
     from .adapters.providers.http_dispatch_api import build_dispatch_server
 
     return build_dispatch_server(router, host=host, port=port)
+
+
+def _tenant_startup_port_from_env() -> int:
+    """Parse ``SP2_DBR_TENANT_STARTUP_PORT`` fail-closed: unset/empty/whitespace → ``0``
+    (ephemeral); otherwise a base-10 integer in ``[0, 65535]``, else ``ValueError`` — raised
+    BEFORE any socket bind so malformed config never opens a listener."""
+    raw = (os.environ.get(SP2_DBR_TENANT_STARTUP_PORT) or "").strip()
+    if not raw:
+        return 0
+    try:
+        port = int(raw, 10)
+    except ValueError:
+        raise ValueError(f"invalid {SP2_DBR_TENANT_STARTUP_PORT}={raw!r}; expected an integer in [0, 65535]") from None
+    if not (0 <= port <= 65535):
+        raise ValueError(f"invalid {SP2_DBR_TENANT_STARTUP_PORT}={raw!r}; port out of range [0, 65535]")
+    return port
+
+
+def build_tenant_startup_server_from_env() -> Optional[Tuple[object, str]]:
+    """The CLM tenant Startup operations server composition seam (D-42 Stage B; the paired
+    ``build_dispatch_server_from_env`` precedent).
+
+    Router-gate-first: compose the router via ``build_router_from_env()``; if the router selector
+    (``SP2_DBR_ROUTING_READ_BASE_URL``) is inactive it returns ``None`` and this seam returns
+    ``None`` WITHOUT consulting the bind knobs. When the router is composed, the executor is the
+    bounded ``TenantStartupOperations`` over ``PgRoutedSessionProvider(router)`` — one routed
+    tenant session → EXACTLY ONE physical tenant database per operation (IC-010 §K/§O; D-07) —
+    and the server is constructed via ``build_tenant_startup_server``, returning
+    ``(server, base_url)``.
+
+    * ``SP2_DBR_ROUTING_READ_BASE_URL`` unset/empty → ``None`` (bind knobs unread). A malformed
+      routing URL raises ``ValueError`` (inherited from ``build_router_from_env``).
+    * ``SP2_DBR_TENANT_STARTUP_HOST`` — optional; unset/empty/whitespace → ``127.0.0.1`` (internal
+      loopback, IC-010 §R); otherwise passed through (an unbindable host surfaces as ``OSError``
+      from ``HTTPServer`` construction — deployment scope).
+    * ``SP2_DBR_TENANT_STARTUP_PORT`` — optional; unset/empty → ``0`` (ephemeral); otherwise an
+      integer in ``[0, 65535]``; anything else → ``ValueError`` BEFORE any socket bind.
+
+    Side-effect boundary (LOAD-BEARING): this seam is DB-inert and serve-inert — it opens no
+    connection, calls no ``route`` / ``psycopg.connect`` and performs no network client I/O, starts
+    no serve loop, thread, daemon, or service. But it is NOT socket-inert: when active,
+    ``build_tenant_startup_server`` constructs an ``HTTPServer`` which binds + activates a local
+    listening socket at construction (default ``port=0`` → ephemeral). Callers/tests own the socket
+    lifecycle and must close it.
+
+    No overclaim: it composes a controlled-local tenant Startup server *object* from config; it
+    does NOT serve requests, run a production service, activate production, complete the Physical
+    Multi-Database MVP, or close any B5 blocker (fail closed — no silent fallback).
+    """
+    router = build_router_from_env()
+    if router is None:
+        return None
+    host = (os.environ.get(SP2_DBR_TENANT_STARTUP_HOST) or "").strip() or "127.0.0.1"
+    port = _tenant_startup_port_from_env()
+    # Lazy relative imports keep database_router/main.py import-light (http.server is pulled in
+    # only when the seam is active); build_tenant_startup_server binds the ephemeral socket.
+    from .adapters.providers.http_tenant_startup_api import build_tenant_startup_server
+    from .session_provider import PgRoutedSessionProvider
+    from .tenant_startup_ops import TenantStartupOperations
+
+    ops = TenantStartupOperations(PgRoutedSessionProvider(router))
+    return build_tenant_startup_server(ops, host=host, port=port)
 
 
 def liveness() -> Dict[str, str]:

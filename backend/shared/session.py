@@ -8,8 +8,11 @@ roll back **together** (atomic provenance — IC-003/IC-004).
 
 The session exposes a small, portable **tabular** vocabulary (`upsert`/`append`/`get`/
 `latest`); the provider maps it to standard parameterized PostgreSQL. References only —
-no credentials, payloads, or secrets appear in this port (D-14). There is no update/delete
-vocabulary: lineage tables are append-only (D-23) and tenant copies mutate via `upsert`.
+no credentials, payloads, or secrets appear in this port (D-14). Lineage tables are
+append-only (D-23) and are never updated; tenant copies mutate via `upsert` (a full-record
+re-write) or, for a bounded single-column change of an existing tenant record, via the
+narrow `update` verb (CLM D-42) — implemented only by the routed tenant session (the
+append-only lineage/import doubles inherit the default that refuses it).
 """
 
 from __future__ import annotations
@@ -53,6 +56,16 @@ class RoutedTenantSession(ABC):
     @abstractmethod
     def append(self, table: str, row: Dict[str, Any]) -> None:
         """Append-only insert (e.g. lineage). No update/delete is exposed (D-23)."""
+
+    def update(self, table: str, key: Dict[str, Any], assignments: Dict[str, Any]) -> None:
+        """Bounded in-place UPDATE of an EXISTING tenant record's columns by natural key
+        (CLM D-42; IC-010 CLM bounded single-field update). A narrow, WHERE-keyed SET of
+        exactly the caller-supplied ``assignments`` columns — never lineage (append-only,
+        D-23), never a delete. Additive to the Phase-5 write seam and NON-abstract: only
+        the routed tenant session implements it; every append-only implementer (lineage /
+        import job-state doubles) inherits this default, which refuses an in-place update
+        so an accidental mutation of an append-only table fails closed."""
+        raise NotImplementedError("this session does not support in-place update (append-only)")
 
     @abstractmethod
     def get(self, table: str, key: Dict[str, Any]) -> Optional[Dict[str, Any]]: ...

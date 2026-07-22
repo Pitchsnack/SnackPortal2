@@ -713,6 +713,7 @@ _GATEWAY_AUDIT_COLUMNS = (
     "subject_ref",
     "tenant_ref",
     "carrier_ref",
+    "record_ref",  # D-42 CLM: the tenant-resident record reference (nullable; references only)
 )
 
 _GATEWAY_AUDIT_INSERT = (
@@ -854,6 +855,7 @@ class PostgresGatewayAuditStore(GatewayAuditStorePort):
             record.subject_ref,
             record.tenant_ref,
             record.carrier_ref,
+            record.record_ref,
         )
 
     @staticmethod
@@ -865,7 +867,7 @@ class PostgresGatewayAuditStore(GatewayAuditStorePort):
             return False
         if not _same_instant(row[2], record.occurred_at):
             return False
-        return tuple(row[3:11]) == (
+        return tuple(row[3:12]) == (
             record.correlation_id,
             record.action,
             record.outcome,
@@ -874,6 +876,7 @@ class PostgresGatewayAuditStore(GatewayAuditStorePort):
             record.subject_ref,
             record.tenant_ref,
             record.carrier_ref,
+            record.record_ref,
         )
 
 

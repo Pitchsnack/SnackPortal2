@@ -234,20 +234,27 @@ def test_directory_read_success_emits_no_audit_event() -> None:
 
 def test_historic_four_denial_actions_unchanged_and_success_action_separate() -> None:
     # The denial/anomaly subset remains EXACTLY the historic four (exact labels); the
-    # runtime enum totals five; the success action sits outside that subset and is never
-    # classified as a denial, anomaly, or routing action.
+    # runtime enum totals seven (the memberships subclass + the two D-42 CLM tenant
+    # Startup success-access actions); every success action sits outside that subset and
+    # is never classified as a denial, anomaly, or routing action.
     historic = {
         AuditAction.CARRIER_MISMATCH: "CarrierMismatch",
         AuditAction.CARRIER_ON_CONTROL_ANOMALY: "CarrierOnControlAnomaly",
         AuditAction.ROUTE_DENIED: "RouteDenied",
         AuditAction.ISOLATION_ANOMALY: "IsolationAnomaly",
     }
+    clm_success = {
+        AuditAction.TENANT_STARTUP_READ: "tenant_startup_read",
+        AuditAction.TENANT_STARTUP_UPDATE: "tenant_startup_update",
+    }
     assert {action: action.value for action in historic} == historic  # exact four, exact labels
-    assert len(AuditAction) == 5
-    assert set(AuditAction) == set(historic) | {_SUCCESS}
-    assert _SUCCESS not in historic
+    assert {action: action.value for action in clm_success} == clm_success  # exact two, exact labels
+    assert len(AuditAction) == 7
+    assert set(AuditAction) == set(historic) | {_SUCCESS} | set(clm_success)
+    assert _SUCCESS not in historic and not (set(clm_success) & set(historic))
     assert _SUCCESS.value == "workspace_memberships_read"
     assert _SUCCESS.value not in set(historic.values())
+    assert not (set(clm_success.values()) & set(historic.values()))
 
 
 def test_sole_emitter_single_recorder_and_zero_router_handoffs() -> None:

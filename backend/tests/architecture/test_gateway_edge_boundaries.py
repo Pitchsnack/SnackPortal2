@@ -43,10 +43,15 @@ if str(_scan.BACKEND_ROOT) not in sys.path:
 
 # W1b: the edge's bounded import matcher + its pins are pure, socket-free values — imported and
 # exercised directly by the import-route guard below (no bind, no network, no database).
+# D-42 CLM: the bounded tenant Startup matcher + its pins are exercised the same way.
 from api_gateway.adapters.providers.http_gateway_edge import (  # noqa: E402
     _IMPORT_TARGET_METHODS,
+    _MAX_PATCH_BODY_BYTES,
     _MAX_SOURCE_REF_BYTES,
+    _MAX_STARTUP_REF_BYTES,
+    _TENANT_STARTUP_METHODS,
     _is_valid_import_target,
+    _is_valid_tenant_startup_target,
 )
 
 _EDGE = _scan.BACKEND_ROOT / "api_gateway" / "adapters" / "providers" / "http_gateway_edge.py"
@@ -228,7 +233,7 @@ def test_edge_calls_gateway_handle_exactly_once() -> None:
     shared = _def(tree, "_invoke_core")
     assert shared is not None, "the edge must own the single shared _invoke_core handle site"
     assert _attr_call_count(shared, "handle") == 1, "the sole gateway.handle call must live inside _invoke_core"
-    for path_name in ("_invoke_core", "_handle_memberships", "_handle_import"):
+    for path_name in ("_invoke_core", "_handle_memberships", "_handle_import", "_handle_tenant_startup"):
         node = _def(tree, path_name)
         assert node is not None, f"the edge must own the {path_name} business path"
         assert not _has_loop(node), f"the Gateway.handle call must not be wrapped in a retry loop ({path_name})"
@@ -280,6 +285,45 @@ def test_edge_import_route_is_bounded_multisegment_and_post_only() -> None:
     )
 
 
+def test_edge_tenant_startup_route_is_bounded_single_segment_get_patch_only() -> None:
+    # D-42 CLM: the served /tenant/startups/<startup_ref> matcher is a BOUNDED, traversal-safe,
+    # SINGLE-SEGMENT route — never a wildcard/prefix router — exercised directly (a pure,
+    # socket-free function; the W1b import-matcher guard idiom).
+    for ok in ("/tenant/startups/clm-startup-1", "/tenant/startups/t1:startups:g1", "/tenant/startups/a.b_c-d"):
+        assert _is_valid_tenant_startup_target(ok), f"{ok!r} must be an accepted bounded tenant Startup target"
+    for bad in (
+        "/tenant/startups",  # bare (no startup_ref)
+        "/tenant/startups/",  # empty suffix
+        "/tenant/startups/a/b",  # multi-segment (the ref is ONE segment)
+        "/tenant/startups/..",  # dot-dot traversal
+        "/tenant/startups/%2e%2e",  # percent-encoded dot-dot
+        "/tenant/startups/a\\b",  # backslash
+        "/tenant/startups/g1?tenant=t1",  # query form
+        "/tenant/startups/g1#frag",  # fragment form
+        "/tenant/investors/i1",  # a different tenant family (never served in CLM)
+        "/tenant/deals/d1",  # a different tenant family (never served in CLM)
+        "/tenant/startupsx/g1",  # prefix look-alike
+        "/memberships",  # a different route
+    ):
+        assert not _is_valid_tenant_startup_target(bad), f"{bad!r} must be rejected by the bounded tenant Startup matcher"
+    # The startup_ref byte bound is pinned at 512 (IC-010 CLM: 1..512 UTF-8 bytes).
+    assert _MAX_STARTUP_REF_BYTES == 512, "the startup_ref byte bound must be pinned at 512"
+    assert _is_valid_tenant_startup_target("/tenant/startups/" + "a" * 512), "a 512-byte startup_ref is at the bound (accepted)"
+    assert not _is_valid_tenant_startup_target("/tenant/startups/" + "a" * 513), "a 513-byte startup_ref exceeds the bound (rejected)"
+    # GET + PATCH + OPTIONS only — never POST/PUT/DELETE/HEAD (no create/delete capability).
+    assert _TENANT_STARTUP_METHODS == frozenset({"GET", "PATCH", "OPTIONS"}), (
+        "the tenant Startup target must expose exactly GET, PATCH, OPTIONS"
+    )
+    # The PATCH body budget is pinned at exactly 16384 bytes (IC-010 CLM).
+    assert _MAX_PATCH_BODY_BYTES == 16384, "the tenant Startup PATCH body budget must be pinned at 16384 bytes"
+    # The matcher is wired into the edge dispatch, and the static allowlist stays closed.
+    text = _EDGE.read_text(encoding="utf-8")
+    assert "_is_valid_tenant_startup_target(target)" in text, "the edge dispatch must gate the tenant Startup routes on the bounded matcher"
+    assert _dict_string_keys(_tree(_EDGE), "_EXPOSED_ROUTES") == set(_EXPECTED_ROUTES), (
+        "the static allowlist must not carry a parameterized tenant Startup key"
+    )
+
+
 def test_edge_correlation_accept_mint_echo() -> None:
     text = _EDGE.read_text(encoding="utf-8")
     tree = _tree(_EDGE)
@@ -310,6 +354,13 @@ def test_edge_serialize_portal_dto_is_only_success_serializer() -> None:
     assert "ImportResultDTO" in used, "the import terminal must type-check the success DTO (ImportResultDTO)"
     assert _name_call_count(tree, "ImportResultDTO") == 0, "the edge must never construct an ImportResultDTO"
     assert "ImportInitiationDTO" not in used, "the edge must never reference/serialize ImportInitiationDTO"
+    # D-42 CLM: the same reference-not-construct rule binds the tenant Startup terminal, and the
+    # edge must NEVER reference the update REQUEST shape (body parsing is core-owned — the raw
+    # bounded bytes pass through untouched).
+    assert "TenantStartupDetailDTO" in used, "the tenant Startup terminal must type-check the success DTO"
+    assert _name_call_count(tree, "TenantStartupDetailDTO") == 0, "the edge must never construct a TenantStartupDetailDTO"
+    assert "TenantStartupUpdateRequestDTO" not in used, "the edge must never reference/parse the update request DTO"
+    assert "parse_tenant_startup_update_request" not in used, "PATCH body parsing is core-owned, never edge-owned"
 
 
 def test_edge_no_raw_error_or_secret_leakage() -> None:
@@ -383,6 +434,7 @@ if __name__ == "__main__":
             test_edge_calls_gateway_handle_exactly_once,
             test_edge_route_allowlist_is_closed,
             test_edge_import_route_is_bounded_multisegment_and_post_only,
+            test_edge_tenant_startup_route_is_bounded_single_segment_get_patch_only,
             test_edge_correlation_accept_mint_echo,
             test_edge_cors_exact_origin_no_credentialed_wildcard,
             test_edge_serialize_portal_dto_is_only_success_serializer,

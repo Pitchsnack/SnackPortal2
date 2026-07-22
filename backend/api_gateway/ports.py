@@ -15,7 +15,12 @@ from typing import Optional, Sequence, Union
 from shared.context import RequestContext
 
 from .models import AuthResult, DispatchDecision, GatewayAuditEvent, RequestMetric, RouteOutcome
-from .portal import GlobalInvestorSummaryDTO, GlobalStartupSummaryDTO, WorkspaceMembershipDTO
+from .portal import (
+    GlobalInvestorSummaryDTO,
+    GlobalStartupSummaryDTO,
+    TenantStartupDetailDTO,
+    WorkspaceMembershipDTO,
+)
 
 
 class AuthenticatorPort(ABC):
@@ -126,3 +131,58 @@ class ImportInitiationPort(ABC):
 
     @abstractmethod
     def initiate(self, request: ImportInitiationRequest) -> ImportInitiationOutcome: ...
+
+
+@dataclass(frozen=True)
+class TenantStartupReadRequest:
+    """The references-only CLM tenant Startup READ request (D-42; IC-010 CLM section) the
+    gateway hands to the ``TenantStartupOperationsPort``. Content comes EXCLUSIVELY from
+    the gateway-validated request (the opaque, bounded ``<startup_ref>`` path suffix) and
+    the signed claim (the single active tenant, the authenticated principal) — never a
+    token, secret, payload, DB handle, or topology, and never a client-supplied tenant
+    selector (``target_tenant_ref`` is the dispatch decision's signed active tenant)."""
+
+    startup_ref: str  # the opaque tenant-resident Startup record reference (1..512 UTF-8 bytes)
+    target_tenant_ref: str  # the signed active tenant (never a client-supplied selector)
+    correlation_id: str
+    actor_ref: str  # the authenticated principal reference (never a token)
+
+
+@dataclass(frozen=True)
+class TenantStartupUpdateRequest:
+    """The bounded CLM tenant Startup UPDATE request (D-42; IC-010 CLM section). Exactly
+    the read request plus the single allowlisted field value: ``short_description`` is
+    the SOLE CLM-mutable field (a UTF-8 string of at most 500 characters, or None to
+    clear), already validated fail-closed by the gateway
+    (``portal.parse_tenant_startup_update_request``) BEFORE this request is built —
+    no unvalidated content ever crosses this port."""
+
+    startup_ref: str
+    target_tenant_ref: str
+    correlation_id: str
+    actor_ref: str
+    short_description: Optional[str]
+
+
+class TenantStartupOperationsPort(ABC):
+    """``Gateway → Database Router`` tenant Startup data seam (D-42 CLM Stage B; IC-010
+    CLM section) — reached over transport ONLY, never an in-process import of
+    ``database_router`` (IC-010 §M; DAG independence). The Database Router side resolves,
+    from the signed claim, EXACTLY ONE physical tenant database (IC-010 §K/§O; D-07) and
+    executes the bounded read/update there; the gateway never resolves a database (§X).
+
+    Only the adopted ``TenantStartupDetailDTO`` crosses this port (IC-010 §V.1 typed port
+    results — raw dictionaries, raw response bodies, and provider objects never do; typed
+    parsing lives inside the adapter). ``None`` is the consistent IC-002 not-found
+    mapping (an unknown ``<startup_ref>`` within the bound tenant database — the gateway
+    maps it to the existing ``not_found`` denial, leaking no cross-tenant existence).
+    Every transport failure raises, and the gateway collapses it fail-closed to 503
+    ``unavailable`` (IC-010 §L — no new public_code). The update is bounded and atomic:
+    the Database Router side writes the sole allowlisted field or nothing (no partial
+    write)."""
+
+    @abstractmethod
+    def read(self, request: TenantStartupReadRequest) -> Optional[TenantStartupDetailDTO]: ...
+
+    @abstractmethod
+    def update(self, request: TenantStartupUpdateRequest) -> Optional[TenantStartupDetailDTO]: ...

@@ -128,6 +128,19 @@ MANUAL_ONLY_EXCEPTIONS = {
         "infrastructure/runbooks/controlled_rollback_rehearsal.md and pinned by "
         "tests/architecture/test_controlled_rollback_rehearsal_boundaries.py"
     ),
+    "tests/control_plane/requires_pg/test_pg_clm_2day_stage_b_rehearsal.py": (
+        "CLM 2-Day Stage B controlled-local rehearsal harness (the full D-42 journey: RS256/OIDC login -> "
+        "principal-only auth -> served GET /memberships -> backend-validated ACME selection -> served "
+        "GET/PATCH /tenant/startups/<startup_ref> -> unauthorized ZETA fail-closed denial -> four durable "
+        "audit events -> rollback and restore, joined in one test-owned deployment root over six loopback "
+        "served edges): single-cluster capable (creates and drops its own disposable databases sp2_clm_control "
+        "/ _acme / _zeta, applies control 001-009 + 012 + 013 and the 14-file tenant template to them only), "
+        "but deliberately MANUAL_ONLY — an operator-run, disposable-topology rehearsal that requires an "
+        "explicit human START-GATE (Dan) before any execution, never an automatic CI proof; loop enrollment "
+        "would additionally require editing the live-pg workflow (plus the EXPECTED_HARNESS_COUNT/b7c2-doc "
+        "lockstep), which is outside the Stage B authorized surface (no .github changes); operator-run per "
+        "infrastructure/runbooks/clm_2day_stage_b_rehearsal.md"
+    ),
 }
 
 # SAME loop idiom as the AT-5 / ATR-4 guards (replicated for self-containment, not imported).

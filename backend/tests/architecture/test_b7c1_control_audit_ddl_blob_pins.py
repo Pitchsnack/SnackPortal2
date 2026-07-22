@@ -102,7 +102,7 @@ _2D_HARNESS = _scan.BACKEND_ROOT / "tests" / "control_plane" / "requires_pg" / "
 # INV-A/INV-B lockstep). The disposable proof does NOT standing-apply the DDL.
 _DDL_012 = _CONTROL / "012_gateway_operational_audit.sql"
 _DDL_013 = _CONTROL / "013_gateway_operational_audit_append_only.sql"
-_PIN_012 = "5df1ae4edb7a943b33f36fc3800d81c8cb75804b"
+_PIN_012 = "87c38a968f8ab89886ef7ce4d9d7fafb7a179271"
 _PIN_013 = "199664d1afb9e6e0a37e8609f42e4e1528771472"
 _GATEWAY_AUDIT_HARNESS = _scan.BACKEND_ROOT / "tests" / "control_plane" / "requires_pg" / "test_pg_gateway_audit_durable.py"
 # W1a: pin the Import operational-audit DDL pair — 014 (control_import_audit table) and 015 (its append-only

@@ -204,6 +204,7 @@ _AUDIT_EVENT_EXPECTED_FIELDS = {
     "subject_ref",
     "occurred_at",
     "event_version",
+    "record_ref",  # D-42 CLM: the tenant-resident record reference (a reference only)
 }
 _AUDIT_EVENT_FORBIDDEN_FIELD_NAMES = {"rows", "records", "memberships", "database", "db_name"}
 
