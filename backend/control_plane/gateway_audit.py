@@ -32,8 +32,10 @@ from enum import Enum
 from typing import Optional
 
 # Exact frozen action vocabulary of the API-Gateway-edge operational-audit class (IC-010 §J
-# AuditAction; extension only by contract amendment). Mirrors DDL 012's CHECK. V1a wires only the
-# ``workspace_memberships_read`` success action; the four denial/anomaly actions are homed for the
+# AuditAction + the D-42 CLM success-access set; extension only by contract amendment — the two
+# ``tenant_startup_*`` actions were ratified by D-42 / the IC-010 CLM section). Mirrors DDL 012's
+# CHECK. The durably WIRED set is the four CLM-homed classes (the three success-access events plus
+# the class-3 ``RouteDenied`` denial record); the remaining denial/anomaly actions stay homed for a
 # later additive sibling.
 GATEWAY_AUDIT_STORE_ACTIONS = (
     "CarrierMismatch",
@@ -41,6 +43,8 @@ GATEWAY_AUDIT_STORE_ACTIONS = (
     "RouteDenied",
     "IsolationAnomaly",
     "workspace_memberships_read",
+    "tenant_startup_read",
+    "tenant_startup_update",
 )
 
 # The producer constant enforced by the DDL 012 source_service CHECK (never a wire field).
@@ -88,6 +92,9 @@ class GatewayAuditRecord:
     subject_ref: Optional[str] = None  # self-scoped success subject reference (== actor_ref)
     tenant_ref: Optional[str] = None  # authenticated active tenant reference; None for the CONTROL edge
     carrier_ref: Optional[str] = None  # opaque, length-bounded carrier reference (anomaly attribution only)
+    # D-42 CLM: the tenant-resident record reference the tenant Startup success events
+    # address — a reference only, never field content.
+    record_ref: Optional[str] = None
 
 
 class GatewayAuditAppendResult(Enum):

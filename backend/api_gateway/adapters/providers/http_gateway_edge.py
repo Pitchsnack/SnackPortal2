@@ -10,14 +10,17 @@ compose portal DTOs, decide audit, or run business logic — every one of those 
 the composed Gateway core it fronts (``ports.py`` / ``gateway.py`` / ``dispatch.py`` /
 ``portal.py``). The edge calls exactly ONE thing: ``Gateway.handle`` (one shared call site).
 
-Exposed surface: the business routes ``GET /memberships`` (self-scoped MembershipsForPrincipal)
-and ``POST /import/<source_ref>`` (the bounded, traversal-safe served import route — W1b), the
-operational ``GET /health`` / ``GET /readiness``, and the matching CORS preflights ``OPTIONS
-/memberships`` (GET, OPTIONS) and ``OPTIONS /import/<source_ref>`` (POST, OPTIONS). Every other
-path is ``404`` route-not-exposed and every non-allowed method is ``405`` — decided BEFORE the
-core is ever reached. ``Gateway.handle`` is invoked through exactly ONE shared call site and at
-most once per accepted business request; operational routes, preflights, and pre-core rejections
-never reach it. Both business routes are body-less (``_MAX_BODY_BYTES = 0``).
+Exposed surface: the business routes ``GET /memberships`` (self-scoped MembershipsForPrincipal),
+``POST /import/<source_ref>`` (the bounded, traversal-safe served import route — W1b), and the
+two D-42 CLM tenant Startup routes ``GET/PATCH /tenant/startups/<startup_ref>`` (bounded,
+traversal-safe, single-segment — IC-010 CLM section), the operational ``GET /health`` /
+``GET /readiness``, and the matching CORS preflights (``OPTIONS`` per business target). Every
+other path is ``404`` route-not-exposed and every non-allowed method is ``405`` — decided BEFORE
+the core is ever reached. ``Gateway.handle`` is invoked through exactly ONE shared call site and
+at most once per accepted business request; operational routes, preflights, and pre-core
+rejections never reach it. Every route is body-less (``_MAX_BODY_BYTES = 0``) EXCEPT the served
+tenant Startup PATCH, whose body is bounded at exactly ``_MAX_PATCH_BODY_BYTES = 16384`` bytes
+(IC-010 CLM) and is forwarded raw to the core (never interpreted at the edge).
 
 The served import route is denial-fidelity terminal (W1b, IC-010 §L/§V.2): a success serializes
 ONLY a real, core-composed ``ImportResultDTO``; a genuine ``status >= 400`` is preserved with an
@@ -48,7 +51,7 @@ from typing import Dict, Mapping, Optional, Tuple, cast
 
 from api_gateway.gateway import Gateway
 from api_gateway.models import GatewayResponse, InboundRequest
-from api_gateway.portal import ImportResultDTO, serialize_portal_dto
+from api_gateway.portal import ImportResultDTO, TenantStartupDetailDTO, serialize_portal_dto
 from api_gateway.readiness import liveness, readiness
 
 # --- transport constants (conservative, review-pinned; test-pinned by the boundary guard) ---
@@ -87,6 +90,37 @@ _OPERATION_KEY_HEADER = "x-operation-key"  # forwarded (when present) for the co
 _SAFE_IMPORT_SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._\-]*")
 
 
+# --- the bounded served tenant Startup routes (D-42 CLM Stage B) — NOT static allowlist entries
+# (they carry a parameter) and NOT a generic router. A dedicated matcher recognizes exactly
+# ``/tenant/startups/<startup_ref>`` where startup_ref is a bounded, traversal-safe, SINGLE-SEGMENT
+# suffix (IC-010 CLM: opaque, 1..512 UTF-8 bytes; never a tenant or database selector).
+_TENANT_STARTUP_PREFIX = "/tenant/startups/"
+_MAX_STARTUP_REF_BYTES = 512  # the startup_ref suffix byte cap (1..512 UTF-8 bytes; IC-010 CLM)
+_TENANT_STARTUP_METHODS = frozenset({"GET", "PATCH", "OPTIONS"})  # the ONLY methods the tenant Startup target exposes
+_MAX_PATCH_BODY_BYTES = 16384  # IC-010 CLM: the tenant Startup PATCH request body is bounded at 16384 bytes
+# One single segment: an alnum lead then alnum/dot/dash/underscore/colon. No empty / "." / ".." /
+# "/" / percent-encoded / backslash / query / fragment form can match — traversal- and
+# injection-safe by construction (a "." or ".." segment fails the alnum-lead rule; "%", "\\",
+# "/", "?", "#" are outside the charset; ":" admits the tenant record-reference shape).
+_SAFE_STARTUP_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:\-]*")
+
+
+def _is_valid_tenant_startup_target(target: str) -> bool:
+    """True iff ``target`` is a bounded, traversal-safe ``/tenant/startups/<startup_ref>`` served
+    tenant Startup target (D-42 CLM; IC-010 CLM section). ``startup_ref`` is the exact request-target
+    suffix after ``/tenant/startups/``: ONE segment of 1..512 UTF-8 bytes matching
+    ``[A-Za-z0-9][A-Za-z0-9._:-]*``. Every bare / empty / multi-segment / ``.`` / ``..`` /
+    percent-encoded / backslash / query / fragment form fails to match and is ``404`` pre-core. A
+    bounded parameterized matcher — NEVER a generic wildcard or prefix router (the static allowlist
+    stays closed to {/memberships, /health, /readiness})."""
+    if not target.startswith(_TENANT_STARTUP_PREFIX):
+        return False
+    suffix = target[len(_TENANT_STARTUP_PREFIX) :]
+    if not 1 <= len(suffix.encode("utf-8")) <= _MAX_STARTUP_REF_BYTES:
+        return False
+    return _SAFE_STARTUP_REF.fullmatch(suffix) is not None
+
+
 def _is_valid_import_target(target: str) -> bool:
     """True iff ``target`` is a bounded, traversal-safe ``/import/<source_ref>`` served import target
     (W1b; PRD §4.1). ``source_ref`` is the exact request-target suffix after ``/import/``: 1..512 UTF-8
@@ -117,6 +151,12 @@ def _make_handler(gateway: Gateway, allowed_origins: Tuple[str, ...]) -> "type[B
             # yields 405 on a POST to any other listed target and 404 on an unlisted one (pre-core).
             self._dispatch("POST")
 
+        def do_PATCH(self) -> None:  # noqa: N802 (http.server API)
+            # PATCH is a served method for the bounded /tenant/startups/<startup_ref> route only
+            # (D-42 CLM); _dispatch yields 405 on a PATCH to any other listed target and 404 on an
+            # unlisted one (pre-core).
+            self._dispatch("PATCH")
+
         def do_OPTIONS(self) -> None:  # noqa: N802 (http.server API)
             self._dispatch("OPTIONS")
 
@@ -125,22 +165,38 @@ def _make_handler(gateway: Gateway, allowed_origins: Tuple[str, ...]) -> "type[B
             # and an unlisted target yields 404 (both pre-core, fixed status, empty body).
             self._dispatch(self.command)
 
-        # do_GET / do_POST / do_OPTIONS are the served handlers; every other method dispatches by
-        # its real command name and resolves to 405 (listed target) or 404 (unlisted).
-        do_PUT = do_DELETE = do_PATCH = do_HEAD = _method_not_allowed
+        # do_GET / do_POST / do_PATCH / do_OPTIONS are the served handlers; every other method
+        # dispatches by its real command name and resolves to 405 (listed target) or 404 (unlisted).
+        do_PUT = do_DELETE = do_HEAD = _method_not_allowed
 
         def _dispatch(self, method: str) -> None:
             correlation_id = self._correlation_id()
             origin = self.headers.get("Origin")
-            # Drain any declared request body (bounded, discarded — never interpreted) so a rejection
-            # response delivers cleanly on the connection instead of resetting the peer.
-            self._drain_body()
-            # Transport bounds first (pre-core): request target, header count/bytes, body.
-            bounds_status = self._bounds_violation()
+            target = self.path  # exact request-target: a stray ?query never equals a listed route or a valid business target
+            # Per-route body budget (D-42 CLM): ONLY the served tenant Startup PATCH accepts a body,
+            # bounded at exactly 16384 bytes (IC-010 CLM); every other route stays body-less.
+            patch_target = _is_valid_tenant_startup_target(target) and method == "PATCH"
+            body_budget = _MAX_PATCH_BODY_BYTES if patch_target else _MAX_BODY_BYTES
+            # Transport bounds first (pre-core): request target, header count/bytes, body budget.
+            bounds_status = self._bounds_violation(body_budget)
             if bounds_status is not None:
+                # Drain the declared body (bounded, discarded — never interpreted) so the rejection
+                # response delivers cleanly on the connection instead of resetting the peer.
+                self._drain_body()
                 self._respond(bounds_status, correlation_id, origin)
                 return
-            target = self.path  # exact request-target: a stray ?query never equals a listed route or a valid import target
+            patch_body: Optional[bytes] = None
+            if patch_target:
+                # Read the bounded PATCH body EXACTLY (already <= the budget per the bounds check);
+                # the bytes are forwarded raw to the core and never interpreted at the edge.
+                patch_body = self._read_bounded_body(body_budget)
+                if patch_body is None:
+                    self._respond(400, correlation_id, origin)  # malformed transport body (pre-core)
+                    return
+            else:
+                # Drain any declared request body (bounded, discarded — never interpreted) so a
+                # rejection response delivers cleanly on the connection.
+                self._drain_body()
             allowed_methods = _EXPOSED_ROUTES.get(target)
             if allowed_methods is not None:
                 # The closed static allowlist: /memberships (business) + /health + /readiness (operational).
@@ -186,6 +242,27 @@ def _make_handler(gateway: Gateway, allowed_origins: Tuple[str, ...]) -> "type[B
                     )
                     return
                 self._handle_import(correlation_id, origin)
+                return
+            if _is_valid_tenant_startup_target(target):
+                # The bounded /tenant/startups/<startup_ref> business routes (D-42 CLM): GET reads,
+                # PATCH executes the bounded update, OPTIONS preflights.
+                if method not in _TENANT_STARTUP_METHODS:
+                    self._respond(405, correlation_id, origin)  # method not allowed (pre-core)
+                    return
+                if method == "OPTIONS":
+                    # CORS preflight for the tenant Startup routes: 204, GET+PATCH+OPTIONS. The
+                    # Gateway core is NEVER invoked for a preflight; content-type is added to the
+                    # allowed request headers (the PATCH body is application/json).
+                    self._respond(
+                        204,
+                        correlation_id,
+                        origin,
+                        preflight=True,
+                        cors_methods="GET, PATCH, OPTIONS",
+                        cors_headers="Authorization, x-correlation-id, content-type",
+                    )
+                    return
+                self._handle_tenant_startup(method, correlation_id, origin, patch_body)
                 return
             self._respond(404, correlation_id, origin)  # route not exposed (pre-core)
 
@@ -233,6 +310,51 @@ def _make_handler(gateway: Gateway, allowed_origins: Tuple[str, ...]) -> "type[B
                 return
             status = response.status if response.status >= 400 else 503
             self._respond(status, correlation_id, origin)
+
+        def _handle_tenant_startup(self, method: str, correlation_id: str, origin: Optional[str], patch_body: Optional[bytes]) -> None:
+            # The bounded /tenant/startups/<startup_ref> business paths (D-42 CLM): build the typed
+            # InboundRequest from the validated request target + the existing bearer, and invoke the
+            # core through the ONE shared call site. Tenant/actor authority stays SIGNED-CONTEXT
+            # owned inside the core — the edge derives it from nothing (never the path, body, query,
+            # cookie, or carrier). The bounded PATCH body is forwarded raw; the core parses it.
+            request = InboundRequest(
+                method=method,
+                path=self.path,
+                host=self.headers.get("Host", "") or "",
+                headers=self._forwarded_headers(correlation_id),
+                authorization=self.headers.get("Authorization"),
+                patch_body=patch_body,
+            )
+            response = self._invoke_core(request)
+            # Denial-fidelity terminal (the W1b idiom; IC-010 §L/§V.2): only a real, core-composed
+            # TenantStartupDetailDTO success serializes; a genuine >=400 status is preserved with an
+            # empty body; every residual non-error result that is NOT a TenantStartupDetailDTO fails
+            # closed to 503 (empty body). The edge references TenantStartupDetailDTO ONLY for this
+            # type check: it never constructs one and never parses or references the update request
+            # DTO (body parsing is core-owned).
+            if response.status == 200 and isinstance(response.portal_dto, TenantStartupDetailDTO):
+                self._respond_json(200, serialize_portal_dto(response.portal_dto), correlation_id, origin)
+                return
+            status = response.status if response.status >= 400 else 503
+            self._respond(status, correlation_id, origin)
+
+        def _read_bounded_body(self, budget: int) -> Optional[bytes]:
+            # Read EXACTLY the declared Content-Length (already validated <= budget by the bounds
+            # check). Missing/zero Content-Length yields the empty body (the core rejects it as
+            # malformed, fail-closed); a short read is a malformed transport request (None -> 400).
+            raw_len = self.headers.get("Content-Length")
+            try:
+                length = int(raw_len) if raw_len else 0
+            except ValueError:
+                return None
+            if length <= 0:
+                return b""
+            if length > budget:
+                return None  # defensive: the bounds check already rejected this pre-read
+            body = self.rfile.read(length)
+            if len(body) != length:
+                return None
+            return body
 
         def _invoke_core(self, request: InboundRequest) -> GatewayResponse:
             # The ONE shared Gateway-core invocation site for EVERY business route (Memberships + Import):
@@ -289,7 +411,7 @@ def _make_handler(gateway: Gateway, allowed_origins: Tuple[str, ...]) -> "type[B
                     break
                 remaining -= len(chunk)
 
-        def _bounds_violation(self) -> Optional[int]:
+        def _bounds_violation(self, body_budget: int = _MAX_BODY_BYTES) -> Optional[int]:
             if len(self.path.encode("utf-8")) > _MAX_REQUEST_TARGET_BYTES:
                 return 413
             if len(self.headers) > _MAX_HEADER_COUNT:
@@ -297,15 +419,15 @@ def _make_handler(gateway: Gateway, allowed_origins: Tuple[str, ...]) -> "type[B
             if len(str(self.headers).encode("utf-8")) > _MAX_TOTAL_HEADER_BYTES:
                 return 413
             if self.headers.get("Transfer-Encoding"):
-                return 413  # chunked/streamed bodies are not accepted on these body-less routes
+                return 413  # chunked/streamed bodies are never accepted (bounded Content-Length only)
             raw_len = self.headers.get("Content-Length")
             if raw_len is not None:
                 try:
                     length = int(raw_len)
                 except ValueError:
                     return 400  # malformed transport request
-                if length > _MAX_BODY_BYTES:
-                    return 413  # a non-empty body on a body-less route
+                if length > body_budget:
+                    return 413  # a body beyond the per-route budget (0 for every body-less route)
             return None
 
         def _respond(

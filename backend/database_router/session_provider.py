@@ -89,6 +89,19 @@ class PgRoutedSession(RoutedTenantSession, LineageReadSession):
         stmt = f"INSERT INTO {_quote_ident(table)} ({col_sql}) VALUES ({placeholders})"
         self._conn.execute(stmt, tuple(row[c] for c in cols))
 
+    def update(self, table: str, key: Dict[str, Any], assignments: Dict[str, Any]) -> None:
+        # CLM D-42 bounded single-column change of an EXISTING tenant record: a narrow,
+        # WHERE-keyed UPDATE ... SET of exactly the caller-supplied assignment columns
+        # (standard parameterized SQL). No other column is touched, so it never re-writes
+        # NOT NULL / GENERATED / timestamp columns (unlike a full-record upsert). The caller
+        # verifies existence first and re-reads as the persistence witness within the same
+        # transaction — so no-match is caught upstream (this method needs no rowcount).
+        set_cols = list(assignments.keys())
+        set_sql = ", ".join(f"{_quote_ident(c)} = %s" for c in set_cols)
+        clause, key_params = _where(key)
+        stmt = f"UPDATE {_quote_ident(table)} SET {set_sql} WHERE {clause}"
+        self._conn.execute(stmt, tuple(assignments[c] for c in set_cols) + key_params)
+
     def get(self, table: str, key: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         clause, params = _where(key)
         rows: List[Dict[str, Any]] = self._conn.query(f"SELECT * FROM {_quote_ident(table)} WHERE {clause} LIMIT 1", params)

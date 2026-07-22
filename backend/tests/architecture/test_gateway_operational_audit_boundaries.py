@@ -58,7 +58,7 @@ _OPS = _BACKEND / "tests" / "control_plane" / "requires_pg" / "b5_standing_topol
 _COMPLETENESS_GUARD = _BACKEND / "tests" / "architecture" / "test_live_pg_workflow_runset_completeness.py"
 
 # The reviewed LF-normalized git-blob SHA-1 pins for the created-not-applied Gateway-audit DDL.
-_REVIEWED_012_BLOB = "5df1ae4edb7a943b33f36fc3800d81c8cb75804b"
+_REVIEWED_012_BLOB = "87c38a968f8ab89886ef7ce4d9d7fafb7a179271"
 _REVIEWED_013_BLOB = "199664d1afb9e6e0a37e8609f42e4e1528771472"
 
 # The five frozen AuditAction string values (IC-010 §J); V1a wires only the success action.
@@ -161,7 +161,9 @@ def test_emitter_is_stdlib_only_no_driver_no_cross_service_no_dsn() -> None:
 
 def test_emitter_wire_is_ten_references_only_keys_single_attempt() -> None:
     tree = _tree(_EMITTER)
-    # The wire builder returns exactly the ten references-only keys.
+    # The wire builder returns exactly the eleven references-only keys (D-42 CLM adds
+    # record_ref — the tenant-resident record reference on the tenant Startup success
+    # events; still a reference only, never field content).
     keys = None
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == "_wire_event":
@@ -179,7 +181,8 @@ def test_emitter_wire_is_ten_references_only_keys_single_attempt() -> None:
         "subject_ref",
         "tenant_ref",
         "carrier_ref",
-    }, f"the wire event must carry exactly the ten references-only keys: {keys}"
+        "record_ref",
+    }, f"the wire event must carry exactly the eleven references-only keys: {keys}"
     assert "source_service" not in (keys or set()), "source_service is a store-side constant — never a wire key"
     # Single transport attempt: the emitter contains no retry loop (the policy owns the single retry).
     emit_fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "emit")

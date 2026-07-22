@@ -38,7 +38,10 @@ class AuditAction(Enum):
     The four denial/anomaly actions are the historic gateway-edge set — unchanged.
     ``WORKSPACE_MEMBERSHIPS_READ`` (B5-BLK-6C-B) is the separate gateway-edge
     success-access subclass (IC-002 Audit-Section Extension class 3b): never a denial,
-    anomaly, or routing action.
+    anomaly, or routing action. ``TENANT_STARTUP_READ`` / ``TENANT_STARTUP_UPDATE``
+    (D-42 CLM Stage B; IC-010 CLM section) are the separate gateway-edge success-access
+    set parallel to that subclass — the API Gateway is the sole emitter; no new denial
+    or anomaly class is introduced.
     """
 
     CARRIER_MISMATCH = "CarrierMismatch"
@@ -46,6 +49,8 @@ class AuditAction(Enum):
     ROUTE_DENIED = "RouteDenied"
     ISOLATION_ANOMALY = "IsolationAnomaly"
     WORKSPACE_MEMBERSHIPS_READ = "workspace_memberships_read"
+    TENANT_STARTUP_READ = "tenant_startup_read"
+    TENANT_STARTUP_UPDATE = "tenant_startup_update"
 
 
 @dataclass(frozen=True)
@@ -65,6 +70,12 @@ class InboundRequest:
     query: Mapping[str, str] = field(default_factory=dict)
     cookies: Mapping[str, str] = field(default_factory=dict)
     authorization: Optional[str] = None
+    # D-42 CLM Stage B: the raw bounded PATCH body for the served tenant Startup update
+    # ONLY (IC-010 CLM: the request body is bounded at 16384 bytes — the byte bound is
+    # enforced at the serving edge BEFORE the core is reached). Never a tenant selector,
+    # never interpreted at the edge; the core parses it fail-closed
+    # (portal.parse_tenant_startup_update_request). None for every body-less route.
+    patch_body: Optional[bytes] = None
 
 
 @dataclass(frozen=True)
@@ -99,11 +110,16 @@ class GatewayAuditEvent:
     carrier-asserted tenant id rendered as an opaque, length-bounded string for anomaly
     attribution only — never parsed, resolved, or trusted (IC-005:116).
 
-    The four optional success-shape fields (B5-BLK-6C-B; IC-002 class 3b) default to
+    The optional success-shape fields (B5-BLK-6C-B; IC-002 class 3b) default to
     ``None`` so the four denial/anomaly events construct unchanged. The
     ``workspace_memberships_read`` success-access event populates them; its contract
     mapping is ``actor_ref`` -> actor_principal_ref and ``subject_ref`` ->
     subject_principal_ref (self-scoped: equal). Never the returned membership collection.
+
+    ``record_ref`` (D-42 CLM Stage B; IC-010 CLM minimum shape) is the tenant-resident
+    record reference the tenant Startup success events address — a reference only, never
+    the ``short_description`` value, any field content, or a raw row. It defaults to
+    ``None`` so every pre-CLM event constructs unchanged.
     """
 
     action: AuditAction
@@ -116,6 +132,7 @@ class GatewayAuditEvent:
     subject_ref: Optional[str] = None
     occurred_at: Optional[str] = None
     event_version: Optional[int] = None
+    record_ref: Optional[str] = None
 
 
 @dataclass(frozen=True)

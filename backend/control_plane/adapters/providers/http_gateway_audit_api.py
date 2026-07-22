@@ -5,17 +5,21 @@ internal-only and MUST NEVER be portal-reachable or registered as a public / fro
 binds ``127.0.0.1`` by default and runs on a plain single-threaded stdlib HTTP server (no threading /
 asyncio / concurrency machinery here — AT-D15T1-10).
 
-Wire contract (Gateway Audit V1a). The request envelope is exactly ``{version, event}`` with
-``version`` exactly ``1`` and ``event`` exactly the ten approved references-only Gateway-edge keys
-(``source_service`` / ``id`` / ``recorded_at`` are NEVER wire keys — ``source_service`` is the
-store-side producer constant ``api_gateway``, and ``id`` / ``recorded_at`` are DB-assigned).
+Wire contract (Gateway Audit V1a + the D-42 CLM Stage B extension). The request envelope is exactly
+``{version, event}`` with ``version`` exactly ``1`` and ``event`` exactly the eleven approved
+references-only Gateway-edge keys (``record_ref`` joined under D-42; ``source_service`` / ``id`` /
+``recorded_at`` are NEVER wire keys — ``source_service`` is the store-side producer constant
+``api_gateway``, and ``id`` / ``recorded_at`` are DB-assigned).
 Validation is STRICT and fail closed: wrong path 404 empty; non-POST 405 empty; anything malformed,
 mis-keyed, mis-typed, out-of-vocabulary, over-length, secret/token/DSN-shaped, or carrying a
-forbidden field name answers ``400 {"version": 1, "result": "INVALID"}``. V1a wires ONLY the
-``workspace_memberships_read`` success-access event (IC-002 class 3b): the action must be exactly
-``workspace_memberships_read`` with outcome ``success`` and ``event_version`` exactly ``1`` — the
-four denial/anomaly event classes are a separately governed later additive sibling and are refused
-here. Accepted events answer ``200 INSERTED`` / ``200 DUPLICATE_MATCH`` (both success — idempotent
+forbidden field name answers ``400 {"version": 1, "result": "INVALID"}``. The durably WIRED action
+set is exactly the IC-010 CLM audit evidence set: the ``workspace_memberships_read`` success-access
+event (IC-002 class 3b; V1a), the two D-42 CLM tenant Startup success-access events
+(``tenant_startup_read`` / ``tenant_startup_update`` — actor, tenant, and record references
+required), and the EXISTING class-3 ``RouteDenied`` denial record (outcome ``rejected``; nullable
+references) — every event with ``event_version`` exactly ``1``. The remaining denial/anomaly
+classes are a separately governed later additive sibling and are refused here (no wider audit
+expansion). Accepted events answer ``200 INSERTED`` / ``200 DUPLICATE_MATCH`` (both success — idempotent
 replay); a same-ID/different-payload replay answers ``409 CONFLICT``; any internal store failure
 collapses to ``503 UNAVAILABLE``. Responses are the fixed two-key envelope only: no SQL, table
 detail, Control-DB identity, hostname, topology, exception text, stack trace, credential state, or
@@ -59,8 +63,8 @@ _REQUIRED_EVENT_KEYS = frozenset(
         "subject_ref",
     }
 )
-_OPTIONAL_EVENT_KEYS = frozenset({"tenant_ref", "carrier_ref"})
-# Exactly the ten approved references-only Gateway-edge wire keys.
+_OPTIONAL_EVENT_KEYS = frozenset({"tenant_ref", "carrier_ref", "record_ref"})
+# Exactly the eleven approved references-only Gateway-edge wire keys (D-42 CLM adds record_ref).
 _EVENT_KEYS = _REQUIRED_EVENT_KEYS | _OPTIONAL_EVENT_KEYS
 
 # Defense-in-depth beyond the exact-key-set check: these names are rejected BY NAME so a future
@@ -94,9 +98,17 @@ _FORBIDDEN_EVENT_KEYS = frozenset(
     }
 )
 
-# V1a wires ONLY the workspace_memberships_read success-access event (IC-002 class 3b).
+# The durably WIRED gateway-edge action set: V1a wired the workspace_memberships_read
+# success-access event (IC-002 class 3b); the D-42 CLM Stage B slice adds the two CLM
+# success-access events plus the EXISTING class-3 RouteDenied denial record (the IC-010 CLM
+# audit evidence set — exactly these four; no wider audit expansion). The remaining
+# denial/anomaly classes are still refused here and stay a later additive sibling.
 _V1A_ACTION = "workspace_memberships_read"
+_CLM_TENANT_SUCCESS_ACTIONS = frozenset({"tenant_startup_read", "tenant_startup_update"})
+_CLM_DENIAL_ACTION = "RouteDenied"
+_WIRED_ACTIONS = frozenset({_V1A_ACTION, _CLM_DENIAL_ACTION}) | _CLM_TENANT_SUCCESS_ACTIONS
 _SUCCESS_OUTCOME = "success"
+_REJECTED_OUTCOME = "rejected"
 
 # Secret/token/DSN-shaped value markers: any string value containing one is rejected.
 _SECRET_SHAPES = ("eyJ", "-----BEGIN", "AKIA", "ghp_", "xox", "://")
@@ -151,19 +163,46 @@ def _parse_record(raw: bytes) -> GatewayAuditRecord:
     if forbidden:
         raise _IngestValidationError("event carries a forbidden field name")
     if present != set(_EVENT_KEYS):
-        raise _IngestValidationError("event keys must be exactly the ten approved fields")
+        raise _IngestValidationError("event keys must be exactly the eleven approved fields")
 
     event_version = event["event_version"]
     if isinstance(event_version, bool) or not isinstance(event_version, int) or event_version != _EVENT_VERSION:
         raise _IngestValidationError("unsupported event_version")
 
     action = _required_string(event, "action")
-    if action != _V1A_ACTION:
-        # V1a wires ONLY the success-access event; the four denial/anomaly classes are refused here.
-        raise _IngestValidationError("unsupported action (V1a wires only workspace_memberships_read)")
+    if action not in _WIRED_ACTIONS:
+        # Only the durably wired set is accepted; the remaining denial/anomaly classes are
+        # refused here (they stay a later additive sibling — no wider audit expansion).
+        raise _IngestValidationError("unsupported action (only the wired gateway-edge set is accepted)")
     outcome = _required_string(event, "outcome")
-    if outcome != _SUCCESS_OUTCOME:
-        raise _IngestValidationError("invalid action/outcome combination")
+    if action == _CLM_DENIAL_ACTION:
+        # The existing class-3 denial record: outcome is exactly "rejected"; the actor,
+        # subject, tenant, and record references are lawfully absent on denial paths.
+        if outcome != _REJECTED_OUTCOME:
+            raise _IngestValidationError("invalid action/outcome combination")
+        actor_ref = _optional_string(event, "actor_ref")
+        subject_ref = _optional_string(event, "subject_ref")
+        record_ref = _optional_string(event, "record_ref")
+    elif action in _CLM_TENANT_SUCCESS_ACTIONS:
+        # The D-42 CLM tenant Startup success-access events: the IC-010 CLM minimum shape
+        # requires the actor principal, the tenant reference, and the record reference;
+        # the self-scoped subject_ref belongs to the memberships subclass only.
+        if outcome != _SUCCESS_OUTCOME:
+            raise _IngestValidationError("invalid action/outcome combination")
+        actor_ref = _required_string(event, "actor_ref")
+        subject_ref = _optional_string(event, "subject_ref")
+        record_ref = _required_string(event, "record_ref")
+        if _optional_string(event, "tenant_ref") is None:
+            raise _IngestValidationError("tenant Startup success events require a tenant reference")
+    else:
+        # The V1a self-scoped memberships success-access event (unchanged posture).
+        if outcome != _SUCCESS_OUTCOME:
+            raise _IngestValidationError("invalid action/outcome combination")
+        actor_ref = _required_string(event, "actor_ref")
+        subject_ref = _required_string(event, "subject_ref")
+        record_ref = _optional_string(event, "record_ref")
+        if record_ref is not None:
+            raise _IngestValidationError("the memberships success event carries no record reference")
 
     return GatewayAuditRecord(
         audit_id=_required_string(event, "audit_id"),
@@ -173,10 +212,11 @@ def _parse_record(raw: bytes) -> GatewayAuditRecord:
         action=action,
         outcome=outcome,
         source_service=GATEWAY_AUDIT_SOURCE_SERVICE,  # store-side producer constant — never from the wire
-        actor_ref=_required_string(event, "actor_ref"),
-        subject_ref=_required_string(event, "subject_ref"),
+        actor_ref=actor_ref,
+        subject_ref=subject_ref,
         tenant_ref=_optional_string(event, "tenant_ref"),
         carrier_ref=_optional_string(event, "carrier_ref"),
+        record_ref=record_ref,
     )
 
 

@@ -46,6 +46,8 @@ from api_gateway.portal import (  # noqa: E402
     ImportResultDTO,
     MembershipEntryDTO,
     PortalDTO,
+    TenantStartupDetailDTO,
+    TenantStartupUpdateRequestDTO,
     WorkspaceMembershipDTO,
     compose_display_ref,
     compose_portal_dto,
@@ -80,8 +82,12 @@ _P2_FORBIDDEN = {
 # IC-007 §Q closure: exactly these four classifier prefixes — a fifth is a cross-tenant door.
 _EXPECTED_PREFIXES = {"/tenant", "/directory", "/memberships", "/import"}
 # Tenant-resident record DTO names (IC-009 §D business-domain tier) — none may join the
-# union in 6B without binding the lineage_reference half of P.6 (the guarded-skip rule).
+# union without binding the lineage_reference half of P.6 (the guarded-skip rule).
+# TenantStartupDetailDTO (D-42 CLM) IS in the union: its P.6 tenant-resident half is bound
+# below (test_p6_tenant_resident_half_bound_for_clm_detail) in the SAME change that widened
+# the union — the CLR-3 obligation the pre-CLM guarded skip anticipated.
 _TENANT_RESIDENT_RECORD_DTO_NAMES = {"TenantStartupDTO", "TenantInvestorDTO", "TenantDealDTO", "LineageSummaryDTO"}
+_CLM_BOUND_TENANT_RESIDENT_DTO_NAMES = {"TenantStartupDetailDTO"}
 # The EXACT field set of every portal dataclass — SET EQUALITY, never subset/blocklist.
 # Load-bearing: _P1_FORBIDDEN/_P2_FORBIDDEN (and test_phase7's _FORBIDDEN_FIELD_NAMES) are
 # BLOCKLISTS, and a blocklist cannot enforce an approved DTO catalogue — an innocuously
@@ -97,6 +103,19 @@ _EXACT_FIELD_SETS: Dict[type, Set[str]] = {
     ImportInitiationDTO: {"source_ref", "target_tenant_ref", "initiation"},
     ImportResultDTO: {"source_ref", "target_tenant_ref", "tenant_record_ref", "lineage_ref", "import_id", "outcome"},
     ErrorDTO: {"status", "public_code"},
+    # D-42 CLM (IC-009 CLM section): exactly the eight contract-pinned read fields …
+    TenantStartupDetailDTO: {
+        "record_ref",
+        "display_name",
+        "short_description",
+        "investment_stage",
+        "record_origin",
+        "record_residency",
+        "record_type",
+        "lineage_reference",
+    },
+    # … and exactly the ONE allowlisted update field (the sole CLM-mutable field).
+    TenantStartupUpdateRequestDTO: {"short_description"},
 }
 # PII-shaped field names used ONLY as planted violations in the non-vacuity companion —
 # never authored on a production DTO.
@@ -122,6 +141,22 @@ _ALL_UNION_INSTANCES: List[PortalDTO] = [
         lineage_ref="job-1",
         import_id="job-1",
         outcome="created",
+    ),
+    # D-42 CLM: one imported-shaped and one native-shaped tenant Startup detail (P.2/P.6
+    # and serialization determinism run over BOTH — the lineage_reference halves differ).
+    TenantStartupDetailDTO(
+        record_ref="clm-startup-1",
+        display_name="CLM Synthetic Co",
+        short_description="synthetic short description",
+        investment_stage="seed",
+        lineage_reference="clm-lineage-0001",
+    ),
+    TenantStartupDetailDTO(
+        record_ref="clm-startup-2",
+        display_name="CLM Native Co",
+        short_description=None,
+        investment_stage=None,
+        lineage_reference=None,
     ),
 ]
 
@@ -204,14 +239,19 @@ def test_seam_traceability_constants_and_catalogue_closure() -> None:
         WorkspaceMembershipDTO,
         ImportInitiationDTO,
         ImportResultDTO,
+        TenantStartupDetailDTO,  # D-42 CLM Stage B: the adopted tenant Startup read/update response
     }, union_members
     # Catalogue closure: the approved-DTO catalogue's key set EQUALS the union member set,
-    # and every entry names exactly the (contract, revision) pair the seam serves.
+    # and every entry names exactly the (contract, revision) pair the seam serves (the
+    # served revision remains IC-009-R1 — the IC-009 CLM section pins this).
     assert set(APPROVED_PORTAL_DTOS.keys()) == union_members
     assert set(APPROVED_PORTAL_DTOS.values()) == {(PORTAL_CONTRACT_ID, PORTAL_CONTRACT_REVISION)}
     # ErrorDTO is DEFINED but EXCLUDED from the union (IC-010 §V.2: no DTO on denial makes
-    # denial-shape membership unreachable by construction); UserSessionDTO is NOT authored.
+    # denial-shape membership unreachable by construction); the D-42 CLM update REQUEST
+    # shape is likewise DEFINED but EXCLUDED (never composable as a response); and
+    # UserSessionDTO is NOT authored.
     assert ErrorDTO not in union_members and ErrorDTO not in APPROVED_PORTAL_DTOS
+    assert TenantStartupUpdateRequestDTO not in union_members and TenantStartupUpdateRequestDTO not in APPROVED_PORTAL_DTOS
     assert not hasattr(portal, "UserSessionDTO"), "UserSessionDTO must not be authored in 6B (no approved §Q category returns it)"
 
 
@@ -236,6 +276,14 @@ def test_composer_rejects_any_type_absent_from_the_catalogue() -> None:
     except ValueError:
         raised = True
     assert raised, "ErrorDTO must not be composable (excluded from the union/catalogue)"
+    # The D-42 CLM update REQUEST shape is refused too — a request DTO never composes as a
+    # response (the ErrorDTO exclusion idiom; IC-010 §V.2).
+    raised = False
+    try:
+        compose_portal_dto(TenantStartupUpdateRequestDTO(short_description="x"))  # type: ignore[arg-type]
+    except ValueError:
+        raised = True
+    assert raised, "TenantStartupUpdateRequestDTO must not be composable (excluded from the union/catalogue)"
     for dto in _ALL_UNION_INSTANCES:
         assert compose_portal_dto(dto) is dto  # green control
 
@@ -261,8 +309,10 @@ def test_every_portal_dataclass_has_exact_field_set_closure() -> None:
         f"unlisted={sorted(c.__name__ for c in declared - set(_EXACT_FIELD_SETS))} "
         f"stale={sorted(c.__name__ for c in set(_EXACT_FIELD_SETS) - declared)}"
     )
-    # Non-vacuity 2: the catalogue is non-empty and is exactly the eight approved shapes.
-    assert len(_EXACT_FIELD_SETS) == 8, f"expected exactly 8 portal shapes, got {len(_EXACT_FIELD_SETS)}"
+    # Non-vacuity 2: the catalogue is non-empty and is exactly the ten approved shapes
+    # (eight pre-CLM + the two D-42 CLM shapes: the detail response and the bounded
+    # update request — IC-009 CLM section).
+    assert len(_EXACT_FIELD_SETS) == 10, f"expected exactly 10 portal shapes, got {len(_EXACT_FIELD_SETS)}"
     for cls, expected in _EXACT_FIELD_SETS.items():
         assert _field_names(cls) == expected, f"{cls.__name__} field set drifted: {_field_names(cls)} != {expected}"
 
@@ -371,15 +421,52 @@ def test_p6_provenance_markers_global_half_over_nonempty_instances() -> None:
 
 def test_p6_tenant_resident_half_guarded_skip_rederived_every_run() -> None:
     # CLR-3: the tenant-resident half of P.6 may be skipped IFF the skip precondition is
-    # RE-DERIVED from the union's own contents — set(PortalDTO members) ∩ tenant-resident
-    # record DTOs == ∅. The moment a tenant-resident record DTO joins the union without a
+    # RE-DERIVED from the union's own contents — set(PortalDTO members) ∩ UNBOUND
+    # tenant-resident record DTOs == ∅. The moment such a DTO joins the union without a
     # lineage_reference binding, THIS GUARD FAILS (the skip can never silently widen).
+    # TenantStartupDetailDTO (D-42 CLM) is NOT in the unbound set: its P.6 tenant-resident
+    # half is bound by test_p6_tenant_resident_half_bound_for_clm_detail below, authored in
+    # the SAME change that widened the union (the CLR-3 obligation discharged, not skipped).
     union_names = {t.__name__ for t in get_args(PortalDTO)}
     overlap = union_names & _TENANT_RESIDENT_RECORD_DTO_NAMES
     assert overlap == set(), (
         f"tenant-resident record DTO(s) {sorted(overlap)} joined the PortalDTO union: the P.6 "
         "lineage_reference half is now UNBOUND — extend this guard before widening the union"
     )
+    # Every CLM-bound tenant-resident name must actually BE in the union (a stale bound-set
+    # entry may not silently exempt a future shape that never joined).
+    assert _CLM_BOUND_TENANT_RESIDENT_DTO_NAMES <= union_names, "every CLM-bound tenant-resident DTO name must be a real union member"
+
+
+def test_p6_tenant_resident_half_bound_for_clm_detail() -> None:
+    # IC-009 §P.6 tenant-resident half, bound for the D-42 CLM detail DTO over NON-EMPTY
+    # instances of BOTH provenance halves: the D-37 §10 marker triple carries the
+    # tenant-resident values, and lineage_reference is present when (and only when) the
+    # record was imported — nullable, never dropped from the shape.
+    imported = TenantStartupDetailDTO(
+        record_ref="clm-startup-1",
+        display_name="CLM Synthetic Co",
+        short_description="synthetic short description",
+        investment_stage="seed",
+        lineage_reference="clm-lineage-0001",
+    )
+    native = TenantStartupDetailDTO(
+        record_ref="clm-startup-2",
+        display_name="CLM Native Co",
+        short_description=None,
+        investment_stage=None,
+    )
+    for dto in (imported, native):
+        data = dataclasses.asdict(dto)
+        assert data["record_origin"] == "tenant", "the CLM detail origin marker mirrors the residency (the global-summary idiom)"
+        assert data["record_residency"] == "tenant", "IC-009 CLM pins record_residency == 'tenant'"
+        assert data["record_type"] == "startup", "IC-009 CLM pins record_type == 'startup'"
+        assert "lineage_reference" in data, "tenant-resident records CARRY the lineage_reference marker (D-37 §10)"
+    assert imported.lineage_reference == "clm-lineage-0001", "lineage_reference is present when the record was imported"
+    assert native.lineage_reference is None, "lineage_reference is None when the record was never imported"
+    # IC-009 CLM banned-name closure over the read shape (references-only, PII-minimized).
+    for banned in ("email", "owner_agent_ref", "tenant_name", "tenant_code", "dsn", "secret", "company_url", "logo"):
+        assert banned not in _EXACT_FIELD_SETS[TenantStartupDetailDTO], f"the CLM read DTO must not carry {banned!r}"
 
 
 # --- IC-009 §P.7 — denial surface (mutation detector 10's static half) ------------------------------
@@ -434,6 +521,13 @@ def test_control_plane_read_port_signatures_admit_no_raw_shapes() -> None:
         names = _port_return_annotation_names(ports_src, "ControlPlaneReadPort", method)
         assert "not found" not in " ".join(names), names  # the port must exist (non-vacuous)
         assert not (names & banned), f"ControlPlaneReadPort.{method} return admits a raw shape: {names & banned}"
+    # D-42 CLM: the tenant Startup data port is held to the same typed-closure rule — only
+    # the adopted detail DTO (or the consistent None) crosses it, never a raw shape.
+    for method in ("read", "update"):
+        names = _port_return_annotation_names(ports_src, "TenantStartupOperationsPort", method)
+        assert "not found" not in " ".join(names), names  # the port must exist (non-vacuous)
+        assert not (names & banned), f"TenantStartupOperationsPort.{method} return admits a raw shape: {names & banned}"
+        assert "TenantStartupDetailDTO" in names, f"TenantStartupOperationsPort.{method} must return the adopted detail DTO"
 
 
 # --- no import execution (mutation detector 12's static half) ---------------------------------------
@@ -516,6 +610,7 @@ if __name__ == "__main__":
             test_p4_no_multi_tenant_result_sequence_and_single_decision_shapes,
             test_p6_provenance_markers_global_half_over_nonempty_instances,
             test_p6_tenant_resident_half_guarded_skip_rederived_every_run,
+            test_p6_tenant_resident_half_bound_for_clm_detail,
             test_p7_denial_surface_is_the_closed_l_model,
             test_ic007_exactly_four_route_prefixes_and_failclosed_fallthrough,
             test_ic007_exactly_four_categories_and_two_control_domains,

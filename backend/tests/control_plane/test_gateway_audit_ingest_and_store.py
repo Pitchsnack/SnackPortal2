@@ -120,6 +120,7 @@ def _record(**overrides: object) -> GatewayAuditRecord:
         subject_ref="principal:ops",
         tenant_ref=None,
         carrier_ref=None,
+        record_ref=None,
     )
     base.update(overrides)
     return GatewayAuditRecord(**base)  # type: ignore[arg-type]
@@ -139,6 +140,7 @@ def _stored_row(record: GatewayAuditRecord, **overrides: object) -> Tuple[Any, .
         "subject_ref": record.subject_ref,
         "tenant_ref": record.tenant_ref,
         "carrier_ref": record.carrier_ref,
+        "record_ref": record.record_ref,
     }
     values.update(overrides)
     return tuple(values[name] for name in _GATEWAY_AUDIT_COLUMNS)
@@ -163,6 +165,7 @@ def test_store01_valid_event_maps_to_exact_sql_parameters() -> None:
         "principal:ops",
         None,  # tenant_ref
         None,  # carrier_ref
+        None,  # record_ref (D-42 CLM: populated only by the tenant Startup success events)
     )
 
 
@@ -171,7 +174,7 @@ def test_store02_recorded_at_and_id_are_never_caller_bound() -> None:
     _store(conn).append_gateway_audit(_record())
     sql, params = conn.executed[0]
     assert "recorded_at" not in sql, "recorded_at is DB-assigned (DEFAULT now()) — never in the INSERT column list"
-    assert len(params) == len(_GATEWAY_AUDIT_COLUMNS) == 11
+    assert len(params) == len(_GATEWAY_AUDIT_COLUMNS) == 12
     assert _GATEWAY_AUDIT_COLUMNS[0] == "audit_id" and "id" not in _GATEWAY_AUDIT_COLUMNS
     assert "recorded_at" not in _GATEWAY_AUDIT_COLUMNS
     assert "source_service" in _GATEWAY_AUDIT_COLUMNS  # producer constant is store-bound, not a wire field
@@ -242,6 +245,8 @@ def test_store08_validation_enforced_before_any_sql() -> None:
         "RouteDenied",
         "IsolationAnomaly",
         "workspace_memberships_read",
+        "tenant_startup_read",  # D-42 CLM success-access set (IC-010 CLM section)
+        "tenant_startup_update",
     )
     for bad in ("Publish", "workspace_memberships", "route", "DispatchCompleted", ""):
         conn = _FakeConn()
@@ -289,7 +294,8 @@ def test_store10_forbidden_model_fields_do_not_exist() -> None:
         "subject_ref",
         "tenant_ref",
         "carrier_ref",
-    }, "the record field set is CLOSED (11 fields)"
+        "record_ref",  # D-42 CLM: the tenant-resident record reference (a reference only)
+    }, "the record field set is CLOSED (12 fields)"
     for forbidden in ("recorded_at", "id", "dsn", "password", "token", "jwt", "request_body", "memberships", "payload", "hash_chain"):
         assert forbidden not in names, forbidden
     record = _record()
@@ -405,6 +411,7 @@ def _event(**overrides: object) -> Dict[str, object]:
         "subject_ref": "principal:ops",
         "tenant_ref": None,
         "carrier_ref": None,
+        "record_ref": None,  # D-42 CLM: the eleventh wire key (null on the memberships event)
     }
     base.update(overrides)
     return base

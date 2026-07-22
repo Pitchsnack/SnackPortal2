@@ -43,6 +43,7 @@ from api_gateway.adapters.providers.in_memory_audit_emitter import InMemoryAudit
 from api_gateway.main import (  # noqa: E402
     GW_AUDIT_SINK_BASE_URL_ENV,
     BoundedGatewayAuditPolicy,
+    ClmDurableAuditPartition,
     build_audit_emitter_from_env,
     build_gateway,
 )
@@ -133,6 +134,8 @@ def _memberships_req():
 # DurableAuditEmitter — wire shape + response mapping
 # ===========================================================================
 def test_emitter_wire_event_is_exactly_ten_references_only_keys() -> None:
+    # D-42 CLM: the wire gains exactly ONE key — record_ref (a reference only) — for a
+    # total of eleven approved references-only keys.
     wire = _wire_event(_EVENT)
     assert set(wire.keys()) == {
         "audit_id",
@@ -145,6 +148,7 @@ def test_emitter_wire_event_is_exactly_ten_references_only_keys() -> None:
         "subject_ref",
         "tenant_ref",
         "carrier_ref",
+        "record_ref",
     }
     assert wire["action"] == "workspace_memberships_read"  # the AuditAction enum's string value
     assert wire["outcome"] == "success" and wire["actor_ref"] == wire["subject_ref"] == "ops"
@@ -314,11 +318,16 @@ def test_selector_unset_returns_none() -> None:
 
 
 def test_selector_valid_url_selects_the_durable_policy() -> None:
+    # D-42 CLM: the selector now wraps the bounded durable policy in the CLM action
+    # partition — the four CLM-homed classes go durable; every other class keeps the
+    # in-memory no-sink emitter (no wider audit expansion).
     with _env("http://127.0.0.1:9"):
         selected = build_audit_emitter_from_env()
-    assert isinstance(selected, BoundedGatewayAuditPolicy), "a valid http URL selects the bounded durable policy"
+    assert isinstance(selected, ClmDurableAuditPartition), "a valid http URL selects the CLM-partitioned durable policy"
     assert not isinstance(selected, InMemoryAuditEmitter), "real durable mode must never be the in-memory emitter"
-    assert isinstance(selected._inner, DurableAuditEmitter)
+    assert isinstance(selected._durable, BoundedGatewayAuditPolicy), "the durable half is the bounded fail-closed policy"
+    assert isinstance(selected._durable._inner, DurableAuditEmitter)
+    assert isinstance(selected._in_memory, InMemoryAuditEmitter), "the un-homed classes keep the in-memory no-sink emitter"
 
 
 def test_selector_malformed_raises_before_any_socket() -> None:

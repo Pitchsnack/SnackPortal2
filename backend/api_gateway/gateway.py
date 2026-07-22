@@ -29,7 +29,13 @@ from .models import (
     RequestMetric,
     RequestRejected,
 )
-from .portal import ImportInitiationDTO, ImportResultDTO, PortalDTO, compose_portal_dto
+from .portal import (
+    ImportInitiationDTO,
+    ImportResultDTO,
+    PortalDTO,
+    compose_portal_dto,
+    parse_tenant_startup_update_request,
+)
 from .ports import (
     AuditEmitterPort,
     AuthenticatorPort,
@@ -38,6 +44,9 @@ from .ports import (
     ImportInitiationRequest,
     MetricsPort,
     RouterDispatchPort,
+    TenantStartupOperationsPort,
+    TenantStartupReadRequest,
+    TenantStartupUpdateRequest,
 )
 from .request_context import build_request_context
 
@@ -47,6 +56,8 @@ _MAX_OPERATION_KEY_LEN = 200
 
 _DIRECTORY_PREFIX = "/directory/"
 _IMPORT_PREFIX = "/import/"
+_TENANT_STARTUP_PREFIX = "/tenant/startups/"
+_MAX_STARTUP_REF_BYTES = 512  # IC-010 CLM: <startup_ref> is opaque and length-bounded (1..512 UTF-8 bytes)
 
 
 def _directory_kind(path: str) -> str:
@@ -62,6 +73,21 @@ def _import_source_ref(path: str) -> str:
     return path[len(_IMPORT_PREFIX) :] if path.startswith(_IMPORT_PREFIX) else ""
 
 
+def _tenant_startup_ref(path: str) -> Optional[str]:
+    """The opaque tenant-resident ``<startup_ref>`` path suffix of a CLM tenant Startup
+    route (IC-010 CLM: 1..512 UTF-8 bytes, single segment, traversal-safe — the strict
+    charset is enforced pre-core at the serving edge; this core check is the bounded
+    defense-in-depth half). ``None`` for any non-matching, empty, multi-segment, or
+    over-bound path — the request then follows the pre-CLM TENANT_OPERATION handoff.
+    The suffix is never a tenant selector and never a database selector (§X)."""
+    if not path.startswith(_TENANT_STARTUP_PREFIX):
+        return None
+    suffix = path[len(_TENANT_STARTUP_PREFIX) :]
+    if not suffix or "/" in suffix or len(suffix.encode("utf-8")) > _MAX_STARTUP_REF_BYTES:
+        return None
+    return suffix
+
+
 class Gateway:
     """The composed gateway pipeline. Ports are injected (tests/dev stubs; prod transport)."""
 
@@ -75,6 +101,7 @@ class Gateway:
         audit: AuditEmitterPort,
         metrics: MetricsPort,
         import_initiation: Optional[ImportInitiationPort] = None,
+        tenant_startup: Optional[TenantStartupOperationsPort] = None,
     ) -> None:
         self._authenticator = authenticator
         self._router = router
@@ -91,6 +118,12 @@ class Gateway:
         # byte-behavior-unchanged; when injected, IMPORT_INITIATION EXECUTES the real import via the
         # port and NEVER calls self._router.dispatch (single-route).
         self._import_initiation = import_initiation
+        # D-42 CLM Stage B (IC-010 CLM section): the OPTIONAL Gateway→Database-Router tenant Startup
+        # data port. None (the default) keeps every TENANT_OPERATION on the pre-CLM router handoff
+        # byte-behavior-unchanged; when injected, the two CLM tenant Startup routes execute the
+        # bounded read/update through the port (Gateway → Database Router → exactly one physical
+        # tenant database) and NEVER call self._router.dispatch on that path (single-route).
+        self._tenant_startup = tenant_startup
 
     def handle(self, request: InboundRequest) -> GatewayResponse:
         # Observability (§S/WP-11): time every request and record a non-disclosing metric
@@ -118,28 +151,45 @@ class Gateway:
             actor_ref: Optional[str] = None,
             tenant_ref: Optional[str] = None,
             carrier_ref: Optional[str] = None,
-        ) -> None:
+        ) -> bool:
+            """Emit one references-only edge event; True on success (or per-request dedup).
+
+            D-42 CLM Stage B: every event now carries the minted identity triple
+            (``audit_id`` / ``occurred_at`` / ``event_version == 1``) so the durably homed
+            classes persist idempotently (DDL 012). A sink failure returns ``False`` and the
+            caller collapses fail-closed to the §L 503 ``unavailable`` — a denial is never
+            handed back without its audit evidence once its class is durably homed (the
+            default in-memory emitter never raises, so pre-CLM compositions are unchanged).
+            """
             key = (action, correlation_id)
             if key in emitted:  # idempotent: the same correlation-bound event is emitted at most once
-                return
+                return True
             emitted.add(key)
-            self._audit.emit(
-                GatewayAuditEvent(
-                    action=action,
-                    correlation_id=correlation_id,
-                    outcome=outcome,
-                    actor_ref=actor_ref,
-                    tenant_ref=tenant_ref,
-                    carrier_ref=carrier_ref,
+            try:
+                self._audit.emit(
+                    GatewayAuditEvent(
+                        action=action,
+                        correlation_id=correlation_id,
+                        outcome=outcome,
+                        actor_ref=actor_ref,
+                        tenant_ref=tenant_ref,
+                        carrier_ref=carrier_ref,
+                        audit_id=uuid.uuid4().hex,
+                        occurred_at=datetime.now(timezone.utc).isoformat(),
+                        event_version=1,
+                    )
                 )
-            )
+            except Exception:
+                return False
+            return True
 
         carriers = recognized_carriers(request)
 
         # Isolation (§K): one request asserting >1 distinct tenant carrier is a straddle
         # attempt (e.g. a MASTER_AGENT fan-out across t1/t2) — reject + audit, fail-closed.
         if len(set(carriers)) > 1:
-            emit(AuditAction.ISOLATION_ANOMALY, "rejected", carrier_ref=opaque_carrier_ref(",".join(sorted(set(carriers)))))
+            if not emit(AuditAction.ISOLATION_ANOMALY, "rejected", carrier_ref=opaque_carrier_ref(",".join(sorted(set(carriers))))):
+                return GatewayResponse(status=503, public_code="unavailable")
             return GatewayResponse(status=403, public_code="isolation_anomaly")
 
         # Authentication (§D): consumed as input; the recognized carrier is fed into the
@@ -148,18 +198,22 @@ class Gateway:
             auth = self._authenticator.authenticate(request.authorization, carriers, correlation_id)
         except RequestRejected as rejected:
             action = AuditAction.CARRIER_MISMATCH if rejected.public_code == "carrier_mismatch" else AuditAction.ROUTE_DENIED
-            emit(action, "rejected")
+            if not emit(action, "rejected"):
+                # D-42 CLM: a durably homed denial record that cannot persist fails the
+                # denial closed (503) — never an unevidenced hand-back (§L; no new code).
+                return GatewayResponse(status=503, public_code="unavailable")
             return GatewayResponse(status=rejected.http_status, public_code=rejected.public_code)
 
         # §F: a recognized carrier on a tenantless CONTROL token is ignored (claim-only) and
         # MUST emit the mandatory CarrierOnControlAnomaly (references only, opaque carrier id).
         if auth.active_tenant_id is None and carriers:
-            emit(
+            if not emit(
                 AuditAction.CARRIER_ON_CONTROL_ANOMALY,
                 "observed",
                 actor_ref=auth.principal_ref,
                 carrier_ref=opaque_carrier_ref(carriers[0]),
-            )
+            ):
+                return GatewayResponse(status=503, public_code="unavailable")
 
         # RequestContext is constructed EXCLUSIVELY from AuthContext (§G/§T; load-bearing).
         context: RequestContext = build_request_context(auth)
@@ -171,10 +225,93 @@ class Gateway:
             assert_single_database(decision)
         except DispatchError as denied:
             if denied.isolation_anomaly:
-                emit(AuditAction.ISOLATION_ANOMALY, "rejected", actor_ref=auth.principal_ref, tenant_ref=context.active_tenant_id)
+                if not emit(AuditAction.ISOLATION_ANOMALY, "rejected", actor_ref=auth.principal_ref, tenant_ref=context.active_tenant_id):
+                    return GatewayResponse(status=503, public_code="unavailable")
                 return GatewayResponse(status=403, public_code="isolation_anomaly")
-            emit(AuditAction.ROUTE_DENIED, "rejected", actor_ref=auth.principal_ref, tenant_ref=context.active_tenant_id)
+            if not emit(AuditAction.ROUTE_DENIED, "rejected", actor_ref=auth.principal_ref, tenant_ref=context.active_tenant_id):
+                return GatewayResponse(status=503, public_code="unavailable")
             return GatewayResponse(status=403, public_code=denied.public_code)
+
+        # D-42 CLM Stage B (IC-010 CLM section): with the typed tenant Startup port injected,
+        # the two CLM tenant Startup routes — GET/PATCH /tenant/startups/<startup_ref> —
+        # execute the bounded read/update through the port (Gateway → Database Router →
+        # exactly one physical tenant database, resolved from the signed claim) and compose
+        # the adopted TenantStartupDetailDTO from the typed port result (§V.1). Every other
+        # TENANT_OPERATION keeps the pre-CLM router handoff unchanged. No new dispatch
+        # category, no new carrier, no new public_code (§L/§Q/§X unchanged).
+        if self._tenant_startup is not None and category is DispatchCategory.TENANT_OPERATION:
+            startup_ref = _tenant_startup_ref(request.path)
+            if startup_ref is not None and request.method in ("GET", "PATCH"):
+                # TENANT domain: assert_single_database above guarantees exactly one signed active tenant.
+                assert decision.target_tenant_id is not None
+                detail: Optional[PortalDTO]
+                if request.method == "PATCH":
+                    # Bounded update validation FIRST (IC-010 CLM): exactly the one allowlisted
+                    # field, string-or-null, at most 500 characters — anything else is rejected
+                    # fail-closed with NO partial write and no port call (the 16384-byte
+                    # transport bound was enforced pre-core at the serving edge).
+                    try:
+                        update_request = parse_tenant_startup_update_request(request.patch_body or b"")
+                    except ValueError:
+                        return GatewayResponse(status=403, public_code="forbidden", category=category)
+                    try:
+                        detail = self._tenant_startup.update(
+                            TenantStartupUpdateRequest(
+                                startup_ref=startup_ref,
+                                target_tenant_ref=decision.target_tenant_id,
+                                correlation_id=correlation_id,
+                                actor_ref=auth.principal_ref,
+                                short_description=update_request.short_description,
+                            )
+                        )
+                    except Exception:
+                        # Transport / router / tenant-DB unavailability -> fail closed to the
+                        # existing §L vocabulary (no new public_code); no raw exception, SQL,
+                        # hostname, or DB identity leaks (§V.2). No partial write: the Database
+                        # Router side writes the sole allowlisted field atomically or nothing.
+                        return GatewayResponse(status=503, public_code="unavailable", category=category)
+                else:
+                    try:
+                        detail = self._tenant_startup.read(
+                            TenantStartupReadRequest(
+                                startup_ref=startup_ref,
+                                target_tenant_ref=decision.target_tenant_id,
+                                correlation_id=correlation_id,
+                                actor_ref=auth.principal_ref,
+                            )
+                        )
+                    except Exception:
+                        # Same fail-closed collapse as the update half (§L; no new public_code).
+                        return GatewayResponse(status=503, public_code="unavailable", category=category)
+                if detail is None:
+                    # Unknown <startup_ref> within the bound tenant database -> the consistent
+                    # IC-002 not-found semantic (existing `not_found` public code; no new code,
+                    # no cross-tenant existence leak, no audit success event, no DTO).
+                    return GatewayResponse(status=404, public_code="not_found", category=category)
+                composed_detail = compose_portal_dto(detail)
+                # CLM success-access audit (IC-010 CLM: exactly one references-only event per
+                # successful read/update; the API Gateway is the sole emitter; the value of
+                # short_description NEVER appears in the event). Audit-before-hand-back: a
+                # terminally unavailable durable sink collapses the served success to the §L
+                # 503 `unavailable` — a CLM tenant Startup success is never handed back unless
+                # its event is durably persisted (the workspace_memberships_read posture).
+                try:
+                    self._audit.emit(
+                        GatewayAuditEvent(
+                            action=AuditAction.TENANT_STARTUP_READ if request.method == "GET" else AuditAction.TENANT_STARTUP_UPDATE,
+                            correlation_id=correlation_id,
+                            outcome="success",
+                            actor_ref=auth.principal_ref,
+                            tenant_ref=decision.target_tenant_id,
+                            record_ref=startup_ref,
+                            audit_id=uuid.uuid4().hex,
+                            occurred_at=datetime.now(timezone.utc).isoformat(),
+                            event_version=1,
+                        )
+                    )
+                except Exception:
+                    return GatewayResponse(status=503, public_code="unavailable", category=category)
+                return GatewayResponse(status=200, public_code="ok", dispatched=True, category=category, portal_dto=composed_detail)
 
         # B5-BLK-6B (IC-010 §V): with the typed Control-Plane read port injected, the two
         # CONTROL-domain read categories are COMPOSED from typed port results — the gateway
@@ -202,7 +339,8 @@ class Gateway:
             if composed is None:
                 # Unknown kind / not found -> the existing consistent denial (LW-1:
                 # 404 -> None -> 403); never leaks existence, never a DTO on denial.
-                emit(AuditAction.ROUTE_DENIED, "rejected", actor_ref=auth.principal_ref, tenant_ref=context.active_tenant_id)
+                if not emit(AuditAction.ROUTE_DENIED, "rejected", actor_ref=auth.principal_ref, tenant_ref=context.active_tenant_id):
+                    return GatewayResponse(status=503, public_code="unavailable", category=category)
                 return GatewayResponse(status=403, public_code="forbidden")
             if category is DispatchCategory.MEMBERSHIPS_FOR_PRINCIPAL:
                 # B5-BLK-6C-B (IC-010 §J success-access subclass; IC-002 class 3b): exactly
@@ -265,7 +403,8 @@ class Gateway:
             if result.applied_count == 0 and result.noop_count == 0:
                 # Zero-record completion (source ref unknown / all records rejected) -> the LW-1
                 # consistent denial; global-record existence is never leaked.
-                emit(AuditAction.ROUTE_DENIED, "rejected", actor_ref=auth.principal_ref, tenant_ref=context.active_tenant_id)
+                if not emit(AuditAction.ROUTE_DENIED, "rejected", actor_ref=auth.principal_ref, tenant_ref=context.active_tenant_id):
+                    return GatewayResponse(status=503, public_code="unavailable", category=category)
                 return GatewayResponse(status=403, public_code="forbidden")
             token = "replayed" if result.replayed else ("created" if result.applied_count >= 1 else "noop")
             composed_result = compose_portal_dto(

@@ -4,8 +4,9 @@ Implements the shared, sink-less ``AuditEmitterPort`` (``emit(event) -> None``) 
 Plane's internal Gateway-audit ingest edge, ``POST /internal/gateway-audit/events``, with NO
 in-process import of ``control_plane`` (DAG rule) and NO database driver / vendor dependency (the
 gateway accesses no database and holds no Control-DB credential; IC-010 §X). References only: the
-wire body is exactly the ten approved references-only Gateway-edge keys (``source_service`` is the
-store-side producer constant, never sent; ``id`` / ``recorded_at`` are DB-assigned). No event
+wire body is exactly the eleven approved references-only Gateway-edge keys (D-42 CLM adds
+``record_ref``; ``source_service`` is the store-side producer constant, never sent; ``id`` /
+``recorded_at`` are DB-assigned). No event
 payload is ever logged, and no credential, token, connection descriptor, hostname, topology, or
 exception text enters any error raised here.
 
@@ -56,8 +57,9 @@ class DurableAuditTransportError(Exception):
 
 
 def _wire_event(event: GatewayAuditEvent) -> Dict[str, object]:
-    # Exactly the ten approved references-only Gateway-edge wire keys. ``action`` is the enum's
-    # string value; ``source_service`` / ``id`` / ``recorded_at`` are never sent.
+    # Exactly the eleven approved references-only Gateway-edge wire keys (D-42 CLM adds
+    # record_ref). ``action`` is the enum's string value; ``source_service`` / ``id`` /
+    # ``recorded_at`` are never sent.
     return {
         "audit_id": event.audit_id,
         "event_version": event.event_version,
@@ -69,6 +71,7 @@ def _wire_event(event: GatewayAuditEvent) -> Dict[str, object]:
         "subject_ref": event.subject_ref,
         "tenant_ref": event.tenant_ref,
         "carrier_ref": event.carrier_ref,
+        "record_ref": event.record_ref,
     }
 
 

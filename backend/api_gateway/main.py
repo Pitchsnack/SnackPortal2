@@ -29,7 +29,7 @@ from .adapters.providers.in_memory_audit_emitter import InMemoryAuditEmitter
 from .adapters.providers.in_memory_metrics import InMemoryMetrics
 from .dispatch import default_classifier
 from .gateway import Gateway
-from .models import DispatchCategory, GatewayAuditEvent, InboundRequest
+from .models import AuditAction, DispatchCategory, GatewayAuditEvent, InboundRequest
 from .ports import (
     AuditEmitterPort,
     AuthenticatorPort,
@@ -37,6 +37,7 @@ from .ports import (
     ImportInitiationPort,
     MetricsPort,
     RouterDispatchPort,
+    TenantStartupOperationsPort,
 )
 from .readiness import liveness
 
@@ -91,6 +92,16 @@ GW_AUDIT_SINK_BASE_URL_ENV = "SP2_GW_AUDIT_SINK_BASE_URL"
 # production config to the envelope default).
 GW_IMPORT_BASE_URL_ENV = "SP2_GW_IMPORT_BASE_URL"
 
+# D-42 CLM Stage B: the Gateway→Database-Router tenant Startup operations selector (mirrors the
+# 07E-3c/07E-3d/6B/audit/W1a selectors). The value is NON-SECRET internal routing config — the
+# loopback/internal Database Router tenant Startup operations base URL, never a credential — so it
+# is read directly from the environment (no SecretRef, no SecretStore). Unset/empty keeps the
+# port-absent default composition (every TENANT_OPERATION keeps the pre-CLM router handoff; there
+# is deliberately NO loopback default — a default would silently activate the tenant data plane);
+# a structurally valid internal http URL selects the transport ``HttpTenantStartupOperations``
+# client; anything else raises ValueError before any socket (fail closed — never a silent fallback).
+GW_TENANT_STARTUP_BASE_URL_ENV = "SP2_GW_TENANT_STARTUP_BASE_URL"
+
 # Served API Gateway Edge V1: the edge bind + browser-policy knobs (NON-SECRET deployment
 # config — a loopback host, a port, and an exact-origin CORS allowlist; never a credential).
 # The three transport selectors above remain the ACTIVATION gate; these knobs are consulted
@@ -110,7 +121,9 @@ __all__ = [
     "GW_EDGE_HOST_ENV",
     "GW_EDGE_PORT_ENV",
     "GW_IMPORT_BASE_URL_ENV",
+    "GW_TENANT_STARTUP_BASE_URL_ENV",
     "SERVICE",
+    "ClmDurableAuditPartition",
     "build_audit_emitter_from_env",
     "build_authenticator_from_env",
     "build_control_plane_read_from_env",
@@ -118,6 +131,7 @@ __all__ = [
     "build_gateway_edge_server_from_env",
     "build_import_initiation_from_env",
     "build_router_dispatch_from_env",
+    "build_tenant_startup_from_env",
     "liveness",
 ]
 
@@ -131,6 +145,7 @@ def build_gateway(
     audit: Optional[AuditEmitterPort] = None,
     metrics: Optional[MetricsPort] = None,
     import_initiation: Optional[ImportInitiationPort] = None,
+    tenant_startup: Optional[TenantStartupOperationsPort] = None,
 ) -> Gateway:
     """Compose the gateway. The audit + metrics defaults are the no-sink / vendor-neutral
     in-memory adapters (AD-1 Option A; WP-11). ``control_read`` (B5-BLK-6B) is OPTIONAL
@@ -139,7 +154,11 @@ def build_gateway(
     when a typed Control-Plane read port is explicitly injected or env-selected.
     ``import_initiation`` (W1a) is OPTIONAL and defaulted: None keeps the IMPORT_INITIATION
     accepted-initiation envelope path byte-behavior-unchanged; when injected, IMPORT_INITIATION
-    executes the real composed-core import (single-route; no router dispatch on that path)."""
+    executes the real composed-core import (single-route; no router dispatch on that path).
+    ``tenant_startup`` (D-42 CLM Stage B) is OPTIONAL and defaulted: None keeps every
+    TENANT_OPERATION on the pre-CLM router handoff byte-behavior-unchanged; when injected,
+    the two CLM tenant Startup routes execute the bounded read/update through the port
+    (single-route; no router dispatch on that path)."""
     return Gateway(
         authenticator=authenticator,
         router=router,
@@ -148,6 +167,7 @@ def build_gateway(
         audit=audit if audit is not None else InMemoryAuditEmitter(),
         metrics=metrics if metrics is not None else InMemoryMetrics(),
         import_initiation=import_initiation,
+        tenant_startup=tenant_startup,
     )
 
 
@@ -304,6 +324,86 @@ def build_import_initiation_from_env() -> Optional[ImportInitiationPort]:
     return HttpImportInitiation(raw)
 
 
+def build_tenant_startup_from_env() -> Optional[TenantStartupOperationsPort]:
+    """The config-selectable ``TenantStartupOperationsPort`` seam (D-42 CLM Stage B; IC-010 CLM
+    section over the §M internal transport).
+
+    This helper exposes a production-shaped ``TenantStartupOperationsPort`` selection seam. It does
+    not create a runnable production gateway; the transport client is wired only at the (deferred/
+    rehearsal) edge composition call site, never as a forced default.
+
+    Selection (the same fail-closed env-selector pattern as the 07E-3c/07E-3d/6B/audit/W1a seams):
+
+    * ``SP2_GW_TENANT_STARTUP_BASE_URL`` unset, or empty/whitespace after stripping → ``None`` — the
+      caller keeps the port-absent default (every TENANT_OPERATION keeps the pre-CLM router
+      handoff). There is deliberately NO loopback default — a default would silently activate the
+      tenant data plane.
+    * a structurally valid internal ``http://host[:port]`` value → an ``HttpTenantStartupOperations``
+      bound to that base URL. The transport client is lazy: construction performs no network I/O;
+      every call-time failure collapses fail-closed to the gateway's 503 ``unavailable`` (no new
+      public_code).
+    * anything else → ``ValueError`` at the composition boundary, raised BEFORE any socket — never a
+      silent fallback from malformed production config.
+
+    Validation is structural only (``urlsplit`` scheme + netloc; the scheme is pinned to ``http`` —
+    this is the internal loopback transport; TLS termination is deployment scope). No network I/O,
+    no ``database_router`` import, no database access, no secret handling (the base URL is
+    non-secret internal routing config; no SecretRef).
+    """
+    raw = (os.environ.get(GW_TENANT_STARTUP_BASE_URL_ENV) or "").strip()
+    if not raw:
+        return None
+    parts = urlsplit(raw)
+    if parts.scheme != "http" or not parts.netloc:
+        raise ValueError(
+            f"unsupported {GW_TENANT_STARTUP_BASE_URL_ENV}={raw!r}; expected an internal "
+            "http://host[:port] Database Router tenant Startup operations base URL (fail closed — no silent fallback)"
+        )
+    # Lazy relative import (the merged seam shape): the transport client is deferred to selection
+    # time so api_gateway/main.py stays import-light while inactive.
+    from .adapters.providers.http_tenant_startup import HttpTenantStartupOperations
+
+    return HttpTenantStartupOperations(raw)
+
+
+# D-42 CLM Stage B: exactly the four durably homed gateway-edge audit classes — the three CLM
+# success-access events plus the existing class-3 RouteDenied denial record (IC-010 CLM audit
+# evidence set). The remaining denial/anomaly classes stay on the in-memory no-sink emitter
+# (AD-1 Option A) — durably homing them would be the wider audit expansion D-42 forbids; they
+# remain a later additive sibling to the SAME sink.
+_CLM_DURABLE_ACTIONS = frozenset(
+    {
+        AuditAction.WORKSPACE_MEMBERSHIPS_READ,
+        AuditAction.TENANT_STARTUP_READ,
+        AuditAction.TENANT_STARTUP_UPDATE,
+        AuditAction.ROUTE_DENIED,
+    }
+)
+
+
+class ClmDurableAuditPartition(AuditEmitterPort):
+    """D-42 CLM Stage B durable-audit partition (IC-010 CLM audit evidence set).
+
+    Routes EXACTLY the four durably homed CLM action classes (``_CLM_DURABLE_ACTIONS``) to the
+    wrapped durable emitter (the bounded fail-closed V1a policy) and every other gateway-edge
+    class to the in-memory no-sink emitter — so selecting the durable sink homes the CLM
+    evidence set and NOTHING wider (no new denial or anomaly class; the un-homed classes keep
+    their pre-CLM in-memory posture byte-for-byte). A durable failure re-raises unchanged and
+    the gateway collapses it fail-closed (audit-before-hand-back for the success events;
+    deny-with-evidence for the RouteDenied record).
+    """
+
+    def __init__(self, durable: AuditEmitterPort, in_memory: AuditEmitterPort) -> None:
+        self._durable = durable
+        self._in_memory = in_memory
+
+    def emit(self, event: GatewayAuditEvent) -> None:
+        if event.action in _CLM_DURABLE_ACTIONS:
+            self._durable.emit(event)
+            return
+        self._in_memory.emit(event)
+
+
 class BoundedGatewayAuditPolicy(AuditEmitterPort):
     """Gateway Audit V1a fail-closed durable-audit policy (the DBR-AR-2C ``BoundedRoutingAuditPolicy``
     precedent, success-class only).
@@ -378,7 +478,11 @@ def build_audit_emitter_from_env() -> Optional[AuditEmitterPort]:
     # so api_gateway/main.py stays import-light while inactive.
     from .adapters.providers.durable_audit_emitter import DurableAuditEmitter, DurableAuditTransportError
 
-    return BoundedGatewayAuditPolicy(DurableAuditEmitter(raw), transport_error=DurableAuditTransportError)
+    # D-42 CLM Stage B: the durable transport homes EXACTLY the four CLM-homed action classes;
+    # every other gateway-edge class keeps the in-memory no-sink emitter (AD-1 Option A) — no
+    # silent widening of the durably homed set (no wider audit expansion).
+    durable = BoundedGatewayAuditPolicy(DurableAuditEmitter(raw), transport_error=DurableAuditTransportError)
+    return ClmDurableAuditPartition(durable, InMemoryAuditEmitter())
 
 
 def _edge_port_from_env() -> int:
@@ -456,6 +560,11 @@ def build_gateway_edge_server_from_env() -> Optional[Tuple[object, str]]:
     # envelope default; a valid URL → the transport HttpImportInitiation client; malformed → ValueError here
     # (before any socket bind).
     import_initiation = build_import_initiation_from_env()
+    # D-42 CLM Stage B: the Gateway→Database-Router tenant Startup operations port is wired at THIS
+    # composition call site (never a forced default). Unset SP2_GW_TENANT_STARTUP_BASE_URL → None →
+    # every TENANT_OPERATION keeps the pre-CLM router handoff; a valid URL → the transport
+    # HttpTenantStartupOperations client; malformed → ValueError here (before any socket bind).
+    tenant_startup = build_tenant_startup_from_env()
     # Lazy relative import keeps api_gateway/main.py import-light and server-token-free (the
     # concrete serving edge and its socket live in the adapter, never in the composition root).
     from .adapters.providers.http_gateway_edge import build_gateway_edge_server
@@ -466,5 +575,6 @@ def build_gateway_edge_server_from_env() -> Optional[Tuple[object, str]]:
         control_read=control_read,
         audit=audit,
         import_initiation=import_initiation,
+        tenant_startup=tenant_startup,
     )
     return build_gateway_edge_server(gateway, host=host, port=port, allowed_origins=allowed_origins)

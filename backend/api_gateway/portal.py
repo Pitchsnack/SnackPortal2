@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
-from typing import Mapping, Tuple, Type, Union
+from typing import Mapping, Optional, Tuple, Type, Union
 
 # IC-010 §V.1 contract-and-revision traceability — the seam names the contract it serves.
 PORTAL_CONTRACT_ID = "IC-009"
@@ -121,6 +121,80 @@ class ImportResultDTO:
 
 
 @dataclasses.dataclass(frozen=True)
+class TenantStartupDetailDTO:
+    """The CLM tenant Startup read/update response (IC-009 CLM section, adopted under
+    D-42) — exactly the eight contract-pinned fields, references-only and PII-minimized.
+
+    ``record_ref`` is the tenant-resident Startup record reference the route addressed
+    (the opaque ``<startup_ref>`` path suffix; never a raw row PK, never a tenant or
+    database selector). ``short_description`` is the sole CLM-mutable field (bounded
+    free text, at most 500 characters, nullable); ``investment_stage`` is a bounded
+    label (nullable). The provenance triple follows D-37 §10 with the tenant-resident
+    values (``record_residency == "tenant"``, ``record_type == "startup"``; the origin
+    marker mirrors the residency exactly as the global summaries mirror theirs).
+    ``lineage_reference`` is nullable and present ONLY when the record was imported
+    (tenant-resident records only, D-37 §10) — it is the tenant lineage row reference,
+    never a payload. No email, person name, founder, owner reference, media field, URL,
+    tenant_name/tenant_code, physical-DB identifier, or secret may ever join this shape.
+    """
+
+    record_ref: str
+    display_name: str
+    short_description: Optional[str]
+    investment_stage: Optional[str]
+    record_origin: str = "tenant"
+    record_residency: str = "tenant"
+    record_type: str = "startup"
+    lineage_reference: Optional[str] = None
+
+
+# The sole CLM-mutable field bound (IC-009/IC-010 CLM: at most 500 characters).
+TENANT_STARTUP_SHORT_DESCRIPTION_MAX_CHARS = 500
+
+
+@dataclasses.dataclass(frozen=True)
+class TenantStartupUpdateRequestDTO:
+    """The bounded CLM update request (IC-009 CLM section, adopted under D-42) — exactly
+    one field: ``short_description`` (a UTF-8 string of at most 500 characters, or null
+    to clear). ``short_description`` is the SOLE CLM-mutable field; a request carrying
+    any other field is rejected fail-closed with no partial write (IC-010 CLM section).
+
+    Like ``ErrorDTO``, this shape is deliberately EXCLUDED from the ``PortalDTO`` union
+    and the approved catalogue: it is a REQUEST shape — the gateway parses and validates
+    it (``parse_tenant_startup_update_request``) and never composes or serializes it as
+    a response, so union membership would be unreachable by construction.
+    """
+
+    short_description: Optional[str]
+
+
+def parse_tenant_startup_update_request(raw: bytes) -> TenantStartupUpdateRequestDTO:
+    """Strictly parse the bounded CLM update body (IC-010 CLM section) — fail closed.
+
+    Accepts EXACTLY one JSON object carrying EXACTLY the one allowlisted field
+    ``short_description`` whose value is a string of at most 500 characters or null.
+    Anything else — undecodable bytes, non-object JSON, an unknown or extra field, a
+    missing field, a non-string non-null value, an over-bound value — raises
+    ``ValueError`` (the caller rejects fail-closed with NO partial write; the transport
+    byte bound of 16384 is enforced at the serving edge before the core is reached).
+    """
+    try:
+        body = json.loads(raw.decode("utf-8"))
+    except Exception:
+        raise ValueError("malformed tenant startup update body") from None
+    if not isinstance(body, dict) or set(body.keys()) != {"short_description"}:
+        raise ValueError("tenant startup update must carry exactly the one allowlisted field")
+    value = body["short_description"]
+    if value is None:
+        return TenantStartupUpdateRequestDTO(short_description=None)
+    if not isinstance(value, str):
+        raise ValueError("short_description must be a UTF-8 string or null")
+    if len(value) > TENANT_STARTUP_SHORT_DESCRIPTION_MAX_CHARS:
+        raise ValueError("short_description exceeds the 500-character bound")
+    return TenantStartupUpdateRequestDTO(short_description=value)
+
+
+@dataclasses.dataclass(frozen=True)
 class ErrorDTO:
     """The §L safe denial surface (IC-009 §D) — status + public code and NOTHING else: no
     DB name, tenant existence, router detail, secret, or stack trace. Deliberately
@@ -132,14 +206,16 @@ class ErrorDTO:
 
 
 # The approved portal DTO union (IC-009-R1 foundation tier bound in B5-BLK-6B; W1a adds the composed-core
-# import completion sibling). Exactly these five members; ErrorDTO is excluded by construction (see its
-# docstring).
+# import completion sibling; the D-42 CLM Stage B slice adds the tenant Startup detail — the served
+# revision remains IC-009-R1 per the IC-009 CLM section). Exactly these six members; ErrorDTO and the
+# TenantStartupUpdateRequestDTO REQUEST shape are excluded by construction (see their docstrings).
 PortalDTO = Union[
     GlobalStartupSummaryDTO,
     GlobalInvestorSummaryDTO,
     WorkspaceMembershipDTO,
     ImportInitiationDTO,
     ImportResultDTO,
+    TenantStartupDetailDTO,
 ]
 
 # The explicit approved-DTO catalogue (IC-010 §V.1 traceability): each composable type is
@@ -151,6 +227,7 @@ APPROVED_PORTAL_DTOS: Mapping[Type[object], Tuple[str, str]] = {
     WorkspaceMembershipDTO: (PORTAL_CONTRACT_ID, PORTAL_CONTRACT_REVISION),
     ImportInitiationDTO: (PORTAL_CONTRACT_ID, PORTAL_CONTRACT_REVISION),
     ImportResultDTO: (PORTAL_CONTRACT_ID, PORTAL_CONTRACT_REVISION),
+    TenantStartupDetailDTO: (PORTAL_CONTRACT_ID, PORTAL_CONTRACT_REVISION),
 }
 
 

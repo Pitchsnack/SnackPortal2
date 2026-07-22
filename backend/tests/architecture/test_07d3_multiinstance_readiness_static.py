@@ -95,6 +95,9 @@ _SERVE_LOOP_BLESSED = {
     "database_router/adapters/providers/http_dispatch_api.py": "serve_dispatch_api",
     "api_gateway/adapters/providers/http_gateway_edge.py": "serve_gateway_edge",
     "import_service/adapters/providers/http_import_api.py": "serve_import_api",
+    # D-42 CLM Stage B: the internal Database-Router tenant Startup operations edge (the
+    # dispatch-edge sibling; same single-entrypoint/single-serve_forever shape).
+    "database_router/adapters/providers/http_tenant_startup_api.py": "serve_tenant_startup_api",
 }
 
 # The 5 production CAS callers frozen by the 07D-3 planning census (V-4).
@@ -423,15 +426,18 @@ def test_read_edge_wiring_census_is_non_vacuous() -> None:
 def test_serve_loop_census_blessed_entrypoints_are_real() -> None:
     # B5-2 Guard Evolution Matrix — POSITIVE, non-vacuous census: each serve-blessed module REALLY
     # defines its single blocking entrypoint with exactly one serve_forever inside it (the blessing
-    # never outlives the code it blesses); the blessed set stays exactly the two named adapter
+    # never outlives the code it blesses); the blessed set stays exactly the named adapter
     # modules; and the retained 07E-1 precedent (serve_read_api in the read adapter) survives. W1a
-    # blesses ONE more — the served internal import edge serve_import_api — for a total of FOUR.
+    # blessed the served internal import edge serve_import_api; the D-42 CLM Stage B slice blesses
+    # ONE more — the internal Database-Router tenant Startup operations edge
+    # serve_tenant_startup_api — for a total of FIVE.
     assert set(_SERVE_LOOP_BLESSED) == {
         "auth_router/adapters/providers/http_authenticate_api.py",
         "database_router/adapters/providers/http_dispatch_api.py",
         "api_gateway/adapters/providers/http_gateway_edge.py",
         "import_service/adapters/providers/http_import_api.py",
-    }, "the serve-loop blessing must stay exactly the four named adapter modules"
+        "database_router/adapters/providers/http_tenant_startup_api.py",
+    }, "the serve-loop blessing must stay exactly the five named adapter modules"
     for relp, entrypoint in _SERVE_LOOP_BLESSED.items():
         path = _scan.BACKEND_ROOT / relp
         assert path.is_file(), f"serve-blessed module missing: {relp}"
