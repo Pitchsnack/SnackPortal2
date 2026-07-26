@@ -501,6 +501,42 @@ def test_post_import_correlation_id_is_echoed() -> None:
     assert status == 200 and hdrs.get("x-correlation-id") == "imp-corr.9", "a valid correlation id must be echoed on the import route"
 
 
+# --- served tenant Startup routes (TA-1): GET/PATCH /tenant/startups/<startup_ref> -----------------
+def test_options_tenant_startup_preflight_grants_tenant_carrier_header() -> None:
+    # TA-1: the tenant-startup preflight grants the x-tenant-id match-only carrier (alongside
+    # authorization, content-type, x-correlation-id) so the browser may SEND it; the carrier is
+    # never authorization. Exact-origin allowlist and credentials-false stay unchanged.
+    origin = "https://ok.example"
+    with _serve(StubControlPlaneRead(mode="success"), allowed_origins=(origin,)) as (netloc, counting, _a):
+        status, hdrs, _body = _request(netloc, "/tenant/startups/stp_1", method="OPTIONS", headers={"Origin": origin})
+    assert status == 204, f"an allowed tenant-startup preflight must be 204; got {status}"
+    assert hdrs.get("access-control-allow-origin") == origin, "the exact origin must be echoed"
+    assert hdrs.get("access-control-allow-methods") == "GET, PATCH, OPTIONS", "the preflight must advertise GET, PATCH, OPTIONS"
+    assert hdrs.get("access-control-allow-credentials") == "false", "credentialed CORS must never be enabled"
+    allowed_headers = (hdrs.get("access-control-allow-headers") or "").lower()
+    for granted in ("authorization", "content-type", "x-correlation-id", "x-tenant-id"):
+        assert granted in allowed_headers, f"{granted} must be granted on the tenant-startup preflight"
+    assert counting.calls == 0, "a CORS preflight must never reach the core"
+
+
+def test_tenant_startup_cross_tenant_carrier_replay_is_403_empty_before_routing() -> None:
+    # TA-1: a tenant-A token replayed with a tenant-B X-Tenant-Id carrier on the tenant-startup
+    # route remains a fail-closed 403 with an EMPTY body before routing: the existing
+    # CarrierMismatch audit is emitted exactly once, and no tenant read, update, handoff, or
+    # database routing occurs (no tenant Startup read/update audit is emitted; the denial is
+    # pre-dispatch inside the core).
+    with _serve(StubControlPlaneRead(mode="success")) as (netloc, counting, audit):
+        headers = {**_bearer(_TENANT_TOKEN), "X-Tenant-Id": "t2"}
+        status, _hdrs, body = _request(netloc, "/tenant/startups/stp_1", headers=headers, host="example.com")
+    assert status == 403 and body == b"", "a cross-tenant carrier replay must be a 403 with no body"
+    carrier_events = [e for e in audit.events if e.action is AuditAction.CARRIER_MISMATCH]
+    assert len(carrier_events) == 1, "the existing CarrierMismatch audit must be emitted exactly once"
+    assert not any(e.action in (AuditAction.TENANT_STARTUP_READ, AuditAction.TENANT_STARTUP_UPDATE) for e in audit.events), (
+        "a carrier-mismatch denial must never produce a tenant Startup read or update"
+    )
+    assert counting.calls == 1, "the core is invoked exactly once and denies before any routing or handoff"
+
+
 if __name__ == "__main__":
     _h.run(
         [
@@ -543,5 +579,7 @@ if __name__ == "__main__":
             test_post_import_with_body_is_413_pre_core,
             test_options_import_preflight_is_204_with_post_methods,
             test_post_import_correlation_id_is_echoed,
+            test_options_tenant_startup_preflight_grants_tenant_carrier_header,
+            test_tenant_startup_cross_tenant_carrier_replay_is_403_empty_before_routing,
         ]
     )
