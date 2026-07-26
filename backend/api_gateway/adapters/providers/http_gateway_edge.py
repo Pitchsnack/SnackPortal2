@@ -252,14 +252,16 @@ def _make_handler(gateway: Gateway, allowed_origins: Tuple[str, ...]) -> "type[B
                 if method == "OPTIONS":
                     # CORS preflight for the tenant Startup routes: 204, GET+PATCH+OPTIONS. The
                     # Gateway core is NEVER invoked for a preflight; content-type is added to the
-                    # allowed request headers (the PATCH body is application/json).
+                    # allowed request headers (the PATCH body is application/json), and the
+                    # x-tenant-id match-only carrier is granted (TA-1 — IC-010 §E: the carrier is
+                    # never authorization; the core still match-or-rejects it per request).
                     self._respond(
                         204,
                         correlation_id,
                         origin,
                         preflight=True,
                         cors_methods="GET, PATCH, OPTIONS",
-                        cors_headers="Authorization, x-correlation-id, content-type",
+                        cors_headers="Authorization, x-correlation-id, content-type, x-tenant-id",
                     )
                     return
                 self._handle_tenant_startup(method, correlation_id, origin, patch_body)
