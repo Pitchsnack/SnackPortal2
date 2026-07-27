@@ -197,8 +197,14 @@ class Gateway:
         try:
             auth = self._authenticator.authenticate(request.authorization, carriers, correlation_id)
         except RequestRejected as rejected:
-            action = AuditAction.CARRIER_MISMATCH if rejected.public_code == "carrier_mismatch" else AuditAction.ROUTE_DENIED
-            if not emit(action, "rejected"):
+            mismatch = rejected.public_code == "carrier_mismatch"
+            action = AuditAction.CARRIER_MISMATCH if mismatch else AuditAction.ROUTE_DENIED
+            # D-43: the durably homed CarrierMismatch denial record carries the REQUIRED opaque
+            # carrier_ref — the recognized carrier value rendered by the existing opaque helper
+            # (never the bearer token, never the signed tenant claim; IC-005:116). No actor,
+            # subject, tenant, or record reference is fabricated, denial ordering is unchanged,
+            # and the denial stays pre-context and pre-routing (no RequestContext, no dispatch).
+            if not emit(action, "rejected", carrier_ref=opaque_carrier_ref(carriers[0]) if mismatch and carriers else None):
                 # D-42 CLM: a durably homed denial record that cannot persist fails the
                 # denial closed (503) — never an unevidenced hand-back (§L; no new code).
                 return GatewayResponse(status=503, public_code="unavailable")

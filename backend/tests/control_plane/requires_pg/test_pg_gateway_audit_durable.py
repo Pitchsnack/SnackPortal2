@@ -11,15 +11,20 @@ wildcard) and proves the REAL persistence path end-to-end:
 
 Every event crosses the real HTTP wire (the gateway's own ``DurableAuditEmitter`` transport client
 and raw ``_post`` probes); the store is never called directly. Proof set: reviewed-blob
-STOP-before-connect; live schema evidence from the PostgreSQL catalogs (exact 13 columns, identity
-ordering authority, unique ``audit_id``, DB-assigned ``recorded_at``, the frozen action /
-event_version / source_service CHECKs, both append-only triggers); one durable
-``workspace_memberships_read`` success event persisted through the wire; INSERTED / DUPLICATE_MATCH /
+STOP-before-connect; live schema evidence from the PostgreSQL catalogs (exact 14 columns — the D-42
+``record_ref`` reference column included — identity ordering authority, unique ``audit_id``,
+DB-assigned ``recorded_at``, the frozen action / event_version / source_service CHECKs, both
+append-only triggers); one durable ``workspace_memberships_read`` success event persisted through
+the wire; one durable D-43 ``CarrierMismatch/rejected`` denial row persisted through the wire with
+its REQUIRED opaque ``carrier_ref`` and NO tenant/record reference (Post-10C.3 corrective —
+duplicate replay idempotent; invalid outcome and missing/malformed ``carrier_ref`` refused with no
+row); INSERTED / DUPLICATE_MATCH /
 CONFLICT idempotency with no extra row on replay or conflict; caller-unbound ``id`` / ``recorded_at``
 (forbidden wire keys rejected); durable ordering by the identity column; fresh store + fresh server
 reconstruction over the same disposable database (rows persist; replay stays DUPLICATE_MATCH);
-direct-SQL UPDATE / DELETE / TRUNCATE rejection with rows unchanged; and reference-only stored rows
-(no DSN/password substring). Guaranteed proof-database teardown.
+direct-SQL UPDATE / DELETE / TRUNCATE rejection with rows unchanged (the CarrierMismatch row
+included); and reference-only stored rows (no DSN/password substring). Guaranteed proof-database
+teardown.
 
 ISOLATION & SAFETY. Everything runs in the proof-owned scratch DATABASE ``sp2_gateway_audit_v1a_proof``
 created from the SNACKPORTAL_TEST_DSN admin connection at start and DROPPED in a ``finally`` — the
@@ -89,7 +94,8 @@ _REVIEWED_013_BLOB = "199664d1afb9e6e0a37e8609f42e4e1528771472"
 
 _INGEST_PATH = "/internal/gateway-audit/events"
 
-# The exact 13-column contract of DDL 012 in ordinal order (id + recorded_at are store-assigned).
+# The exact 14-column contract of DDL 012 in ordinal order (id + recorded_at are store-assigned;
+# record_ref is the D-42 CLM tenant-resident reference column — nullable, references only).
 _EXPECTED_COLS = [
     "id",
     "audit_id",
@@ -104,6 +110,7 @@ _EXPECTED_COLS = [
     "subject_ref",
     "tenant_ref",
     "carrier_ref",
+    "record_ref",
 ]
 _NOT_NULL = {
     "id",
@@ -145,7 +152,8 @@ def _rows(conn: Any) -> List[Tuple[Any, ...]]:
     return list(
         conn.execute(
             "SELECT id, audit_id, event_version, occurred_at, recorded_at, correlation_id, action, outcome,"
-            " source_service, actor_ref, subject_ref, tenant_ref, carrier_ref FROM control_gateway_audit ORDER BY id ASC"
+            " source_service, actor_ref, subject_ref, tenant_ref, carrier_ref, record_ref"
+            " FROM control_gateway_audit ORDER BY id ASC"
         ).fetchall()
     )
 
@@ -177,7 +185,8 @@ def _post(base_url: str, payload: Dict[str, object]) -> Tuple[int, Dict[str, obj
 
 
 def _wire(audit_id: str, correlation_id: str, **over: object) -> Dict[str, object]:
-    """A references-only wire event with EXACTLY the ten approved Gateway-edge success keys."""
+    """A references-only wire event with EXACTLY the eleven approved Gateway-edge keys
+    (D-42 CLM adds ``record_ref``; null on the memberships success event)."""
     event: Dict[str, object] = {
         "audit_id": audit_id,
         "event_version": 1,
@@ -189,6 +198,27 @@ def _wire(audit_id: str, correlation_id: str, **over: object) -> Dict[str, objec
         "subject_ref": "principal_gwa",
         "tenant_ref": None,
         "carrier_ref": None,
+        "record_ref": None,
+    }
+    event.update(over)
+    return event
+
+
+def _cm_wire(audit_id: str, correlation_id: str, **over: object) -> Dict[str, object]:
+    """A references-only D-43 ``CarrierMismatch/rejected`` wire event (eleven keys; the
+    REQUIRED opaque ``carrier_ref``; no tenant/record reference — the denial is pre-routing)."""
+    event: Dict[str, object] = {
+        "audit_id": audit_id,
+        "event_version": 1,
+        "occurred_at": "2026-07-27T00:00:00+00:00",
+        "correlation_id": correlation_id,
+        "action": "CarrierMismatch",
+        "outcome": "rejected",
+        "actor_ref": None,
+        "subject_ref": None,
+        "tenant_ref": None,
+        "carrier_ref": "carrier:tenant-b",
+        "record_ref": None,
     }
     event.update(over)
     return event
@@ -203,6 +233,19 @@ def _success_event(audit_id: str, correlation_id: str) -> GatewayAuditEvent:
         subject_ref="principal_gwa",
         audit_id=audit_id,
         occurred_at="2026-07-18T00:00:00+00:00",
+        event_version=1,
+    )
+
+
+def _cm_denial_event(audit_id: str, correlation_id: str) -> GatewayAuditEvent:
+    """The D-43 CarrierMismatch denial event as the gateway emits it (references only)."""
+    return GatewayAuditEvent(
+        action=AuditAction.CARRIER_MISMATCH,
+        correlation_id=correlation_id,
+        outcome="rejected",
+        carrier_ref="carrier:tenant-b",
+        audit_id=audit_id,
+        occurred_at="2026-07-27T00:00:00+00:00",
         event_version=1,
     )
 
@@ -316,7 +359,7 @@ def test_gateway_audit_v1a_disposable_live_proof(admin_dsn: str) -> None:
             f"append-only triggers missing: {triggers}"
         )
         print(
-            "PASS: GWA-3 live schema evidence (13 cols/types/order, identity PK, unique audit_id, DB-default recorded_at, CHECKs, triggers)"
+            "PASS: GWA-3 live schema evidence (14 cols/types/order, identity PK, unique audit_id, DB-default recorded_at, CHECKs, triggers)"
         )
 
         # PROOF GWA-4 — the REAL end-to-end path: one durable success event through the gateway emitter.
@@ -332,6 +375,7 @@ def test_gateway_audit_v1a_disposable_live_proof(admin_dsn: str) -> None:
             (row,) = _rows(conn)
             assert row[1] == _AUDIT_ID and row[6] == "workspace_memberships_read" and row[7] == "success"
             assert row[8] == "api_gateway" and row[9] == row[10] == "principal_gwa" and row[11] is None and row[12] is None
+            assert row[13] is None, "the memberships success event persists no record reference"
             assert row[4] is not None and getattr(row[4], "tzinfo", None) is not None, "recorded_at must be DB-assigned and tz-aware"
             print("PASS: GWA-4 end-to-end path (DurableAuditEmitter -> ingest -> store -> PG; one success row persisted)")
 
@@ -357,7 +401,9 @@ def test_gateway_audit_v1a_disposable_live_proof(admin_dsn: str) -> None:
                 assert (status, body) == (400, {"version": 1, "result": "INVALID"}), (
                     f"caller-bound {forbidden_key} must be rejected: {status}"
                 )
-            for bad_action in ("Hacked", "RouteDenied", "IsolationAnomaly"):  # non-success actions are refused in V1a
+            # Out-of-vocabulary actions, unwired anomaly actions, and success-shaped envelopes
+            # carrying a wired DENIAL action (invalid action/outcome combination) are all refused.
+            for bad_action in ("Hacked", "RouteDenied", "IsolationAnomaly", "CarrierMismatch"):
                 status, body = _post(
                     base_a, {"version": 1, "event": _wire("22222222222222222222222222222222", "cid-gwa-bad", action=bad_action)}
                 )
@@ -389,6 +435,45 @@ def test_gateway_audit_v1a_disposable_live_proof(admin_dsn: str) -> None:
             ), "the UNIQUE audit_id key must reject a raw duplicate insert at the database"
             print("PASS: GWA-6 database authority (id/recorded_at/source_service caller-unbound; CHECK + UNIQUE enforced)")
 
+            # PROOF GWA-6B — D-43 CarrierMismatch durable denial row (Post-10C.3 corrective):
+            # the references-only CarrierMismatch/rejected event crosses the real wire through
+            # the gateway's own transport client and persists with its REQUIRED opaque
+            # carrier_ref; the pre-routing denial persists NO actor/subject/tenant/record
+            # reference; replay is idempotent; an invalid outcome and a missing/malformed
+            # carrier_ref are each refused with NO row. Uses only existing DDL 012/013.
+            cm_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            assert emitter.emit(_cm_denial_event(cm_id, "cid-gwa-cm")) is None, (
+                "the durable emitter must persist the CarrierMismatch denial event (INSERTED)"
+            )
+            assert _count(conn) == 2, "exactly one durable row for one CarrierMismatch denial event"
+            cm_row = next(r for r in _rows(conn) if r[1] == cm_id)
+            assert cm_row[6] == "CarrierMismatch" and cm_row[7] == "rejected" and cm_row[8] == "api_gateway"
+            assert cm_row[5] == "cid-gwa-cm", "the correlation reference must persist verbatim"
+            assert cm_row[12] == "carrier:tenant-b", "the opaque carrier_ref must persist verbatim"
+            assert cm_row[12].startswith("carrier:") and len(cm_row[12]) <= 64, "carrier_ref stays opaque + bounded (IC-005:116)"
+            assert cm_row[9] is None and cm_row[10] is None and cm_row[11] is None and cm_row[13] is None, (
+                "the pre-routing denial persists no actor/subject/tenant/record reference"
+            )
+            assert emitter.emit(_cm_denial_event(cm_id, "cid-gwa-cm")) is None, (
+                "an identical CarrierMismatch replay through the emitter is DUPLICATE_MATCH success"
+            )
+            assert _count(conn) == 2, "a CarrierMismatch replay must add NO second row"
+            for bad in (
+                _cm_wire("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "cid-gwa-cm-bad", outcome="success"),  # invalid outcome
+                _cm_wire("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "cid-gwa-cm-bad", carrier_ref=None),  # missing carrier_ref
+                _cm_wire("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "cid-gwa-cm-bad", carrier_ref="tenant-b"),  # non-opaque carrier_ref
+                _cm_wire("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "cid-gwa-cm-bad", tenant_ref="tenant-b"),  # fabricated tenant ref
+            ):
+                status, body = _post(base_a, {"version": 1, "event": bad})
+                assert (status, body) == (400, {"version": 1, "result": "INVALID"}), (
+                    f"an invalid CarrierMismatch envelope must be refused: {status} {body}"
+                )
+            assert _count(conn) == 2, "refused CarrierMismatch envelopes must add NO row"
+            print(
+                "PASS: GWA-6B D-43 CarrierMismatch durable denial row (opaque carrier_ref persisted; no fabricated refs;"
+                " replay idempotent; invalid outcome / missing / malformed carrier_ref refused with no row)"
+            )
+
             snapshot = _rows(conn)
         finally:
             _stop(server_a, thread_a)
@@ -411,9 +496,17 @@ def test_gateway_audit_v1a_disposable_live_proof(admin_dsn: str) -> None:
                 "UPDATE must be rejected"
             )
             assert _raises(conn, "DELETE FROM control_gateway_audit WHERE id = %s", (snapshot[0][0],)), "DELETE must be rejected"
+            # D-43: the CarrierMismatch denial row enjoys the SAME append-only protection.
+            cm_protected = next(r for r in snapshot if r[6] == "CarrierMismatch")
+            assert _raises(conn, "UPDATE control_gateway_audit SET outcome = 'success' WHERE id = %s", (cm_protected[0],)), (
+                "UPDATE of the CarrierMismatch row must be rejected"
+            )
+            assert _raises(conn, "DELETE FROM control_gateway_audit WHERE id = %s", (cm_protected[0],)), (
+                "DELETE of the CarrierMismatch row must be rejected"
+            )
             assert _raises(conn, "TRUNCATE control_gateway_audit"), "TRUNCATE must be rejected"
             assert _rows(conn) == snapshot, "rows must be byte-identical after the rejected UPDATE/DELETE/TRUNCATE"
-            print("PASS: GWA-8 append-only enforced live (UPDATE/DELETE/TRUNCATE each rejected; rows unchanged)")
+            print("PASS: GWA-8 append-only enforced live (UPDATE/DELETE/TRUNCATE rejected; CarrierMismatch row included; rows unchanged)")
 
             # PROOF GWA-9 — bounded failure with NO fallback and NO leakage.
             store_x = PostgresGatewayAuditStore(

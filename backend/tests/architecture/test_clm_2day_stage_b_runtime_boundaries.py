@@ -226,23 +226,27 @@ def test_dbr_internal_edge_boundaries() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 6. The CLM durable-audit partition homes EXACTLY the four ratified classes
+# 6. The CLM durable-audit partition homes EXACTLY the five ratified classes
 # ---------------------------------------------------------------------------
-def test_clm_durable_audit_partition_is_exactly_the_four_events() -> None:
+def test_clm_durable_audit_partition_is_exactly_the_five_events() -> None:
+    # D-43 (Post-10C.3 corrective): the durable set widened from four to exactly five —
+    # adding the CarrierMismatch denial record and NO other audit class.
     assert _CLM_DURABLE_ACTIONS == frozenset(
         {
             AuditAction.WORKSPACE_MEMBERSHIPS_READ,
             AuditAction.TENANT_STARTUP_READ,
             AuditAction.TENANT_STARTUP_UPDATE,
             AuditAction.ROUTE_DENIED,
+            AuditAction.CARRIER_MISMATCH,
         }
     ), "the durably homed set is EXACTLY the IC-010 CLM audit evidence set (no wider audit expansion)"
-    # The three remaining denial/anomaly classes stay OUTSIDE the durable partition.
-    for unhomed in (AuditAction.CARRIER_MISMATCH, AuditAction.CARRIER_ON_CONTROL_ANOMALY, AuditAction.ISOLATION_ANOMALY):
+    # The two remaining anomaly classes stay OUTSIDE the durable partition.
+    for unhomed in (AuditAction.CARRIER_ON_CONTROL_ANOMALY, AuditAction.ISOLATION_ANOMALY):
         assert unhomed not in _CLM_DURABLE_ACTIONS, f"{unhomed.value} must stay on the in-memory no-sink emitter"
-    # The two new actions carry EXACTLY the contract action strings.
+    # The durably homed actions carry EXACTLY the contract action strings.
     assert AuditAction.TENANT_STARTUP_READ.value == "tenant_startup_read"
     assert AuditAction.TENANT_STARTUP_UPDATE.value == "tenant_startup_update"
+    assert AuditAction.CARRIER_MISMATCH.value == "CarrierMismatch"
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +283,7 @@ if __name__ == "__main__":
             test_gateway_client_adapter_boundaries,
             test_dbr_executor_boundaries_and_sole_mutable_column,
             test_dbr_internal_edge_boundaries,
-            test_clm_durable_audit_partition_is_exactly_the_four_events,
+            test_clm_durable_audit_partition_is_exactly_the_five_events,
             test_stage_b_closes_no_blocker,
             test_composition_selectors_pinned,
         ]
