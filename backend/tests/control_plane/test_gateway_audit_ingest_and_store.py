@@ -13,8 +13,9 @@ Two halves, both stdlib-only and driver-free (the Driver Containment Standard: t
   established loopback precedent; production stays thread-free, AT-D15T1-10): strict envelope
   acceptance/rejection for ``POST /internal/gateway-audit/events``, the exact two-key response
   envelope for INSERTED / DUPLICATE_MATCH / INVALID / CONFLICT / UNAVAILABLE, 404/405 empty-body
-  refusals, forbidden-name and secret-shaped-value defenses, the V1a success-only action/outcome/
-  version pins, and the no-leak guarantee. The store behind the edge is a local test double.
+  refusals, forbidden-name and secret-shaped-value defenses, the wired action/outcome/version pins
+  (including the D-43 ``CarrierMismatch/rejected`` acceptance with its REQUIRED opaque
+  ``carrier_ref``), and the no-leak guarantee. The store behind the edge is a local test double.
 
 Pure stdlib; standalone-runnable: ``python tests/control_plane/test_gateway_audit_ingest_and_store.py``.
 """
@@ -507,11 +508,16 @@ def test_ingest10_wrong_field_types_rejected() -> None:
 
 
 def test_ingest11_v1a_action_outcome_version_pins_enforced() -> None:
-    # V1a wires ONLY the workspace_memberships_read success event: the four denial/anomaly actions
-    # are refused at the edge, and outcome must be exactly "success".
+    # The wired set is the five-event IC-010 CLM audit evidence set (D-42 + the D-43
+    # CarrierMismatch corrective). The remaining anomaly actions stay refused at the edge
+    # (no wider audit expansion), and the memberships success outcome stays exactly "success".
+    # (A success-shaped envelope carrying a WIRED denial action is refused as an invalid
+    # action/outcome combination — the denial records require outcome "rejected".)
     with _serving(_FakeStore("insert")) as base:
-        for action in ("CarrierMismatch", "CarrierOnControlAnomaly", "RouteDenied", "IsolationAnomaly", "Hacked"):
+        for action in ("CarrierOnControlAnomaly", "IsolationAnomaly", "Hacked"):
             _expect(base, _envelope(_event(action=action)), 400, "INVALID")
+        for wired_denial in ("CarrierMismatch", "RouteDenied"):
+            _expect(base, _envelope(_event(action=wired_denial)), 400, "INVALID")  # success outcome on a denial action
         _expect(base, _envelope(_event(outcome="rejected")), 400, "INVALID")
         _expect(base, _envelope(_event(outcome="denied:forbidden")), 400, "INVALID")
 
@@ -522,6 +528,75 @@ def test_ingest12_forbidden_names_and_secret_shapes_rejected() -> None:
             _expect(base, _envelope(_event(**{forbidden: "x"})), 400, "INVALID")
         for shaped in ("eyJhbGciOi", "postgresql://u:p@h/db", "-----BEGIN KEY-----", "ghp_secrettoken"):
             _expect(base, _envelope(_event(actor_ref=shaped)), 400, "INVALID")
+
+
+# --- D-43 (Post-10C.3 corrective): the durably wired CarrierMismatch denial record -----------------
+def _cm_event(**overrides: object) -> Dict[str, object]:
+    """A valid references-only D-43 ``CarrierMismatch/rejected`` wire event (eleven keys)."""
+    base: Dict[str, object] = _event(
+        action="CarrierMismatch",
+        outcome="rejected",
+        actor_ref=None,
+        subject_ref=None,
+        tenant_ref=None,
+        carrier_ref="carrier:t2",
+        record_ref=None,
+    )
+    base.update(overrides)
+    return base
+
+
+def test_ingest13_carriermismatch_rejected_event_accepted() -> None:
+    store = _FakeStore("insert")
+    with _serving(store) as base:
+        _expect(base, _envelope(_cm_event()), 200, "INSERTED")
+    (record,) = store.records
+    assert record.action == "CarrierMismatch" and record.outcome == "rejected"
+    assert record.correlation_id == "corr-1" and record.audit_id == _AUDIT_ID
+    assert record.carrier_ref == "carrier:t2", "the opaque carrier_ref must persist verbatim"
+    assert record.carrier_ref.startswith("carrier:") and len(record.carrier_ref) <= 64, "carrier_ref stays opaque + bounded (IC-005:116)"
+    assert record.tenant_ref is None and record.record_ref is None, "the pre-routing denial carries no tenant/record reference"
+    assert record.source_service == "api_gateway"  # store-side producer constant, not from the wire
+    # actor/subject stay OPTIONAL under the existing envelope (accepted when lawfully available).
+    store2 = _FakeStore("insert")
+    with _serving(store2) as base:
+        _expect(base, _envelope(_cm_event(actor_ref="principal:ops")), 200, "INSERTED")
+    assert store2.records[0].actor_ref == "principal:ops"
+
+
+def test_ingest14_carriermismatch_success_outcome_rejected_400() -> None:
+    # A CarrierMismatch/success (or any non-"rejected" outcome) is an invalid combination.
+    store = _FakeStore("insert")
+    with _serving(store) as base:
+        for outcome in ("success", "observed", "denied:carrier_mismatch", ""):
+            _expect(base, _envelope(_cm_event(outcome=outcome)), 400, "INVALID")
+    assert store.records == [], "an invalid outcome must never reach the store"
+
+
+def test_ingest15_carriermismatch_missing_or_malformed_carrier_ref_rejected() -> None:
+    store = _FakeStore("insert")
+    with _serving(store) as base:
+        for bad_ref in (
+            None,  # missing (null) — carrier_ref is REQUIRED for this record
+            "",  # empty
+            "t2",  # raw carrier value without the opaque "carrier:" rendering
+            "carrier:",  # prefix-only (no carrier value)
+            "carrier:" + "x" * 64,  # over the 64-character opaque bound
+            "eyJhbGciOi",  # token-shaped value (secret-shape defense)
+        ):
+            _expect(base, _envelope(_cm_event(carrier_ref=bad_ref)), 400, "INVALID")
+        # The pre-routing denial must not fabricate tenant/record references.
+        _expect(base, _envelope(_cm_event(tenant_ref="t2")), 400, "INVALID")
+        _expect(base, _envelope(_cm_event(record_ref="stp_1")), 400, "INVALID")
+    assert store.records == [], "a malformed CarrierMismatch envelope must never reach the store"
+
+
+def test_ingest16_carriermismatch_duplicate_replay_stays_idempotent() -> None:
+    # Duplicate/idempotent store behavior is preserved for the new record class.
+    with _serving(_FakeStore("duplicate")) as base:
+        _expect(base, _envelope(_cm_event()), 200, "DUPLICATE_MATCH")
+    with _serving(_FakeStore("conflict")) as base:
+        _expect(base, _envelope(_cm_event()), 409, "CONFLICT")
 
 
 if __name__ == "__main__":
@@ -551,5 +626,9 @@ if __name__ == "__main__":
             test_ingest10_wrong_field_types_rejected,
             test_ingest11_v1a_action_outcome_version_pins_enforced,
             test_ingest12_forbidden_names_and_secret_shapes_rejected,
+            test_ingest13_carriermismatch_rejected_event_accepted,
+            test_ingest14_carriermismatch_success_outcome_rejected_400,
+            test_ingest15_carriermismatch_missing_or_malformed_carrier_ref_rejected,
+            test_ingest16_carriermismatch_duplicate_replay_stays_idempotent,
         ]
     )

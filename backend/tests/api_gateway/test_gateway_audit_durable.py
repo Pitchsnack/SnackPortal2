@@ -48,8 +48,13 @@ from api_gateway.main import (  # noqa: E402
     build_gateway,
 )
 from api_gateway.models import AuditAction, GatewayAuditEvent  # noqa: E402
-from api_gateway.portal import MembershipEntryDTO, compose_display_ref  # noqa: E402
-from api_gateway.ports import AuditEmitterPort  # noqa: E402
+from api_gateway.portal import MembershipEntryDTO, TenantStartupDetailDTO, compose_display_ref  # noqa: E402
+from api_gateway.ports import (  # noqa: E402
+    AuditEmitterPort,
+    TenantStartupOperationsPort,
+    TenantStartupReadRequest,
+    TenantStartupUpdateRequest,
+)
 
 _SUCCESS = AuditAction.WORKSPACE_MEMBERSHIPS_READ
 
@@ -347,6 +352,93 @@ def test_default_non_durable_composition_is_unchanged() -> None:
     assert isinstance(gw_default._audit, InMemoryAuditEmitter) and isinstance(gw_none._audit, InMemoryAuditEmitter)
 
 
+# ===========================================================================
+# D-43 (Post-10C.3 corrective) — the CarrierMismatch durable denial record
+# ===========================================================================
+class _NeverCalledTenantStartup(TenantStartupOperationsPort):
+    """A tenant Startup port double that must NEVER be reached on a denial path."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def read(self, request: TenantStartupReadRequest) -> Optional[TenantStartupDetailDTO]:
+        self.calls += 1
+        raise AssertionError("a carrier-mismatch denial must never reach the tenant Startup port")
+
+    def update(self, request: TenantStartupUpdateRequest) -> Optional[TenantStartupDetailDTO]:
+        self.calls += 1
+        raise AssertionError("a carrier-mismatch denial must never reach the tenant Startup port")
+
+
+def _mismatch_setup(durable: AuditEmitterPort):
+    """A tenant-token gateway whose audit emitter is the REAL CLM partition over ``durable``
+    (wrapped in the bounded policy) with a counting in-memory half; the router and the tenant
+    Startup port are recording doubles so no-routing is provable."""
+    authn = D.StubAuthenticator()
+    authn.add_token("tok-t1", principal="p1", tenant="t1", role="TENANT_AGENT")
+    router = D.StubRouterDispatch()
+    in_memory = _CountingEmitter()
+    tenant_startup = _NeverCalledTenantStartup()
+    gateway = build_gateway(
+        authenticator=authn,
+        router=router,
+        audit=ClmDurableAuditPartition(_policy(durable), in_memory),
+        tenant_startup=tenant_startup,
+    )
+    return gateway, router, in_memory, tenant_startup
+
+
+def _mismatch_req():
+    return D.req(path="/tenant/startups/stp_1", headers={"X-Tenant-Id": "t2"}, authorization="tok-t1", correlation_id="cid-cm")
+
+
+def test_partition_routes_carriermismatch_to_the_durable_emitter_only() -> None:
+    durable, in_memory = _CountingEmitter(), _CountingEmitter()
+    partition = ClmDurableAuditPartition(durable, in_memory)
+    cm = GatewayAuditEvent(
+        action=AuditAction.CARRIER_MISMATCH,
+        correlation_id="cid-cm",
+        outcome="rejected",
+        carrier_ref="carrier:t2",
+        audit_id="fedcba9876543210fedcba9876543210",
+        occurred_at="2026-07-27T10:00:00+00:00",
+        event_version=1,
+    )
+    partition.emit(cm)
+    assert durable.events == [cm], "CarrierMismatch must route to the durable emitter (D-43)"
+    assert in_memory.events == [], "CarrierMismatch must NOT be sent to the in-memory emitter"
+    # The two remaining anomaly classes keep the in-memory posture (no wider audit expansion).
+    for unhomed in (AuditAction.CARRIER_ON_CONTROL_ANOMALY, AuditAction.ISOLATION_ANOMALY):
+        partition.emit(GatewayAuditEvent(action=unhomed, correlation_id="cid-x", outcome="rejected"))
+    assert [e.action for e in in_memory.events] == [AuditAction.CARRIER_ON_CONTROL_ANOMALY, AuditAction.ISOLATION_ANOMALY]
+    assert [e.action for e in durable.events] == [AuditAction.CARRIER_MISMATCH]
+
+
+def test_gateway_carrier_mismatch_emits_one_durable_event_with_opaque_carrier_ref_then_403() -> None:
+    durable = _CountingEmitter()
+    gateway, router, in_memory, tenant_startup = _mismatch_setup(durable)
+    resp = gateway.handle(_mismatch_req())
+    assert (resp.status, resp.public_code) == (403, "carrier_mismatch"), "a successful durable emit permits the existing 403 denial"
+    (event,) = durable.events
+    assert event.action is AuditAction.CARRIER_MISMATCH and event.outcome == "rejected"
+    assert event.carrier_ref == "carrier:t2", "the event must carry the opaque carrier_ref of the recognized carrier"
+    assert event.carrier_ref.startswith("carrier:") and len(event.carrier_ref) <= 64  # opaque + bounded (IC-005:116)
+    assert event.actor_ref is None and event.tenant_ref is None and event.record_ref is None, "no fabricated references"
+    assert event.correlation_id == "cid-cm" and event.event_version == 1
+    assert in_memory.events == [], "the mismatch must not be sent to the in-memory emitter"
+    assert router.handoffs == [] and tenant_startup.calls == 0, "no routing and no tenant port call occurs"
+
+
+def test_gateway_carrier_mismatch_durable_sink_failure_is_503_no_routing() -> None:
+    durable = _CountingEmitter(fail_kind="unavailable", fail_times=99)
+    gateway, router, in_memory, tenant_startup = _mismatch_setup(durable)
+    resp = gateway.handle(_mismatch_req())
+    assert (resp.status, resp.public_code) == (503, "unavailable"), "a durable transport/store failure must return 503 unavailable"
+    assert durable.calls == 2, "the bounded policy performs exactly one retry before failing the denial closed"
+    assert in_memory.events == [], "a failed durable denial must never fall back to the in-memory emitter"
+    assert router.handoffs == [] and tenant_startup.calls == 0, "no routing and no tenant port call occurs on the failure leg"
+
+
 if __name__ == "__main__":
     _h.run(
         [
@@ -368,5 +460,8 @@ if __name__ == "__main__":
             test_selector_valid_url_selects_the_durable_policy,
             test_selector_malformed_raises_before_any_socket,
             test_default_non_durable_composition_is_unchanged,
+            test_partition_routes_carriermismatch_to_the_durable_emitter_only,
+            test_gateway_carrier_mismatch_emits_one_durable_event_with_opaque_carrier_ref_then_403,
+            test_gateway_carrier_mismatch_durable_sink_failure_is_503_no_routing,
         ]
     )

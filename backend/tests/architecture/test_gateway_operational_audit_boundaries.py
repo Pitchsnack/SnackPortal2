@@ -21,7 +21,9 @@ persistence slice only (V1b operator retrieval is out of scope). Pins:
 * the MANUAL_ONLY disposable proof — STOP-before-connect, exact 012→013 apply order, no wildcard,
   proof-owned disposable database with guaranteed teardown, references-only, and registration as a
   justified MANUAL_ONLY exception (hosted run-set count unchanged);
-* no secret/DSN literal in any V1a source file.
+* no secret/DSN literal in any V1a source file;
+* the D-43 Post-10C.3 CarrierMismatch corrective closure — no new action string, no DDL change,
+  no migration; the five-event runtime wiring stays a strict subset of the frozen store vocabulary.
 
 Pure stdlib; standalone-runnable:
   python tests/architecture/test_gateway_operational_audit_boundaries.py
@@ -331,6 +333,86 @@ def test_no_secret_or_dsn_literal_in_v1a_sources() -> None:
             assert needle not in text, f"{path.name} must carry no secret literal ({needle!r})"
 
 
+# --- 8. D-43 Post-10C.3 CarrierMismatch corrective closure -----------------------------------------
+def _module_constants(tree: ast.Module) -> dict:
+    """Module-level ``Name = <literal>`` assignments (string constants and ``frozenset({...})``)."""
+    out: dict = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            name, value = node.targets[0].id, node.value
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                out[name] = value.value
+            elif (
+                isinstance(value, ast.Call)
+                and isinstance(value.func, ast.Name)
+                and value.func.id == "frozenset"
+                and len(value.args) == 1
+                and isinstance(value.args[0], ast.Set)
+                and all(isinstance(e, ast.Constant) for e in value.args[0].elts)
+            ):
+                out[name] = frozenset(e.value for e in value.args[0].elts if isinstance(e, ast.Constant))
+    return out
+
+
+def test_post10c_carriermismatch_durable_wiring_stays_inside_frozen_vocabulary() -> None:
+    # D-43 (Post-10C.3 corrective) closure guard: NO new action string, NO DDL change, NO
+    # migration; the five-event runtime wiring is a STRICT subset of the existing store
+    # vocabulary. Everything here is text/AST over committed sources — no runtime import.
+    frozen_seven = {
+        "CarrierMismatch",
+        "CarrierOnControlAnomaly",
+        "RouteDenied",
+        "IsolationAnomaly",
+        "workspace_memberships_read",
+        "tenant_startup_read",
+        "tenant_startup_update",
+    }
+    five_wired = {"workspace_memberships_read", "tenant_startup_read", "tenant_startup_update", "RouteDenied", "CarrierMismatch"}
+    # (1) NO DDL change: both blobs still equal the SAME reviewed pins (the corrective touched no DDL).
+    assert _git_blob_sha1(_DDL_012) == _REVIEWED_012_BLOB and _git_blob_sha1(_DDL_013) == _REVIEWED_013_BLOB
+    # (2) NO migration: 012/013 remain the only gateway-audit DDL files (no new sibling was added).
+    gateway_ddl = sorted(p.name for p in _CONTROL.glob("*gateway_operational_audit*.sql"))
+    assert gateway_ddl == ["012_gateway_operational_audit.sql", "013_gateway_operational_audit_append_only.sql"]
+    # (3) NO new action string — the DDL CHECK vocabulary is exactly the frozen seven...
+    check = re.search(r"CHECK \(action IN \(([^)]+)\)\)", _text(_DDL_012), re.S)
+    assert check is not None, "the action CHECK must exist in DDL 012"
+    assert set(re.findall(r"'([A-Za-z_]+)'", check.group(1))) == frozen_seven, "the DDL action CHECK must stay the frozen seven"
+    # ...and the runtime AuditAction enum + the CP store vocabulary carry the SAME seven values.
+    models_tree = _tree(_BACKEND / "api_gateway" / "models.py")
+    enum_cls = next(n for n in ast.walk(models_tree) if isinstance(n, ast.ClassDef) and n.name == "AuditAction")
+    enum_values: dict = {}
+    for node in enum_cls.body:
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name) and isinstance(node.value, ast.Constant):
+            enum_values[node.targets[0].id] = node.value.value
+    assert set(enum_values.values()) == frozen_seven, "the AuditAction enum must stay the frozen seven (no new action string)"
+    port_constants = None
+    for node in _tree(_CP_PORT).body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "GATEWAY_AUDIT_STORE_ACTIONS" for t in node.targets):
+            port_constants = set(ast.literal_eval(node.value))
+    assert port_constants == frozen_seven, "the CP store vocabulary must stay the frozen seven (no new action string)"
+    # (4) the gateway durable partition wires EXACTLY the five events — a strict subset of the store vocabulary.
+    durable_assign = next(
+        n
+        for n in _tree(_GW_MAIN).body
+        if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "_CLM_DURABLE_ACTIONS" for t in n.targets)
+    )
+    attr_names = {a.attr for a in ast.walk(durable_assign.value) if isinstance(a, ast.Attribute)}
+    durable_values = {enum_values[name] for name in attr_names}
+    assert durable_values == five_wired, f"the durable partition must wire EXACTLY the five CLM events: {sorted(durable_values)}"
+    assert durable_values < frozen_seven, "the five-event runtime wiring must stay a STRICT subset of the store vocabulary"
+    # (5) the CP ingest edge wires the SAME five and keeps the two anomaly classes refused.
+    ingest_consts = _module_constants(_tree(_CP_INGEST))
+    wired = {ingest_consts["_V1A_ACTION"], ingest_consts["_CLM_DENIAL_ACTION"], ingest_consts["_CARRIER_MISMATCH_ACTION"]} | set(
+        ingest_consts["_CLM_TENANT_SUCCESS_ACTIONS"]
+    )
+    assert wired == five_wired, f"the ingest wired set must be EXACTLY the five CLM events: {sorted(wired)}"
+    wired_line = next(line for line in _text(_CP_INGEST).splitlines() if line.startswith("_WIRED_ACTIONS ="))
+    for part in ("_V1A_ACTION", "_CLM_DENIAL_ACTION", "_CARRIER_MISMATCH_ACTION", "_CLM_TENANT_SUCCESS_ACTIONS"):
+        assert part in wired_line, f"_WIRED_ACTIONS must be composed of the five wired constants ({part})"
+    for unwired in ("CarrierOnControlAnomaly", "IsolationAnomaly"):
+        assert unwired not in wired, f"{unwired} must stay refused at the ingest edge (no wider audit expansion)"
+
+
 # --- non-vacuity companions ------------------------------------------------------------------------
 def test_boundary_detectors_are_non_vacuous() -> None:
     # blob pin
@@ -368,6 +450,7 @@ if __name__ == "__main__":
             test_proof_disposable_ownership_teardown_and_references_control_dir,
             test_proof_registered_manual_only_no_hosted_enrollment,
             test_no_secret_or_dsn_literal_in_v1a_sources,
+            test_post10c_carriermismatch_durable_wiring_stays_inside_frozen_vocabulary,
             test_boundary_detectors_are_non_vacuous,
         ]
     )

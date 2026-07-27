@@ -366,10 +366,11 @@ def build_tenant_startup_from_env() -> Optional[TenantStartupOperationsPort]:
     return HttpTenantStartupOperations(raw)
 
 
-# D-42 CLM Stage B: exactly the four durably homed gateway-edge audit classes — the three CLM
-# success-access events plus the existing class-3 RouteDenied denial record (IC-010 CLM audit
-# evidence set). The remaining denial/anomaly classes stay on the in-memory no-sink emitter
-# (AD-1 Option A) — durably homing them would be the wider audit expansion D-42 forbids; they
+# D-42 CLM Stage B + D-43 (Post-10C.3 corrective): exactly the five durably homed gateway-edge
+# audit classes — the three CLM success-access events plus the two durably homed denial records
+# (the existing class-3 RouteDenied record and the D-43 CarrierMismatch record; IC-010 CLM audit
+# evidence set). The remaining anomaly classes stay on the in-memory no-sink emitter
+# (AD-1 Option A) — durably homing them would be the wider audit expansion D-42/D-43 forbid; they
 # remain a later additive sibling to the SAME sink.
 _CLM_DURABLE_ACTIONS = frozenset(
     {
@@ -377,6 +378,7 @@ _CLM_DURABLE_ACTIONS = frozenset(
         AuditAction.TENANT_STARTUP_READ,
         AuditAction.TENANT_STARTUP_UPDATE,
         AuditAction.ROUTE_DENIED,
+        AuditAction.CARRIER_MISMATCH,
     }
 )
 
@@ -384,13 +386,13 @@ _CLM_DURABLE_ACTIONS = frozenset(
 class ClmDurableAuditPartition(AuditEmitterPort):
     """D-42 CLM Stage B durable-audit partition (IC-010 CLM audit evidence set).
 
-    Routes EXACTLY the four durably homed CLM action classes (``_CLM_DURABLE_ACTIONS``) to the
+    Routes EXACTLY the five durably homed CLM action classes (``_CLM_DURABLE_ACTIONS``) to the
     wrapped durable emitter (the bounded fail-closed V1a policy) and every other gateway-edge
     class to the in-memory no-sink emitter — so selecting the durable sink homes the CLM
-    evidence set and NOTHING wider (no new denial or anomaly class; the un-homed classes keep
+    evidence set and NOTHING wider (no new audit class; the un-homed anomaly classes keep
     their pre-CLM in-memory posture byte-for-byte). A durable failure re-raises unchanged and
     the gateway collapses it fail-closed (audit-before-hand-back for the success events;
-    deny-with-evidence for the RouteDenied record).
+    deny-with-evidence for the RouteDenied and D-43 CarrierMismatch denial records).
     """
 
     def __init__(self, durable: AuditEmitterPort, in_memory: AuditEmitterPort) -> None:
@@ -478,9 +480,9 @@ def build_audit_emitter_from_env() -> Optional[AuditEmitterPort]:
     # so api_gateway/main.py stays import-light while inactive.
     from .adapters.providers.durable_audit_emitter import DurableAuditEmitter, DurableAuditTransportError
 
-    # D-42 CLM Stage B: the durable transport homes EXACTLY the four CLM-homed action classes;
-    # every other gateway-edge class keeps the in-memory no-sink emitter (AD-1 Option A) — no
-    # silent widening of the durably homed set (no wider audit expansion).
+    # D-42 CLM Stage B + D-43: the durable transport homes EXACTLY the five CLM-homed action
+    # classes; every other gateway-edge class keeps the in-memory no-sink emitter (AD-1 Option A)
+    # — no silent widening of the durably homed set (no wider audit expansion).
     durable = BoundedGatewayAuditPolicy(DurableAuditEmitter(raw), transport_error=DurableAuditTransportError)
     return ClmDurableAuditPartition(durable, InMemoryAuditEmitter())
 

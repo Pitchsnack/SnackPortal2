@@ -34,10 +34,10 @@ from _gateway_doubles import (  # noqa: E402
 )
 
 from api_gateway.adapters.providers.http_gateway_edge import build_gateway_edge_server  # noqa: E402
-from api_gateway.main import build_gateway  # noqa: E402
-from api_gateway.models import AuditAction  # noqa: E402
+from api_gateway.main import ClmDurableAuditPartition, build_gateway  # noqa: E402
+from api_gateway.models import AuditAction, GatewayAuditEvent  # noqa: E402
 from api_gateway.portal import MembershipEntryDTO  # noqa: E402
-from api_gateway.ports import ImportInitiationOutcome, ImportInitiationPort, ImportInitiationRequest  # noqa: E402
+from api_gateway.ports import AuditEmitterPort, ImportInitiationOutcome, ImportInitiationPort, ImportInitiationRequest  # noqa: E402
 
 _CTL_TOKEN = "tok-ctl"
 _TENANT_TOKEN = "tok-t1"
@@ -519,22 +519,86 @@ def test_options_tenant_startup_preflight_grants_tenant_carrier_header() -> None
     assert counting.calls == 0, "a CORS preflight must never reach the core"
 
 
+class _FailingAuditEmitter(AuditEmitterPort):
+    """A durable-sink double whose every emit fails (stands in for an unavailable sink)."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def emit(self, event: GatewayAuditEvent) -> None:
+        self.calls += 1
+        raise RuntimeError("durable-audit-sink-unavailable-stub")
+
+
+@contextlib.contextmanager
+def _serve_tenant_mismatch(durable: AuditEmitterPort) -> Iterator[Tuple[str, _CountingGateway, RecordingAuditEmitter, StubRouterDispatch]]:
+    """The tenant-mismatch serving fixture (D-43): the audit emitter is the REAL CLM durable
+    partition over the injected ``durable`` half (a recording in-memory half proves the
+    mismatch never lands in-memory), and the router is exposed so no-DB-handoff is provable."""
+    authn = StubAuthenticator()
+    authn.add_token("Bearer " + _TENANT_TOKEN, principal="p1", tenant="t1", role="TENANT_AGENT")
+    router = StubRouterDispatch()
+    in_memory = RecordingAuditEmitter()
+    gateway = build_gateway(
+        authenticator=authn,
+        router=router,
+        control_read=StubControlPlaneRead(mode="success"),
+        audit=ClmDurableAuditPartition(durable, in_memory),
+    )
+    counting = _CountingGateway(gateway)
+    server, base_url = build_gateway_edge_server(counting, host="127.0.0.1", port=0)  # type: ignore[arg-type]
+    netloc = base_url.split("://", 1)[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield netloc, counting, in_memory, router
+    finally:
+        server.shutdown()
+        thread.join(timeout=10.0)
+        server.server_close()
+
+
 def test_tenant_startup_cross_tenant_carrier_replay_is_403_empty_before_routing() -> None:
-    # TA-1: a tenant-A token replayed with a tenant-B X-Tenant-Id carrier on the tenant-startup
-    # route remains a fail-closed 403 with an EMPTY body before routing: the existing
-    # CarrierMismatch audit is emitted exactly once, and no tenant read, update, handoff, or
-    # database routing occurs (no tenant Startup read/update audit is emitted; the denial is
-    # pre-dispatch inside the core).
-    with _serve(StubControlPlaneRead(mode="success")) as (netloc, counting, audit):
+    # TA-1 + D-43: a tenant-A token replayed with a tenant-B X-Tenant-Id carrier on the
+    # tenant-startup route remains a fail-closed 403 with an EMPTY body before routing: the
+    # CarrierMismatch DURABLE event is emitted exactly once (with the opaque carrier_ref),
+    # never to the in-memory half, and no tenant read, update, handoff, or database routing
+    # occurs (no tenant Startup read/update audit is emitted; the denial is pre-dispatch
+    # inside the core).
+    durable = RecordingAuditEmitter()
+    with _serve_tenant_mismatch(durable) as (netloc, counting, in_memory, router):
         headers = {**_bearer(_TENANT_TOKEN), "X-Tenant-Id": "t2"}
         status, _hdrs, body = _request(netloc, "/tenant/startups/stp_1", headers=headers, host="example.com")
     assert status == 403 and body == b"", "a cross-tenant carrier replay must be a 403 with no body"
-    carrier_events = [e for e in audit.events if e.action is AuditAction.CARRIER_MISMATCH]
-    assert len(carrier_events) == 1, "the existing CarrierMismatch audit must be emitted exactly once"
-    assert not any(e.action in (AuditAction.TENANT_STARTUP_READ, AuditAction.TENANT_STARTUP_UPDATE) for e in audit.events), (
+    carrier_events = [e for e in durable.events if e.action is AuditAction.CARRIER_MISMATCH]
+    assert len(carrier_events) == 1, "the CarrierMismatch durable event must be emitted exactly once"
+    (event,) = carrier_events
+    assert event.outcome == "rejected" and event.carrier_ref == "carrier:t2", "the opaque carrier_ref must be present"
+    assert event.carrier_ref is not None and event.carrier_ref.startswith("carrier:") and len(event.carrier_ref) <= 64
+    assert event.tenant_ref is None and event.record_ref is None, "the pre-routing denial fabricates no tenant/record reference"
+    assert not any(e.action is AuditAction.CARRIER_MISMATCH for e in in_memory.events), (
+        "the mismatch must never land on the in-memory emitter (D-43 durable homing)"
+    )
+    assert not any(e.action in (AuditAction.TENANT_STARTUP_READ, AuditAction.TENANT_STARTUP_UPDATE) for e in durable.events), (
         "a carrier-mismatch denial must never produce a tenant Startup read or update"
     )
+    assert router.handoffs == [], "no DB handoff: the denial is pre-routing (the router is never dispatched)"
     assert counting.calls == 1, "the core is invoked exactly once and denies before any routing or handoff"
+
+
+def test_tenant_startup_carrier_mismatch_sink_failure_is_503_no_routing() -> None:
+    # D-43: the SAME cross-tenant mismatch with the durable sink unavailable collapses
+    # fail-closed to 503 `unavailable` (empty body) — the denial is never handed back
+    # without its durable evidence — and still performs no routing and no tenant access.
+    durable = _FailingAuditEmitter()
+    with _serve_tenant_mismatch(durable) as (netloc, counting, in_memory, router):
+        headers = {**_bearer(_TENANT_TOKEN), "X-Tenant-Id": "t2"}
+        status, _hdrs, body = _request(netloc, "/tenant/startups/stp_1", headers=headers, host="example.com")
+    assert status == 503 and body == b"", "an unavailable durable sink must collapse the mismatch denial to 503 with no body"
+    assert durable.calls == 1, "the failed durable emit is attempted exactly once at the gateway edge (per-request dedup)"
+    assert in_memory.events == [], "a failed durable denial must never fall back to the in-memory emitter"
+    assert router.handoffs == [], "no routing occurs on the sink-failure leg"
+    assert counting.calls == 1, "the core is invoked exactly once and fails closed before any routing"
 
 
 if __name__ == "__main__":
@@ -581,5 +645,6 @@ if __name__ == "__main__":
             test_post_import_correlation_id_is_echoed,
             test_options_tenant_startup_preflight_grants_tenant_carrier_header,
             test_tenant_startup_cross_tenant_carrier_replay_is_403_empty_before_routing,
+            test_tenant_startup_carrier_mismatch_sink_failure_is_503_no_routing,
         ]
     )

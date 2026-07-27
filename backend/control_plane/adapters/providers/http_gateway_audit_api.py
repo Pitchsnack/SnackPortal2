@@ -13,13 +13,14 @@ references-only Gateway-edge keys (``record_ref`` joined under D-42; ``source_se
 Validation is STRICT and fail closed: wrong path 404 empty; non-POST 405 empty; anything malformed,
 mis-keyed, mis-typed, out-of-vocabulary, over-length, secret/token/DSN-shaped, or carrying a
 forbidden field name answers ``400 {"version": 1, "result": "INVALID"}``. The durably WIRED action
-set is exactly the IC-010 CLM audit evidence set: the ``workspace_memberships_read`` success-access
-event (IC-002 class 3b; V1a), the two D-42 CLM tenant Startup success-access events
+set is exactly the IC-010 CLM audit evidence set (five events): the ``workspace_memberships_read``
+success-access event (IC-002 class 3b; V1a), the two D-42 CLM tenant Startup success-access events
 (``tenant_startup_read`` / ``tenant_startup_update`` — actor, tenant, and record references
-required), and the EXISTING class-3 ``RouteDenied`` denial record (outcome ``rejected``; nullable
-references) — every event with ``event_version`` exactly ``1``. The remaining denial/anomaly
-classes are a separately governed later additive sibling and are refused here (no wider audit
-expansion). Accepted events answer ``200 INSERTED`` / ``200 DUPLICATE_MATCH`` (both success — idempotent
+required), the EXISTING class-3 ``RouteDenied`` denial record (outcome ``rejected``; nullable
+references), and the D-43 ``CarrierMismatch`` denial record (outcome ``rejected``; REQUIRED opaque
+``carrier_ref``; no tenant/record reference) — every event with ``event_version`` exactly ``1``.
+The remaining anomaly classes are a separately governed later additive sibling and are refused
+here (no wider audit expansion). Accepted events answer ``200 INSERTED`` / ``200 DUPLICATE_MATCH`` (both success — idempotent
 replay); a same-ID/different-payload replay answers ``409 CONFLICT``; any internal store failure
 collapses to ``503 UNAVAILABLE``. Responses are the fixed two-key envelope only: no SQL, table
 detail, Control-DB identity, hostname, topology, exception text, stack trace, credential state, or
@@ -99,20 +100,29 @@ _FORBIDDEN_EVENT_KEYS = frozenset(
 )
 
 # The durably WIRED gateway-edge action set: V1a wired the workspace_memberships_read
-# success-access event (IC-002 class 3b); the D-42 CLM Stage B slice adds the two CLM
-# success-access events plus the EXISTING class-3 RouteDenied denial record (the IC-010 CLM
-# audit evidence set — exactly these four; no wider audit expansion). The remaining
-# denial/anomaly classes are still refused here and stay a later additive sibling.
+# success-access event (IC-002 class 3b); the D-42 CLM Stage B slice added the two CLM
+# success-access events plus the EXISTING class-3 RouteDenied denial record; the D-43
+# Post-10C.3 corrective adds the CarrierMismatch denial record (the IC-010 CLM audit
+# evidence set — exactly these five; no wider audit expansion). The remaining anomaly
+# classes are still refused here and stay a later additive sibling.
 _V1A_ACTION = "workspace_memberships_read"
 _CLM_TENANT_SUCCESS_ACTIONS = frozenset({"tenant_startup_read", "tenant_startup_update"})
 _CLM_DENIAL_ACTION = "RouteDenied"
-_WIRED_ACTIONS = frozenset({_V1A_ACTION, _CLM_DENIAL_ACTION}) | _CLM_TENANT_SUCCESS_ACTIONS
+_CARRIER_MISMATCH_ACTION = "CarrierMismatch"  # D-43: the durably homed carrier-mismatch denial record
+_WIRED_ACTIONS = frozenset({_V1A_ACTION, _CLM_DENIAL_ACTION, _CARRIER_MISMATCH_ACTION}) | _CLM_TENANT_SUCCESS_ACTIONS
 _SUCCESS_OUTCOME = "success"
 _REJECTED_OUTCOME = "rejected"
 
 # Secret/token/DSN-shaped value markers: any string value containing one is rejected.
 _SECRET_SHAPES = ("eyJ", "-----BEGIN", "AKIA", "ghp_", "xox", "://")
 _MAX_REF_LENGTH = 512  # uniform reference-field cap
+
+# D-43: the opaque carrier-reference shape the gateway emits (api_gateway/carrier.py
+# opaque_carrier_ref): "carrier:" + the carrier-asserted value, hard-capped at 64 characters.
+# The ingest edge accepts ONLY that rendering — a bearer token, signed claim, or any other
+# raw value is rejected (the secret-shape markers above apply in addition).
+_CARRIER_REF_PREFIX = "carrier:"
+_MAX_CARRIER_REF_LENGTH = 64
 
 
 class _IngestValidationError(Exception):
@@ -183,6 +193,25 @@ def _parse_record(raw: bytes) -> GatewayAuditRecord:
         actor_ref = _optional_string(event, "actor_ref")
         subject_ref = _optional_string(event, "subject_ref")
         record_ref = _optional_string(event, "record_ref")
+    elif action == _CARRIER_MISMATCH_ACTION:
+        # The D-43 durably homed carrier-mismatch denial record: outcome is exactly
+        # "rejected"; the opaque carrier_ref is REQUIRED and must carry the gateway's
+        # length-bounded "carrier:" rendering (never a bearer token, never a raw signed
+        # claim); the tenant and record references are absent (the denial is pre-context
+        # and pre-routing); actor/subject stay optional under the existing envelope.
+        if outcome != _REJECTED_OUTCOME:
+            raise _IngestValidationError("invalid action/outcome combination")
+        actor_ref = _optional_string(event, "actor_ref")
+        subject_ref = _optional_string(event, "subject_ref")
+        record_ref = _optional_string(event, "record_ref")
+        if record_ref is not None:
+            raise _IngestValidationError("the carrier-mismatch denial carries no record reference")
+        if _optional_string(event, "tenant_ref") is not None:
+            raise _IngestValidationError("the carrier-mismatch denial carries no tenant reference")
+        carrier = _required_string(event, "carrier_ref")
+        opaque_shaped = carrier.startswith(_CARRIER_REF_PREFIX) and len(carrier) > len(_CARRIER_REF_PREFIX)
+        if not opaque_shaped or len(carrier) > _MAX_CARRIER_REF_LENGTH:
+            raise _IngestValidationError("carrier_ref must be the opaque length-bounded carrier rendering")
     elif action in _CLM_TENANT_SUCCESS_ACTIONS:
         # The D-42 CLM tenant Startup success-access events: the IC-010 CLM minimum shape
         # requires the actor principal, the tenant reference, and the record reference;
