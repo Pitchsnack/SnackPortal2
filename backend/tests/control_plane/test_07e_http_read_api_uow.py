@@ -114,20 +114,22 @@ def test_per_request_uow_release_before_write_on_yielded_store() -> None:
             return _cm()
 
     cp.store_factory = _ProbeFactory()  # type: ignore[assignment]
-    real_dumps = http_read_api.json.dumps
+    # The edge serializes the success body through the shared `json_response` helper, so that
+    # is the seam the serialization probe wraps (the pre-migration equivalent was json.dumps).
+    real_json_response = http_read_api.json_response
 
-    def _tracing_dumps(*args, **kwargs):  # type: ignore[no-untyped-def]
+    def _tracing_json_response(*args, **kwargs):  # type: ignore[no-untyped-def]
         events.append("serialize")
-        return real_dumps(*args, **kwargs)
+        return real_json_response(*args, **kwargs)
 
-    http_read_api.json.dumps = _tracing_dumps  # type: ignore[assignment]
+    http_read_api.json_response = _tracing_json_response  # type: ignore[assignment]
     try:
         with _serving(cp) as base:
             if base is None:
                 return
             status, body = _get(base, "/tenants/t1/state")
     finally:
-        http_read_api.json.dumps = real_dumps  # type: ignore[assignment]
+        http_read_api.json_response = real_json_response  # type: ignore[assignment]
     assert status == 200 and json.loads(body)["ready"] is True
     assert events == ["acquire", "read", "release", "serialize"], (
         f"the UoW must be acquired per request, read on the YIELDED store, and released BEFORE the response is serialized/written: {events}"

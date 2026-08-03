@@ -822,7 +822,12 @@ def test_v3_no_secret_shaped_literals_nonvacuity() -> None:
 
 def test_v3_atr_2b1_stays_separate() -> None:
     ingest = _text(_CP_INGEST)
-    assert "do_GET = do_PUT = do_DELETE = do_PATCH = do_HEAD = do_OPTIONS = _method_not_allowed" in ingest, (
+    # The 2B non-POST refusal shape, expressed against the FastAPI edge: the ingest adapter
+    # registers EXACTLY one route and it is a POST, so every other method is still refused 405
+    # with an EMPTY body. NOTE: the ATR-2B-1 substance (no default HTML error body, no Server:
+    # header) is now provided platform-wide by the shared ASGI runtime, NOT by an un-taken
+    # per-adapter change — this adapter still carries no bespoke header-suppression override.
+    assert _scan.registered_route_methods(ast.parse(ingest)) == ["post"], (
         "the 2B non-POST refusal shape must stay unchanged (ATR-2B-1 not silently implemented or relabeled)"
     )
     for token in ("server_version", "sys_version", "version_string"):

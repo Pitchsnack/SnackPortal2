@@ -1,12 +1,13 @@
-"""Internal Gateway->Database-Router dispatch transport server (stdlib http.server) — D-15-T1b.
+"""Internal Gateway->Database-Router dispatch transport server (FastAPI/uvicorn) — D-15-T1b.
 
 The router side of the D-15-T1a dispatch wire contract
 (docs/d15/D15-DISPATCH-SPEC-01). Exposes ONE internal-only surface,
 ``POST /internal/dispatch/route``, which MUST remain internal-only and MUST NEVER be
 portal-reachable or registered as a public/frontend ingress (IC-010 §R Internal-Surface
-Protection; §M Service Contract). It binds ``127.0.0.1`` by default and runs on a plain
-single-threaded ``HTTPServer`` (no threading/asyncio/concurrency machinery here; a
-threaded server is 07E-concurrency scope, AT-D15T1-10).
+Protection; §M Service Contract). It binds ``127.0.0.1`` by default and serves through the
+shared uvicorn runtime (``shared.adapters.providers.asgi_runtime``); the FastAPI app declares
+exactly the one route and the OpenAPI/docs surface is disabled, so the closed single-surface
+posture is unchanged.
 
 Wire contract. The request envelope is exactly ``{v, context, category}`` where
 ``context`` is exactly the five ``RequestContext`` fields; ``v`` MUST be ``1``.
@@ -22,19 +23,24 @@ reference, body, or business payload crosses the wire.
 Fail closed (IC-010 §L — no error path may downgrade to a less-isolated outcome or expose
 internal detail): a malformed / wrong-shape / unknown-version / unknown-category request,
 and any unhandled server exception, produce a fixed ``503`` with an EMPTY body; a non-POST
-method is refused ``405`` empty; a wrong path is refused ``404`` empty; no stdlib
-``send_error`` HTML body is ever emitted. This is a routing transport adapter only — it
+method is refused ``405`` empty; a wrong path is refused ``404`` empty; a query-bearing
+request target is refused ``404`` empty (the pre-migration edge compared the raw request
+target, so a stray ``?query`` never matched the path — restored explicitly here); no
+framework error body is ever emitted. This is a routing transport adapter only — it
 performs NO business work.
 """
 
 from __future__ import annotations
 
 import json
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Optional, Tuple, cast
+
+from fastapi import FastAPI, Request, Response
 
 from database_router.models import RoutingDenied
 from database_router.router import DatabaseRouter
+from shared.adapters.providers.asgi_runtime import AsgiEdgeServer, build_asgi_server
+from shared.adapters.providers.fastapi_edge import empty_response, has_query_string, json_response, new_edge_app
 from shared.context import RequestContext
 
 _DISPATCH_PATH = "/internal/dispatch/route"
@@ -103,59 +109,80 @@ def _decide(router: DatabaseRouter, raw: bytes) -> Tuple[int, str, bool]:
     return (200, "ok", True)
 
 
-def _make_handler(router: DatabaseRouter) -> "type[BaseHTTPRequestHandler]":
-    class _DispatchHandler(BaseHTTPRequestHandler):
-        def do_POST(self) -> None:  # noqa: N802 (http.server API)
-            if self.path != _DISPATCH_PATH:
-                self._respond_empty(404)  # wrong path: refused, no route call
-                return
-            try:
-                length = int(self.headers.get("Content-Length") or 0)
-                raw = self.rfile.read(length) if length > 0 else b""
-                status, public_code, dispatched = _decide(router, raw)
-            except Exception:
-                # Invalid envelope OR any unhandled server exception -> fixed 503 empty body
-                # (no stack trace, topology, database detail, or credential disclosure).
-                self._respond_empty(503)
-                return
-            self._respond_json(status, public_code, dispatched)
+def _make_app(router: DatabaseRouter) -> FastAPI:
+    """Build the FastAPI app exposing EXACTLY the one internal dispatch surface.
 
-        def _method_not_allowed(self) -> None:
-            # POST-only edge: every non-POST method is refused 405 with an EMPTY body.
-            self._respond_empty(405)
+    The app declares one route and one method; every other path is ``404`` and every other
+    method ``405``, both with an EMPTY body, decided by the app's fail-closed handlers before
+    the router is ever reached (``new_edge_app``). Docs/OpenAPI are disabled.
+    """
+    app = new_edge_app(invalid_status=503, unavailable_status=503)
 
-        # Refuse (not serve) other methods without ever reaching the stdlib HTML error path.
-        do_GET = do_PUT = do_DELETE = do_PATCH = do_HEAD = do_OPTIONS = _method_not_allowed
+    @app.post(_DISPATCH_PATH)
+    async def route(request: Request) -> Response:
+        if has_query_string(request):
+            return empty_response(404)  # query-bearing target: refused, no route call
+        try:
+            raw = await request.body()
+            status, public_code, dispatched = _decide(router, raw)
+        except Exception:
+            # Invalid envelope OR any unhandled server exception -> fixed 503 empty body
+            # (no stack trace, topology, database detail, or credential disclosure).
+            return empty_response(503)
+        # Mirror envelope.status on the HTTP status line.
+        return json_response(status, {"status": status, "public_code": public_code, "dispatched": dispatched})
 
-        def _respond_empty(self, status: int) -> None:
-            self.send_response(status)
-            self.send_header("Content-Length", "0")
-            self.end_headers()
-
-        def _respond_json(self, status: int, public_code: str, dispatched: bool) -> None:
-            payload = json.dumps({"status": status, "public_code": public_code, "dispatched": dispatched}).encode("utf-8")
-            self.send_response(status)  # mirror envelope.status on the HTTP status line
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
-
-        def log_message(self, *args: object) -> None:  # silence default stderr logging
-            return
-
-    return _DispatchHandler
+    return app
 
 
-def build_dispatch_server(router: DatabaseRouter, host: str = "127.0.0.1", port: int = 0) -> Tuple[HTTPServer, str]:
+def create_app_from_env() -> FastAPI:
+    """The CANONICAL native ASGI application factory for the internal dispatch edge.
+
+    Run directly by the operator through the ASGI runtime's own command line::
+
+        uvicorn database_router.adapters.providers.http_dispatch_api:create_app_from_env --factory ...
+
+    Takes NO arguments: the listening host and port belong to the runtime process, not to the
+    application, so this factory binds no socket and owns no address. It returns the composed
+    ``FastAPI`` app and nothing else.
+
+    ONE composition path (no second composition root): the ``DatabaseRouter`` is built by
+    ``database_router.main.build_router_from_env`` — the SAME single env-parsing/adapter-wiring
+    function the compatibility ``build_dispatch_server_from_env`` seam uses — and the app is built
+    by the SAME ``_make_app``. Routing-read transport, the reference-only tenant secret store, the
+    connection factory, and the routing-audit selection therefore have exactly one source of truth.
+
+    Fail closed (IC-010 §L): the operator invoked this process deliberately, so an INACTIVE
+    composition is a misconfiguration, not a no-op. ``SP2_DBR_ROUTING_READ_BASE_URL`` unset/empty →
+    ``RuntimeError``; a malformed value → ``ValueError`` (inherited). There is deliberately NO
+    fallback to an in-memory or test double — a standing router must never silently stop resolving
+    registry-authoritative routing against the real control plane.
+
+    Import-time inertness is preserved: nothing here runs at module import, and the driver-bearing
+    provider modules are imported lazily inside the composition function, never at module load.
+    """
+    # Function-local absolute import (the established composition-root idiom): the adapter module
+    # stays import-light and cycle-free, and importing it performs no composition.
+    from database_router.main import build_router_from_env
+
+    router = build_router_from_env()
+    if router is None:
+        raise RuntimeError(
+            "create_app_from_env: dispatch composition is INACTIVE — "
+            "SP2_DBR_ROUTING_READ_BASE_URL is unset/empty (fail closed: no application composed)"
+        )
+    return _make_app(router)
+
+
+def build_dispatch_server(router: DatabaseRouter, host: str = "127.0.0.1", port: int = 0) -> Tuple[AsgiEdgeServer, str]:
     """Build the internal dispatch HTTP server bound to a composed ``DatabaseRouter``.
 
     ``port=0`` binds an ephemeral port. This factory constructs the server only — it does
     NOT start serving (the blocking runnable entrypoint is ``serve_dispatch_api``; tests may
-    also host the single-threaded server directly). Returns ``(server, base_url)``.
+    also host the server directly via ``serve_forever``/``shutdown``/``server_close``).
+    Returns ``(server, base_url)``.
     """
-    server = HTTPServer((host, port), _make_handler(router))
-    bound_host, bound_port = cast(str, server.server_address[0]), server.server_address[1]
-    return server, f"http://{bound_host}:{bound_port}"
+    return build_asgi_server(_make_app(router), host, port)
 
 
 def serve_dispatch_api() -> None:
@@ -167,10 +194,11 @@ def serve_dispatch_api() -> None:
     * inactive composition (``SP2_DBR_ROUTING_READ_BASE_URL`` unset/empty) → deterministic
       ``RuntimeError`` — fail closed; no socket was bound and nothing is served;
     * malformed composition config → ``ValueError`` from the seam (inherited, fail closed);
-    * active → ``server.serve_forever()`` exactly once on a single-threaded plain ``HTTPServer``
-      (AT-D15T1-10: one server per operating-system process; no thread, daemon, subprocess,
-      supervisor, or retry loop here), and ``server.server_close()`` ALWAYS runs in ``finally`` —
-      ``KeyboardInterrupt`` and any serve-time exception propagate to the caller unswallowed.
+    * active → ``server.serve_forever()`` exactly once on the calling thread (AT-D15T1-10: one
+      server per operating-system process; no thread, daemon, subprocess, supervisor, or retry
+      loop is created HERE — request concurrency is the ASGI runtime's own event loop), and
+      ``server.server_close()`` ALWAYS runs in ``finally`` — ``KeyboardInterrupt`` and any
+      serve-time exception propagate to the caller unswallowed.
 
     Ops: docs/runbooks/b5_service_startup_order.md (the control-plane read edge starts first; its
     URL feeds ``SP2_DBR_ROUTING_READ_BASE_URL``; this service's URL then feeds
@@ -189,7 +217,7 @@ def serve_dispatch_api() -> None:
             "SP2_DBR_ROUTING_READ_BASE_URL is unset/empty (fail closed: no socket bound, nothing served)"
         )
     server_obj, _base_url = composed
-    server = cast(HTTPServer, server_obj)
+    server = cast(AsgiEdgeServer, server_obj)
     try:
         server.serve_forever()
     finally:

@@ -18,15 +18,20 @@ ever reached.
 
 ## 1. What the edge is (and is not)
 
-- **Is:** a thin, single-threaded stdlib `http.server` edge that converts an HTTP request into the
+- **Is:** a thin FastAPI edge that converts an HTTP request into the
   existing framework-neutral `InboundRequest`, calls `Gateway.handle` exactly once (through the one
   shared `_invoke_core` site) for a valid `/memberships` or `/import/<source_ref>` request, and
   serializes a success DTO with the core-owned `serialize_portal_dto`.
 - **Is not:** an authenticator, authorizer, route classifier, tenant selector, database router, DTO
   composer, or audit sink. All of those remain inside the composed Gateway core. The edge owns
   transport only: the route/method allowlist, request bounds, correlation accept/mint/echo, and CORS.
-- **No web framework, no new dependency, no threading.** Plain `HTTPServer` +
-  `BaseHTTPRequestHandler`, one server per OS process (AT-D15T1-10 single-threaded HARD-GATE).
+- **One server per OS process.** The edge declares routes only; the concrete ASGI server (uvicorn)
+  is constructed in exactly one place — `shared/adapters/providers/asgi_runtime.py` — and
+  `serve_gateway_edge` runs its request loop once, on the calling thread. The edge starts no thread,
+  daemon, subprocess, or supervisor of its own; request concurrency belongs to the ASGI event loop.
+- **Closed surface.** OpenAPI/docs (`/openapi.json`, `/docs`, `/redoc`) are disabled and
+  slash-redirects are off, so the served surface is exactly the allowlisted routes and nothing else.
+  Request logging is disabled and the `server` response header is suppressed.
 
 ## 2. Environment composition (gate-first)
 

@@ -595,6 +595,19 @@ def _snapshot_state() -> Dict[str, Any]:
 # ------------------------------------------------------------------------------------------------
 # service hosting (loopback ephemeral; test-owned daemon threads; bounded readiness/shutdown)
 # ------------------------------------------------------------------------------------------------
+def _edge_endpoint(server: Any, method: str) -> Any:
+    """The single registered route endpoint of a served edge app, for ``method``.
+
+    The FastAPI edges close over their composed collaborator in the route function (as the
+    stdlib handlers previously did in ``do_POST``), so this is the migrated lookup that
+    ``_closure_value`` reads. READ-ONLY: no substitution, no mutation.
+    """
+    for route in getattr(server.app, "routes", []):
+        if method in (getattr(route, "methods", None) or set()):
+            return route.endpoint
+    raise OpsConfigError(f"cannot locate a {method} route on the served edge — refused")
+
+
 def _host(server: Any, base_url: str) -> Any:
     """Host ONE single-threaded server on a test-owned daemon thread (the Smoke A/B precedent;
     SMOKE-C-SPEC-01 §3 in-suite branch — no threading inside any server)."""
@@ -684,7 +697,7 @@ def _closure_value(func: Any, name: str) -> Any:
     cells = getattr(func, "__closure__", None)
     if code is None or cells is None:
         raise OpsConfigError(f"cannot recover {name!r}: handler carries no closure — refused")
-    mapping = dict(zip(code.co_freevars, cells))
+    mapping = dict(zip(code.co_freevars, cells, strict=False))
     if name not in mapping:
         raise OpsConfigError(f"cannot recover {name!r}: not a free variable of the pinned handler — refused")
     return mapping[name].cell_contents
@@ -949,7 +962,7 @@ def cmd_run(_args: argparse.Namespace) -> int:
         auth_server, auth_url = composed_auth
         _host(auth_server, auth_url)
         _await_ready("auth-router authenticate edge", lambda: _http_status(f"{auth_url}/internal/auth/probe", post=True) == 404)
-        authenticator = _closure_value(auth_server.RequestHandlerClass.do_POST, "authenticator")
+        authenticator = _closure_value(_edge_endpoint(auth_server, "POST"), "authenticator")
         if type(authenticator).__name__ != "Authenticator":
             raise OpsConfigError("recovered auth object is not the composed production Authenticator — refused")
         auth_audit = authenticator._audit  # the composed in-memory auth audit sink (read-only witness)
@@ -964,7 +977,7 @@ def cmd_run(_args: argparse.Namespace) -> int:
         dispatch_server, dispatch_url = composed_dispatch
         _host(dispatch_server, dispatch_url)
         _await_ready("database-router dispatch edge", lambda: _http_status(f"{dispatch_url}/internal/dispatch/probe", post=True) == 404)
-        router = _closure_value(dispatch_server.RequestHandlerClass.do_POST, "router")
+        router = _closure_value(_edge_endpoint(dispatch_server, "POST"), "router")
         if type(router).__name__ != "DatabaseRouter":
             raise OpsConfigError("recovered dispatch object is not the composed production DatabaseRouter — refused")
         if type(router._factory).__name__ != "PsycopgConnectionFactory":

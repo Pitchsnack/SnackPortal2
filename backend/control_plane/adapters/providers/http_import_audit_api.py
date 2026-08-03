@@ -1,9 +1,10 @@
-"""Internal Control-Plane Import operational-audit ingest edge (stdlib http.server) — W1a durable Import Audit.
+"""Internal Control-Plane Import operational-audit ingest edge (FastAPI/uvicorn) — W1a durable Import Audit.
 
 Exposes ONE internal-only surface, ``POST /internal/import-audit/events``, which MUST remain internal-only
 and MUST NEVER be portal-reachable or registered as a public / frontend ingress. It binds ``127.0.0.1`` by
-default and runs on a plain single-threaded stdlib HTTP server (no threading / asyncio / concurrency
-machinery here — the AT-D15T1-10 precedent).
+default and serves through the shared uvicorn runtime (``shared.adapters.providers.asgi_runtime``); the
+FastAPI app declares exactly the one route and the OpenAPI/docs surface is disabled, so the closed
+single-surface posture is unchanged.
 
 Wire contract (W1a). The request envelope is exactly ``{version, event}`` with ``version`` exactly ``1`` and
 ``event`` exactly the nine approved references-only Import-event keys (``source_service`` / ``id`` /
@@ -21,9 +22,11 @@ routing-edge combination-rule precedent):
 
 Accepted events answer ``200 INSERTED`` / ``200 DUPLICATE_MATCH`` (both success — idempotent replay); a
 same-ID/different-payload replay answers ``409 CONFLICT``; any internal store failure collapses to
-``503 UNAVAILABLE``. Responses are the fixed two-key envelope only: no SQL, table detail, Control-DB identity,
-hostname, topology, exception text, stack trace, credential state, or stored event content ever crosses this
-edge, and no stdlib HTML error body is ever emitted.
+``503 UNAVAILABLE``. A query-bearing request target is refused ``404`` empty (the pre-migration edge compared
+the raw request target, so a stray ``?query`` never matched the path — restored explicitly here). Responses
+are the fixed two-key envelope only: no SQL, table detail, Control-DB identity, hostname, topology, exception
+text, stack trace, credential state, or stored event content ever crosses this edge, and no framework error
+body is ever emitted.
 
 Uncomposed until env-selected: ``build_import_audit_server`` CONSTRUCTS the server bound to an
 ``ImportAuditStorePort`` and returns it with its base URL — it does not start the request loop, and this
@@ -34,8 +37,9 @@ main.py``). Tests host it on a loopback port.
 from __future__ import annotations
 
 import json
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Any, Dict, Tuple, cast
+from typing import Any, Dict, Tuple
+
+from fastapi import FastAPI, Request, Response
 
 from control_plane.import_audit import (
     IMPORT_AUDIT_SOURCE_SERVICE,
@@ -44,6 +48,8 @@ from control_plane.import_audit import (
     ImportAuditRecord,
     ImportAuditStorePort,
 )
+from shared.adapters.providers.asgi_runtime import AsgiEdgeServer, build_asgi_server
+from shared.adapters.providers.fastapi_edge import empty_response, has_query_string, json_response, new_edge_app
 
 _INGEST_PATH = "/internal/import-audit/events"
 _ENVELOPE_VERSION = 1
@@ -197,68 +203,86 @@ def _check_action_outcome(action: str, outcome: str) -> None:
         raise _IngestValidationError("invalid action/outcome combination")
 
 
-def _make_handler(store: ImportAuditStorePort) -> "type[BaseHTTPRequestHandler]":
-    class _IngestHandler(BaseHTTPRequestHandler):
-        def do_POST(self) -> None:  # noqa: N802 (http.server API)
-            if self.path != _INGEST_PATH:
-                self._respond_empty(404)  # wrong path: refused, no store call
-                return
-            try:
-                length = int(self.headers.get("Content-Length") or 0)
-                raw = self.rfile.read(length) if length > 0 else b""
-                record = _parse_record(raw)
-            except Exception:
-                # Malformed/invalid envelope -> fixed 400 INVALID (no detail, no echo).
-                self._respond_result(400, "INVALID")
-                return
-            try:
-                result = store.append_import_audit(record)
-            except ImportAuditConflictError:
-                self._respond_result(409, "CONFLICT")
-                return
-            except ImportAuditInvalidError:
-                self._respond_result(400, "INVALID")
-                return
-            except Exception:
-                # Internal store failure collapses to a bounded response: no exception text, SQL,
-                # topology, or credential state may leak through this edge.
-                self._respond_result(503, "UNAVAILABLE")
-                return
-            self._respond_result(200, result.value)
-
-        def _method_not_allowed(self) -> None:
-            # POST-only edge: every non-POST method is refused 405 with an EMPTY body.
-            self._respond_empty(405)
-
-        # Refuse (not handle) other methods without ever reaching the stdlib HTML error path.
-        do_GET = do_PUT = do_DELETE = do_PATCH = do_HEAD = do_OPTIONS = _method_not_allowed
-
-        def _respond_empty(self, status: int) -> None:
-            self.send_response(status)
-            self.send_header("Content-Length", "0")
-            self.end_headers()
-
-        def _respond_result(self, status: int, result: str) -> None:
-            payload = json.dumps({"version": _ENVELOPE_VERSION, "result": result}).encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
-
-        def log_message(self, *args: object) -> None:  # silence default stderr logging
-            return
-
-    return _IngestHandler
+def _result_response(status: int, result: str) -> Response:
+    """The fixed two-key result envelope — the ONLY response shape this edge ever emits."""
+    return json_response(status, {"version": _ENVELOPE_VERSION, "result": result})
 
 
-def build_import_audit_server(store: ImportAuditStorePort, host: str = "127.0.0.1", port: int = 0) -> Tuple[HTTPServer, str]:
+def _make_app(store: ImportAuditStorePort) -> FastAPI:
+    """Build the FastAPI app exposing EXACTLY the one internal Import-audit ingest surface.
+
+    The app declares one route and one method; every other path is ``404`` and every other method
+    ``405``, both with an EMPTY body, decided by the app's fail-closed handlers before the store is ever
+    reached (``new_edge_app``). Docs/OpenAPI are disabled.
+    """
+    app = new_edge_app(invalid_status=400, unavailable_status=503)
+
+    @app.post(_INGEST_PATH)
+    async def ingest(request: Request) -> Response:
+        if has_query_string(request):
+            return empty_response(404)  # query-bearing target: refused, no store call
+        try:
+            raw = await request.body()
+            record = _parse_record(raw)
+        except Exception:
+            # Malformed/invalid envelope -> fixed 400 INVALID (no detail, no echo).
+            return _result_response(400, "INVALID")
+        try:
+            result = store.append_import_audit(record)
+        except ImportAuditConflictError:
+            return _result_response(409, "CONFLICT")
+        except ImportAuditInvalidError:
+            return _result_response(400, "INVALID")
+        except Exception:
+            # Internal store failure collapses to a bounded response: no exception text, SQL,
+            # topology, or credential state may leak through this edge.
+            return _result_response(503, "UNAVAILABLE")
+        return _result_response(200, result.value)
+
+    return app
+
+
+def create_app_from_env() -> FastAPI:
+    """The CANONICAL native ASGI application factory for the Import-audit ingest edge.
+
+    Run directly by the operator through the ASGI runtime's own command line::
+
+        uvicorn control_plane.adapters.providers.http_import_audit_api:create_app_from_env --factory ...
+
+    This is what gives the edge a standalone operator startup path for the first time: previously
+    it could only be composed as an object by the environment seam, never started on its own.
+
+    Takes NO arguments: the listening host and port belong to the runtime process, not to the
+    application, so this factory binds no socket and owns no address. It returns the composed
+    ``FastAPI`` app and nothing else.
+
+    ONE composition path (no second composition root): the durable store is built by
+    ``control_plane.main.build_import_audit_store_from_env`` — the SAME single
+    env-parsing/secret-binding function the compatibility ``build_import_audit_server_from_env``
+    seam uses — and the app is built by the SAME ``_make_app``.
+
+    Audit semantics are UNCHANGED by this factory. Residency (the Control Plane remains the sole
+    Control-DB writer), the payload rules, the ingest contract, the durability semantics, and the
+    fail-closed posture are exactly those of the store and ``_make_app`` it composes; this adds an
+    operator startup path only.
+
+    Fail closed (IC-010 §L): a blank effective ``SP2_CP_CONTROL_STORE_DSN_REF`` → ``ValueError``
+    at composition. There is deliberately NO fallback to an in-memory sink — a durable audit edge
+    must never silently become non-durable. The store is lazy-connect, so an unresolvable
+    reference fails closed at first store use, not at import.
+    """
+    # Function-local absolute import (the established composition-root idiom): the adapter module
+    # stays import-light and cycle-free, and importing it performs no composition.
+    from control_plane.main import build_import_audit_store_from_env
+
+    return _make_app(build_import_audit_store_from_env())
+
+
+def build_import_audit_server(store: ImportAuditStorePort, host: str = "127.0.0.1", port: int = 0) -> Tuple[AsgiEdgeServer, str]:
     """Construct the internal Import operational-audit ingest server bound to an ``ImportAuditStorePort``.
 
-    ``port=0`` binds an ephemeral port. This factory CONSTRUCTS the plain single-threaded server only —
-    starting and stopping the request loop is the caller's responsibility (tests host it on loopback;
-    production composition is the ``control_plane/main.py`` seam). Returns ``(server, base_url)``.
+    ``port=0`` binds an ephemeral port. This factory CONSTRUCTS the server only — starting and stopping
+    the request loop is the caller's responsibility (tests host it on loopback; production composition
+    is the ``control_plane/main.py`` seam). Returns ``(server, base_url)``.
     """
-    server = HTTPServer((host, port), _make_handler(store))
-    bound_host, bound_port = cast(str, server.server_address[0]), server.server_address[1]
-    return server, f"http://{bound_host}:{bound_port}"
+    return build_asgi_server(_make_app(store), host, port)

@@ -216,8 +216,8 @@ def build_authenticate_server_from_env() -> Optional[Tuple[object, str]]:
     adapter, returning ``(server, base_url)``.
 
     * ``SP2_AR_AUTHENTICATE_HOST`` — optional; unset/empty/whitespace → ``127.0.0.1`` (internal loopback,
-      IC-010 §R); otherwise passed through (an unbindable host surfaces as ``OSError`` from ``HTTPServer``
-      construction — deployment scope; no deep host validation here).
+      IC-010 §R); otherwise passed through (an unbindable host surfaces as ``OSError`` from the socket
+      bind — deployment scope; no deep host validation here).
     * ``SP2_AR_AUTHENTICATE_PORT`` — optional; unset/empty → ``0`` (ephemeral); otherwise an integer in
       ``[0, 65535]``; non-integer / negative / out-of-range → ``ValueError`` raised BEFORE
       ``build_authenticate_server`` so a bad port never binds a socket.
@@ -225,8 +225,8 @@ def build_authenticate_server_from_env() -> Optional[Tuple[object, str]]:
     Side-effect boundary (LOAD-BEARING): this seam is DB-inert, network-read-inert, token-verify-inert, and
     serve-inert — it opens no database, performs no network client read, verifies no token, and starts no
     serve loop, thread, daemon, or service. But it is NOT socket-inert: when active, ``build_authenticate_server``
-    constructs an ``HTTPServer`` which binds + activates a local listening socket at construction (default
-    ``port=0`` → ephemeral). Callers/tests own the socket lifecycle and must close it.
+    binds + activates a local listening socket at construction (default ``port=0`` → ephemeral). Callers/tests
+    own the socket lifecycle and must close it.
 
     No overclaim: it composes an authenticate server *object* from config; it does NOT serve requests, run a
     production service, open a physical database, complete the Physical Multi-Database MVP, or make the
@@ -237,8 +237,8 @@ def build_authenticate_server_from_env() -> Optional[Tuple[object, str]]:
         return None
     host = (os.environ.get(SP2_AR_AUTHENTICATE_HOST) or "").strip() or "127.0.0.1"
     port = _authenticate_port_from_env()
-    # Lazy relative import keeps auth_router/main.py import-light (http.server is pulled in only when
-    # the seam is active); build_authenticate_server binds the ephemeral socket.
+    # Lazy relative import keeps auth_router/main.py import-light (the FastAPI/ASGI serving stack is
+    # pulled in only when the seam is active); build_authenticate_server binds the ephemeral socket.
     from .adapters.providers.http_authenticate_api import build_authenticate_server
 
     return build_authenticate_server(authenticator, host=host, port=port)

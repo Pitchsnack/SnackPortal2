@@ -27,12 +27,18 @@ This project follows a **contract-first design approach**: interface contracts a
 
 The `contracts/` directory holds the governing specifications. All implementation must conform to these; if implementation needs to diverge, **update the contract first**, then the code.
 
-- **IC-001** — Global Startup Contract
-- **IC-002** — Tenant Startup Contract
-- **IC-003** — Import Contract
-- **IC-004** — Lineage Contract
-- **IC-005** — Authentication Routing Contract
-- **IC-006** — AI Gateway Contract
+- **IC-001** — Global Startup Contract *(Final)*
+- **IC-002** — Tenant Startup Contract *(Final)*
+- **IC-003** — Import Contract *(Final)*
+- **IC-004** — Lineage Contract *(Final)*
+- **IC-005** — Authentication Routing Contract *(Final)*
+- **IC-006** — AI Gateway Contract *(Draft — post-MVP, D-02)*
+- **IC-007** — Deal Collaboration & Cross-Tenant Sharing Contract *(Draft / Proposed, IC-007-DRAFT-1 — opened by D-38; no positive sharing capability)*
+- **IC-008** — Ownership Contract *(Final)*
+- **IC-009** — Portal Contracts *(Final, IC-009-R1)*
+- **IC-010** — API Gateway Contract *(Final)*
+- **IC-011** — Hosted Rollback Proof Contract *(Draft / Proposed, IC-011-DRAFT-1 — opened by D-40)*
+- **IC-012** — Service Composition & Deployment Root Contract *(Draft / Proposed, IC-012-DRAFT-1 — opened by D-44; governs the `backend/deployment/` cross-service composition root)*
 
 ## Architecture
 

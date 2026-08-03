@@ -1,14 +1,15 @@
-"""Internal Gateway->Auth-Router authentication transport server (stdlib http.server) — 07E-3b.
+"""Internal Gateway->Auth-Router authentication transport server (FastAPI/uvicorn) — 07E-3b.
 
 The auth-router side of the 07E-3a auth wire contract
 (docs/auth/AUTH-TRANSPORT-SPEC-01). Exposes ONE internal-only surface,
 ``POST /internal/auth/authenticate``, which MUST remain internal-only and MUST NEVER be
 portal-reachable, public, or frontend/Lovable-facing (IC-010 §R Internal-Surface
-Protection; §M Service Contract; Section B). It binds ``127.0.0.1`` by default and runs on
-a plain single-threaded ``HTTPServer`` (no threading/asyncio/concurrency machinery here;
-concurrency hardening is 07E-3c scope). It imports NO ``api_gateway`` and emits NO Database
-Router ``RequestContext`` — the gateway builds ``RequestContext`` exclusively from this
-response (Section F).
+Protection; §M Service Contract; Section B). It binds ``127.0.0.1`` by default and serves
+through the shared uvicorn runtime (``shared.adapters.providers.asgi_runtime``); the
+FastAPI app declares exactly the one route and the OpenAPI/docs surface is disabled, so the
+closed single-surface posture is unchanged. It imports NO ``api_gateway`` and emits NO
+Database Router ``RequestContext`` — the gateway builds ``RequestContext`` exclusively from
+this response (Section F).
 
 Wire contract. The request envelope is exactly ``{v, authorization, recognized_carriers,
 correlation_id}`` where ``v`` MUST be ``1`` (Section C). It bridges the envelope to the
@@ -34,19 +35,24 @@ existing public wire semantics by its status (no new ``public_code``): 401 ->
 
 Fail closed (IC-010 §L): a malformed / wrong-shape / unknown-version request envelope and any
 unhandled server exception produce a fixed ``503`` with an EMPTY body; a non-POST method is
-refused ``405`` empty; a wrong path is refused ``404`` empty; no stdlib ``send_error`` HTML
-body is ever emitted; the raw credential never appears in a log, error, or response. This is an
+refused ``405`` empty; a wrong path is refused ``404`` empty; a query-bearing request target is
+refused ``404`` empty (the pre-migration edge compared the raw request target, so a stray
+``?query`` never matched the path — restored explicitly here); no framework error body is ever
+emitted; the raw credential never appears in a log, error, or response. This is an
 authentication transport adapter only — it opens no database and contacts no Database Router.
 """
 
 from __future__ import annotations
 
 import json
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Dict, List, Optional, Tuple, cast
+
+from fastapi import FastAPI, Request, Response
 
 from auth_router.authenticator import Authenticator
 from auth_router.models import AuthContext, AuthDenied
+from shared.adapters.providers.asgi_runtime import AsgiEdgeServer, build_asgi_server
+from shared.adapters.providers.fastapi_edge import empty_response, has_query_string, json_response, new_edge_app
 
 _AUTH_PATH = "/internal/auth/authenticate"
 
@@ -162,63 +168,82 @@ def _authenticate(authenticator: Authenticator, raw: bytes) -> Tuple[int, Dict[s
     )
 
 
-def _make_handler(authenticator: Authenticator) -> "type[BaseHTTPRequestHandler]":
-    class _AuthHandler(BaseHTTPRequestHandler):
-        def do_POST(self) -> None:  # noqa: N802 (http.server API)
-            if self.path != _AUTH_PATH:
-                self._respond_empty(404)  # wrong path: refused, no validation
-                return
-            try:
-                length = int(self.headers.get("Content-Length") or 0)
-                raw = self.rfile.read(length) if length > 0 else b""
-                status, body = _authenticate(authenticator, raw)
-            except _Reject as reject:
-                # Mapped denial: {status, public_code} on a mirrored status line (references only).
-                self._respond_json(reject.status, {"status": reject.status, "public_code": reject.public_code})
-                return
-            except Exception:
-                # Invalid envelope OR any unhandled server exception -> fixed 503 EMPTY body
-                # (no stack trace, credential, token, or internal detail disclosure).
-                self._respond_empty(503)
-                return
-            self._respond_json(status, body)
+def _make_app(authenticator: Authenticator) -> FastAPI:
+    """Build the FastAPI app exposing EXACTLY the one internal authenticate surface.
 
-        def _method_not_allowed(self) -> None:
-            # POST-only edge: every non-POST method is refused 405 with an EMPTY body.
-            self._respond_empty(405)
+    The app declares one route and one method; every other path is ``404`` and every other
+    method ``405``, both with an EMPTY body, decided by the app's fail-closed handlers before
+    the authenticator is ever reached (``new_edge_app``). Docs/OpenAPI are disabled.
+    """
+    app = new_edge_app(invalid_status=503, unavailable_status=503)
 
-        # Refuse (not serve) other methods without ever reaching the stdlib HTML error path.
-        do_GET = do_PUT = do_DELETE = do_PATCH = do_HEAD = do_OPTIONS = _method_not_allowed
+    @app.post(_AUTH_PATH)
+    async def authenticate(request: Request) -> Response:
+        if has_query_string(request):
+            return empty_response(404)  # query-bearing target: refused, no validation
+        try:
+            raw = await request.body()
+            status, body = _authenticate(authenticator, raw)
+        except _Reject as reject:
+            # Mapped denial: {status, public_code} on a mirrored status line (references only).
+            return json_response(reject.status, {"status": reject.status, "public_code": reject.public_code})
+        except Exception:
+            # Invalid envelope OR any unhandled server exception -> fixed 503 EMPTY body
+            # (no stack trace, credential, token, or internal detail disclosure).
+            return empty_response(503)
+        return json_response(status, body)
 
-        def _respond_empty(self, status: int) -> None:
-            self.send_response(status)
-            self.send_header("Content-Length", "0")
-            self.end_headers()
-
-        def _respond_json(self, status: int, body: Dict[str, object]) -> None:
-            payload = json.dumps(body).encode("utf-8")
-            self.send_response(status)  # mirror the mapped status on the HTTP status line
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
-
-        def log_message(self, *args: object) -> None:  # silence default stderr logging (no credential leak)
-            return
-
-    return _AuthHandler
+    return app
 
 
-def build_authenticate_server(authenticator: Authenticator, host: str = "127.0.0.1", port: int = 0) -> Tuple[HTTPServer, str]:
+def create_app_from_env() -> FastAPI:
+    """The CANONICAL native ASGI application factory for the internal authenticate edge.
+
+    Run directly by the operator through the ASGI runtime's own command line::
+
+        uvicorn auth_router.adapters.providers.http_authenticate_api:create_app_from_env --factory ...
+
+    Takes NO arguments: the listening host and port belong to the runtime process, not to the
+    application, so this factory binds no socket and owns no address. It returns the composed
+    ``FastAPI`` app and nothing else.
+
+    ONE composition path (no second composition root): the collaborator is built by
+    ``auth_router.main.build_authenticator_from_env`` — the SAME single env-parsing/adapter-wiring
+    function the compatibility ``build_authenticate_server_from_env`` seam uses — and the app is
+    built by the SAME ``_make_app``. Environment parsing, issuer trust anchors, and the
+    control-plane read client therefore have exactly one source of truth.
+
+    Fail closed (IC-010 §L): the operator invoked this process deliberately, so an INACTIVE
+    composition is a misconfiguration, not a no-op. ``SP2_AR_CONTROL_PLANE_READ_BASE_URL``
+    unset/empty → ``RuntimeError``; a malformed URL or invalid ``SP2_AR_ISSUERS`` → ``ValueError``
+    (inherited). There is deliberately NO fallback to an in-memory or test double — a missing
+    trust anchor can never silently downgrade a standing backend.
+
+    Import-time inertness is preserved: nothing here runs at module import. Composition (and the
+    lazy provider imports it performs) happens only when the runtime calls this factory.
+    """
+    # Function-local absolute import (the established composition-root idiom): the adapter module
+    # stays import-light and cycle-free, and importing it performs no composition.
+    from auth_router.main import build_authenticator_from_env
+
+    authenticator = build_authenticator_from_env()
+    if authenticator is None:
+        raise RuntimeError(
+            "create_app_from_env: authenticate composition is INACTIVE — "
+            "SP2_AR_CONTROL_PLANE_READ_BASE_URL is unset/empty (fail closed: no application composed)"
+        )
+    return _make_app(authenticator)
+
+
+def build_authenticate_server(authenticator: Authenticator, host: str = "127.0.0.1", port: int = 0) -> Tuple[AsgiEdgeServer, str]:
     """Build the internal authenticate HTTP server bound to a composed ``Authenticator``.
 
     ``port=0`` binds an ephemeral port. This factory constructs the server only — it does NOT
     start serving (the blocking runnable entrypoint is ``serve_authenticate_api``; tests may
-    also host the single-threaded server directly). Returns ``(server, base_url)``.
+    also host the server directly via ``serve_forever``/``shutdown``/``server_close``).
+    Returns ``(server, base_url)``.
     """
-    server = HTTPServer((host, port), _make_handler(authenticator))
-    bound_host, bound_port = cast(str, server.server_address[0]), server.server_address[1]
-    return server, f"http://{bound_host}:{bound_port}"
+    return build_asgi_server(_make_app(authenticator), host, port)
 
 
 def serve_authenticate_api() -> None:
@@ -230,10 +255,11 @@ def serve_authenticate_api() -> None:
     * inactive composition (``SP2_AR_CONTROL_PLANE_READ_BASE_URL`` unset/empty) → deterministic
       ``RuntimeError`` — fail closed; no socket was bound and nothing is served;
     * malformed composition config → ``ValueError`` from the seam (inherited, fail closed);
-    * active → ``server.serve_forever()`` exactly once on a single-threaded plain ``HTTPServer``
-      (AT-D15T1-10: one server per operating-system process; no thread, daemon, subprocess,
-      supervisor, or retry loop here), and ``server.server_close()`` ALWAYS runs in ``finally`` —
-      ``KeyboardInterrupt`` and any serve-time exception propagate to the caller unswallowed.
+    * active → ``server.serve_forever()`` exactly once on the calling thread (AT-D15T1-10: one
+      server per operating-system process; no thread, daemon, subprocess, supervisor, or retry
+      loop is created HERE — request concurrency is the ASGI runtime's own event loop), and
+      ``server.server_close()`` ALWAYS runs in ``finally`` — ``KeyboardInterrupt`` and any
+      serve-time exception propagate to the caller unswallowed.
 
     Ops: docs/runbooks/b5_service_startup_order.md (the control-plane read edge starts first; its
     URL feeds ``SP2_AR_CONTROL_PLANE_READ_BASE_URL``; this service's URL then feeds
@@ -252,7 +278,7 @@ def serve_authenticate_api() -> None:
             "SP2_AR_CONTROL_PLANE_READ_BASE_URL is unset/empty (fail closed: no socket bound, nothing served)"
         )
     server_obj, _base_url = composed
-    server = cast(HTTPServer, server_obj)
+    server = cast(AsgiEdgeServer, server_obj)
     try:
         server.serve_forever()
     finally:

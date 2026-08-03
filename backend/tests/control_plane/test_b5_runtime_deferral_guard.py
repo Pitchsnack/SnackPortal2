@@ -345,7 +345,7 @@ def test_selector_matrix_full_enumeration() -> None:
     try:
         constructed = set()
         for combo in itertools.product((None, "postgres"), repeat=4):
-            env = dict(zip(_SELECTOR_ENVS, combo))
+            env = dict(zip(_SELECTOR_ENVS, combo, strict=False))
             restore_e = _with_env_map(env)
             try:
                 try:

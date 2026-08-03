@@ -69,7 +69,7 @@ class PsycopgTenantConnection(TenantConnection):
         with self._conn.cursor() as cur:
             cur.execute(statement, params)
             cols = [d[0] for d in cur.description] if cur.description else []
-            return [dict(zip(cols, row)) for row in cur.fetchall()]
+            return [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
 
 
 class PsycopgConnectionFactory(ConnectionFactory):

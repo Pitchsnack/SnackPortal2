@@ -23,7 +23,7 @@ from __future__ import annotations
 import ast
 import pathlib
 import sys
-from typing import List, Set
+from typing import Set
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import _scan  # noqa: E402
@@ -67,7 +67,9 @@ _FORBIDDEN_TOPS = frozenset(
         "concurrent",
         "multiprocessing",
         "logging",
-        "fastapi",
+        # FastAPI is the ONE sanctioned framework; a second one is never permitted, and the
+        # edges must not reach past it to the ASGI server (the shared runtime owns that).
+        "uvicorn",
         "flask",
         "django",
         "starlette",
@@ -90,10 +92,6 @@ def _attr_call_count(tree: ast.AST, attr: str) -> int:
 
 def _has_loop(node: ast.AST) -> bool:
     return any(isinstance(n, (ast.For, ast.While, ast.AsyncFor)) for n in ast.walk(node))
-
-
-def _served_do_methods(tree: ast.AST) -> List[str]:
-    return [n.name for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name.startswith("do_")]
 
 
 # ---------------------------------------------------------------------------
@@ -211,18 +209,24 @@ def test_dbr_internal_edge_boundaries() -> None:
     text = _DBR_EDGE.read_text(encoding="utf-8")
     tree = _tree(_DBR_EDGE)
     tops = _import_tops(_DBR_EDGE)
-    assert tops <= {"__future__", "json", "http", "typing", "database_router"}, f"edge import surface violated: {sorted(tops)}"
+    assert tops <= {"__future__", "json", "typing", "fastapi", "database_router", "shared"}, f"edge import surface violated: {sorted(tops)}"
     assert not (tops & _FORBIDDEN_TOPS), "the internal edge must import no driver/vendor/crypto/concurrency"
-    served = _served_do_methods(tree)
-    assert served == ["do_POST"], f"the internal edge must define exactly do_POST (served handlers: {served})"
+    served = _scan.registered_route_methods(tree)
+    # The two internal surfaces (read + update) are POST-only; every other method is refused 405
+    # by the shared fail-closed app before the executor is reached.
+    assert served == ["post", "post"], f"the internal edge must expose exactly two POST routes (served: {served})"
     assert 'host: str = "127.0.0.1"' in text, "the internal edge must default to the loopback bind (IC-010 §R)"
     assert '"/internal/tenant/startups/read"' in text and '"/internal/tenant/startups/update"' in text, (
         "the two literal internal paths must be pinned"
     )
     used = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)} | {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
     assert "send_error" not in used, "the internal edge must never call stdlib send_error"
-    assert "ThreadingHTTPServer" not in used, "the internal edge must stay single-threaded plain HTTPServer"
-    assert any(isinstance(n, (ast.FunctionDef,)) and n.name == "log_message" for n in ast.walk(tree)), "log_message must be silenced"
+    for marker in ("HTTPServer", "ThreadingHTTPServer", "ThreadingMixIn"):
+        assert marker not in used, f"the internal edge must hand-roll no server ({marker}); the shared runtime owns it"
+    assert "build_asgi_server" in used, "the internal edge must serve through the shared ASGI runtime"
+    # Request logging is silenced at the shared runtime now (the migrated home of log_message).
+    runtime = (_scan.BACKEND_ROOT / "shared" / "adapters" / "providers" / "asgi_runtime.py").read_text(encoding="utf-8")
+    assert "access_log=False" in runtime and "log_config=None" in runtime, "request logging must stay silenced"
 
 
 # ---------------------------------------------------------------------------

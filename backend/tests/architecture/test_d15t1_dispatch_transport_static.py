@@ -10,12 +10,14 @@ Every guard carries a non-vacuity companion proving it fails on a bad sample.
   identifier appears as a serialized key. The broad raw-byte needle set is DT-7's job, not a
   module-wide source scan (RF-3).
 * **G2** — dispatch-server edge guard: internal-only ``127.0.0.1`` bind + literal
-  ``/internal/dispatch/route`` path; POST-only served handler; single-threaded plain
-  ``HTTPServer`` (no ``ThreadingHTTPServer``/threading/asyncio/contextvars/concurrent.futures/
-  psycopg_pool); no ``make_server`` (07D-3 co-compliance), and ``serve_forever`` only inside the
-  single blessed blocking entrypoint ``serve_dispatch_api`` (B5-2 Guard Evolution); fixed-503/405/
-  404 empty-body edges with no stdlib ``send_error`` HTML; ``log_message`` silenced; and an
-  adapter-only top-level def + import census (the no-business-work leg, C-8).
+  ``/internal/dispatch/route`` path; exactly ONE registered route and it is a POST; the server is
+  built through the shared containment-zone ASGI runtime and hand-rolls no server or concurrency
+  machinery (no ``HTTPServer``/threading/asyncio/contextvars/concurrent.futures/psycopg_pool); no
+  ``make_server`` (07D-3 co-compliance), and ``serve_forever`` only inside the single blessed
+  blocking entrypoint ``serve_dispatch_api`` (B5-2 Guard Evolution); fixed-503/405/404 empty-body
+  edges with neither stdlib ``send_error`` HTML nor a framework detail body; request logging
+  silenced at the shared runtime (the migrated home of ``log_message``); and an adapter-only
+  top-level def + import census (the no-business-work leg, C-8).
 * **G3** — client allowlist / exact-shape guard: the ``public_code`` allowlist frozenset EQUALS
   the closed 12-code set; exact ``{status, public_code, dispatched}`` shape validation; the
   fail-closed ``RouteOutcome(503, "unavailable", False)`` collapse; stdlib urllib/json only
@@ -98,12 +100,13 @@ _ROUTER_TOPLEVEL_ALLOW = frozenset(
         "_optional_str",
         "_reconstruct_context",
         "_decide",
-        "_make_handler",
+        "_make_app",
+        "create_app_from_env",  # the CANONICAL native ASGI application factory (no socket, no host/port)
         "build_dispatch_server",
-        "serve_dispatch_api",  # B5-2: the single blessed blocking entrypoint
+        "serve_dispatch_api",  # B5-2: the retained compatibility blocking entrypoint
     }
 )
-_ROUTER_IMPORT_TOPS_ALLOW = frozenset({"__future__", "json", "http", "typing", "shared", "database_router"})
+_ROUTER_IMPORT_TOPS_ALLOW = frozenset({"__future__", "json", "typing", "fastapi", "shared", "database_router"})
 _CLIENT_IMPORT_TOPS_ALLOW = frozenset({"__future__", "json", "urllib", "typing", "shared", "api_gateway"})
 
 
@@ -263,10 +266,11 @@ def test_g2_dispatch_server_edge_guard() -> None:
     # Internal-only surface: literal path + loopback default bind (IC-010 §R/§M).
     assert '"/internal/dispatch/route"' in text, "server must pin the literal internal dispatch path"
     assert "127.0.0.1" in text, "server must default-bind the internal loopback host"
-    # Single-threaded plain HTTPServer; no threaded server / concurrency machinery (AT-D15T1-10).
-    assert "HTTPServer" in used, "server must use a plain HTTPServer"
-    for marker in ("ThreadingHTTPServer", "ThreadingMixIn"):
-        assert marker not in text, f"server must stay single-threaded (found {marker})"
+    # The edge serves through the SHARED containment-zone ASGI runtime and hand-rolls no server
+    # or concurrency machinery of its own (the runtime owns the socket and the request loop).
+    assert "build_asgi_server" in used, "server must be built through the shared ASGI runtime"
+    for marker in ("HTTPServer", "ThreadingHTTPServer", "ThreadingMixIn", "threading.Thread"):
+        assert marker not in text, f"server must not hand-roll its own server/threads (found {marker})"
     banned_imports = {"threading", "asyncio", "contextvars", "concurrent.futures", "psycopg_pool"}
     banned_tops = {b.split(".")[0] for b in banned_imports}
     hits = {m for m in _scan.imported_modules(_ROUTER_MOD) if m in banned_imports or m.split(".")[0] in banned_tops}
@@ -278,14 +282,17 @@ def test_g2_dispatch_server_edge_guard() -> None:
     assert "make_server" not in used, "server production module must not reference make_server (07D-3 single-wiring census)"
     problems = _single_blessed_serve_problems(tree, "serve_dispatch_api")
     assert not problems, f"dispatch serve-entrypoint census (B5-2): {problems}"
-    # POST-only SERVED handler; the fail-closed empty-body edges; no stdlib send_error HTML.
-    served = sorted(n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name.startswith("do_"))
-    assert served == ["do_POST"], f"the dispatch edge must be POST-only (served do_* handlers: {served})"
+    # POST-only SERVED route; the fail-closed empty-body edges; no framework detail body.
+    served = _scan.registered_route_methods(tree)
+    assert served == ["post"], f"the dispatch edge must be POST-only (registered routes: {served})"
     assert "send_error" not in used, "server must never call stdlib send_error (HTML bodies) — code reference banned"
-    assert 'send_header("Content-Length", "0")' in text, "server must emit empty bodies on the fail-closed/refused edges"
+    assert "empty_response" in used, "server must emit empty bodies on the fail-closed/refused edges"
+    assert "HTTPException" not in used, "server must not raise framework HTTPExceptions (they render a detail body)"
     for code in ("503", "405", "404"):
         assert code in text, f"server must pin the {code} fail-closed/refused edge"
-    assert any(isinstance(n, ast.FunctionDef) and n.name == "log_message" for n in ast.walk(tree)), "server must silence log_message"
+    # Request logging is silenced at the shared runtime now (the migrated home of log_message).
+    runtime = (_scan.BACKEND_ROOT / "shared" / "adapters" / "providers" / "asgi_runtime.py").read_text(encoding="utf-8")
+    assert "access_log=False" in runtime and "log_config=None" in runtime, "server must silence request logging"
     assert "build_dispatch_server" in _top_level_defs(tree), "server must expose the build_dispatch_server factory"
     # No-business-work census (C-8): adapter-only top-level defs + import surface.
     extra_defs = _top_level_defs(tree) - _ROUTER_TOPLEVEL_ALLOW

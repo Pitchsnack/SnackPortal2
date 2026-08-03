@@ -360,7 +360,7 @@ def test_manual_only_registered_and_workflow_untouched() -> None:
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "MANUAL_ONLY_EXCEPTIONS" for t in node.targets):
             assert isinstance(node.value, ast.Dict)
-            for key, value in zip(node.value.keys, node.value.values):
+            for key, value in zip(node.value.keys, node.value.values, strict=False):
                 if isinstance(key, ast.Constant) and isinstance(key.value, str):
                     folded = "".join(
                         part.value for part in ast.walk(value) if isinstance(part, ast.Constant) and isinstance(part.value, str)

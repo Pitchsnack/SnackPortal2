@@ -5,8 +5,10 @@ transport-only contract without binding a socket, opening a database, or reachin
 Module-scoped and non-vacuous: the guard fails if the edge module disappears or empties, and each
 census carries a companion proving it flags a bad sample. It enforces:
 
-* single-threaded stdlib only — plain ``HTTPServer`` (never ``ThreadingHTTPServer``), no threading /
-  asyncio / web framework, no new dependency;
+* the edge serves through the SHARED containment-zone ASGI runtime (``build_asgi_server``) and
+  owns no server, socket, or concurrency machinery of its own — it must not import ``uvicorn`` /
+  ``starlette`` / ``threading`` / ``asyncio`` directly, and FastAPI is the ONE sanctioned
+  framework (no second web framework may appear);
 * no sibling-service / database-driver / vendor-SDK / crypto import (edge-only enforcement boundary);
 * the Gateway core is called EXACTLY ONCE (``gateway.handle``, through the one shared ``_invoke_core``
   site reached by both business paths) — the edge owns no auth / authorization / routing / tenant
@@ -21,7 +23,8 @@ census carries a companion proving it flags a bad sample. It enforces:
 * success bodies come ONLY from the core-owned ``serialize_portal_dto`` — the edge hand-rolls no DTO
   (it constructs no portal DTO type) and calls the stdlib HTML error path (``send_error``) never;
 * no raw leakage surface — no ``logging`` / ``print`` / ``traceback`` / connection-string literal;
-* ``log_message`` is silenced;
+* request logging stays disabled at the shared runtime (``access_log=False``, ``log_config=None``)
+  — the migrated home of the stdlib edge's silenced ``log_message``;
 * exactly ONE blessed blocking entrypoint ``serve_gateway_edge`` — one ``serve_forever`` inside it and
   ``server_close`` for teardown.
 
@@ -55,8 +58,12 @@ from api_gateway.adapters.providers.http_gateway_edge import (  # noqa: E402
 )
 
 _EDGE = _scan.BACKEND_ROOT / "api_gateway" / "adapters" / "providers" / "http_gateway_edge.py"
+# The shared containment-zone ASGI runtime the edge MUST serve through (it constructs no server).
+_RUNTIME = _scan.BACKEND_ROOT / "shared" / "adapters" / "providers" / "asgi_runtime.py"
 
-_IMPORT_TOPS_ALLOW = frozenset({"__future__", "json", "re", "uuid", "http", "typing", "api_gateway"})
+# FastAPI is the ONE sanctioned framework import; the concrete ASGI server and its socket live in
+# the shared runtime (`shared.adapters.providers.asgi_runtime`), never in the edge.
+_IMPORT_TOPS_ALLOW = frozenset({"__future__", "json", "re", "uuid", "typing", "fastapi", "api_gateway", "shared"})
 _FORBIDDEN_TOPS = frozenset(
     {
         "auth_router",
@@ -79,16 +86,20 @@ _FORBIDDEN_TOPS = frozenset(
         "contextvars",
         "concurrent",
         "multiprocessing",
-        "fastapi",
+        # A second web framework is never permitted; FastAPI alone is sanctioned.
         "flask",
         "django",
-        "starlette",
-        "uvicorn",
         "gunicorn",
         "aiohttp",
         "tornado",
-        "logging",
+        # The edge must not reach past FastAPI to the ASGI server or its plumbing: the socket,
+        # the serve loop, and the logging posture are the shared runtime's to own.
+        "starlette",
+        "uvicorn",
+        "http",
+        "socket",
         "socketserver",
+        "logging",
     }
 )
 
@@ -203,19 +214,32 @@ def _nonempty(path: pathlib.Path) -> bool:
 
 
 # --- single-threaded stdlib + import surface ------------------------------------------------------
-def test_edge_is_single_threaded_stdlib_only() -> None:
+def test_edge_serves_through_the_shared_runtime_only() -> None:
     assert _nonempty(_EDGE), "the served gateway-edge module must exist and be non-empty"
     text = _EDGE.read_text(encoding="utf-8")
     tree = _tree(_EDGE)
     used = _names_used(tree)
-    assert "HTTPServer" in used, "the edge must use a plain single-threaded HTTPServer"
-    assert "ThreadingHTTPServer" not in used, "the edge must never use ThreadingHTTPServer (AT-D15T1-10)"
-    assert "ThreadingMixIn" not in text, "the edge must not mix in threading"
+    # The edge composes an app and hands it to the SHARED runtime; it never builds a server itself.
+    assert "build_asgi_server" in used, "the edge must build its server through the shared ASGI runtime"
+    assert "AsgiEdgeServer" in used, "the edge must serve on the shared AsgiEdgeServer lifecycle"
+    for hand_rolled in ("HTTPServer", "ThreadingHTTPServer", "ThreadingMixIn", "Thread", "run_in_executor"):
+        assert hand_rolled not in text, f"the edge must not hand-roll a server/thread ({hand_rolled}); the shared runtime owns it"
     tops = _import_tops(_EDGE)
     extra = tops - _IMPORT_TOPS_ALLOW
-    assert not extra, f"the edge imports outside the stdlib/gateway surface: {sorted(extra)}"
+    assert not extra, f"the edge imports outside the FastAPI/gateway/shared surface: {sorted(extra)}"
     banned = tops & _FORBIDDEN_TOPS
-    assert not banned, f"the edge must import no sibling service / driver / vendor / concurrency / framework: {sorted(banned)}"
+    assert not banned, f"the edge must import no sibling service / driver / vendor / concurrency / second framework: {sorted(banned)}"
+
+
+def test_shared_runtime_disables_request_logging_and_server_disclosure() -> None:
+    # The migrated home of the stdlib edge's silenced `log_message`: uvicorn must never install a
+    # logging config or write an access log (no request line, header, token, or payload to stderr),
+    # and must disclose no server identity/version header.
+    assert _nonempty(_RUNTIME), "the shared ASGI runtime module must exist and be non-empty"
+    runtime = _RUNTIME.read_text(encoding="utf-8")
+    for pin in ("log_config=None", "access_log=False", "server_header=False"):
+        assert pin in runtime, f"the shared ASGI runtime must pin {pin} (no request logging / no server disclosure)"
+    assert _print_calls(_tree(_RUNTIME)) == 0, "the shared ASGI runtime must not print"
 
 
 def test_edge_calls_gateway_handle_exactly_once() -> None:
@@ -233,7 +257,7 @@ def test_edge_calls_gateway_handle_exactly_once() -> None:
     shared = _def(tree, "_invoke_core")
     assert shared is not None, "the edge must own the single shared _invoke_core handle site"
     assert _attr_call_count(shared, "handle") == 1, "the sole gateway.handle call must live inside _invoke_core"
-    for path_name in ("_invoke_core", "_handle_memberships", "_handle_import", "_handle_tenant_startup"):
+    for path_name in ("_invoke_core", "memberships", "import_route", "tenant_startup"):
         node = _def(tree, path_name)
         assert node is not None, f"the edge must own the {path_name} business path"
         assert not _has_loop(node), f"the Gateway.handle call must not be wrapped in a retry loop ({path_name})"
@@ -337,9 +361,13 @@ def test_edge_cors_exact_origin_no_credentialed_wildcard() -> None:
     text = _EDGE.read_text(encoding="utf-8")
     tree = _tree(_EDGE)
     assert "allowed_origins" in _names_used(tree), "the edge must gate CORS on the exact-origin allowlist"
-    assert '"Access-Control-Allow-Credentials", "false"' in text, "credentialed CORS is forbidden (Allow-Credentials must be false)"
-    assert '"Access-Control-Allow-Credentials", "true"' not in text, "the edge must never enable credentialed CORS"
-    assert '"Access-Control-Allow-Origin", "*"' not in text, "the edge must never emit a wildcard CORS origin"
+    assert '["Access-Control-Allow-Credentials"] = "false"' in text, "credentialed CORS is forbidden (Allow-Credentials must be false)"
+    assert '"true"' not in text, "the edge must never enable credentialed CORS"
+    assert '["Access-Control-Allow-Origin"] = "*"' not in text, "the edge must never emit a wildcard CORS origin"
+    assert '"*"' not in text, "the edge must never emit a wildcard CORS value"
+    # FastAPI ships a permissive CORS middleware; wiring it here would bypass the exact-origin
+    # allowlist above (and can emit a wildcard). The edge must keep its own allowlist emitter.
+    assert "CORSMiddleware" not in text, "the edge must not delegate CORS to the framework's permissive middleware"
 
 
 def test_edge_serialize_portal_dto_is_only_success_serializer() -> None:
@@ -370,14 +398,28 @@ def test_edge_no_raw_error_or_secret_leakage() -> None:
     assert "send_error" not in used, "the edge must never call stdlib send_error (HTML/detail bodies)"
     assert "traceback" not in used and "format_exc" not in used, "the edge must never render a traceback"
     assert _print_calls(tree) == 0, "the edge must not print (no token/payload logging)"
-    assert 'send_header("Content-Length", "0")' in text, "denials/rejections must carry an EMPTY body"
+    # Every denial/rejection goes through the shared EMPTY-body helper — never a framework
+    # detail body (FastAPI's default {"detail": ...}) and never a hand-written error payload.
+    assert "empty_response" in used, "denials/rejections must carry an EMPTY body (empty_response)"
+    assert "HTTPException" not in used, "the edge must not raise framework HTTPExceptions (they render a detail body)"
+    assert "JSONResponse" not in used, "success bytes come from serialize_portal_dto, never the framework encoder"
     lowered = text.lower()
     for needle in ("postgresql://", "postgres://", "database_url", "secretref"):
         assert needle not in lowered, f"the edge must carry no connection-string / secret material ({needle})"
 
 
-def test_edge_log_message_silenced() -> None:
-    assert _def(_tree(_EDGE), "log_message") is not None, "the edge must silence log_message (no stderr request logging)"
+def test_edge_publishes_no_self_describing_surface() -> None:
+    # These are closed, contract-governed routes (IC-010 §R). A generated OpenAPI schema or docs
+    # page would publish a machine-readable catalogue of every route, method, and shape — exactly
+    # what the closed allowlist forbids — so the shared app factory must disable all three.
+    shared_app = _scan.BACKEND_ROOT / "shared" / "adapters" / "providers" / "fastapi_edge.py"
+    assert _nonempty(shared_app), "the shared FastAPI edge-app factory must exist and be non-empty"
+    factory = shared_app.read_text(encoding="utf-8")
+    for pin in ("docs_url=None", "redoc_url=None", "openapi_url=None"):
+        assert pin in factory, f"the shared edge app must disable its self-describing surface ({pin})"
+    # Redirect-slashes would serve a SECOND spelling of every exposed path, silently widening
+    # every closed route allowlist in the codebase.
+    assert "redirect_slashes = False" in factory, "the shared edge app must disable slash-redirects (closed allowlists)"
 
 
 def test_edge_single_blessed_serve_entrypoint_and_close() -> None:
@@ -391,6 +433,11 @@ def test_edge_single_blessed_serve_entrypoint_and_close() -> None:
     assert total == inside, f"serve_forever must appear ONLY inside serve_gateway_edge ({total} total vs {inside} inside)"
     assert "server_close" in _names_used(tree), "the entrypoint must close the server (server_close in finally)"
     assert "def build_gateway_edge_server" in text, "the edge must expose the build_gateway_edge_server factory"
+    # The shared runtime is the ONLY thing that may run a request loop; it must expose the same
+    # lifecycle the entrypoint (and every composition test) drives.
+    runtime = _RUNTIME.read_text(encoding="utf-8")
+    for lifecycle in ("def serve_forever", "def shutdown", "def server_close"):
+        assert lifecycle in runtime, f"the shared ASGI runtime must expose {lifecycle}"
 
 
 # --- non-vacuity companions -----------------------------------------------------------------------
@@ -430,7 +477,8 @@ def test_edge_boundary_guard_nonvacuity() -> None:
 if __name__ == "__main__":
     _scan.run(
         [
-            test_edge_is_single_threaded_stdlib_only,
+            test_edge_serves_through_the_shared_runtime_only,
+            test_shared_runtime_disables_request_logging_and_server_disclosure,
             test_edge_calls_gateway_handle_exactly_once,
             test_edge_route_allowlist_is_closed,
             test_edge_import_route_is_bounded_multisegment_and_post_only,
@@ -439,7 +487,7 @@ if __name__ == "__main__":
             test_edge_cors_exact_origin_no_credentialed_wildcard,
             test_edge_serialize_portal_dto_is_only_success_serializer,
             test_edge_no_raw_error_or_secret_leakage,
-            test_edge_log_message_silenced,
+            test_edge_publishes_no_self_describing_surface,
             test_edge_single_blessed_serve_entrypoint_and_close,
             test_edge_boundary_guard_nonvacuity,
         ]

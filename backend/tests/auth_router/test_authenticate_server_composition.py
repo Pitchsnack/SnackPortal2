@@ -77,7 +77,7 @@ def _env(url: Optional[str], issuers: Optional[str], host: Optional[str], port: 
     """Set the four auth/bind env vars for one test (None => unset); restore all afterward."""
     prior = {k: os.environ.get(k) for k in _VARS}
     try:
-        for key, value in zip(_VARS, (url, issuers, host, port)):
+        for key, value in zip(_VARS, (url, issuers, host, port), strict=False):
             if value is None:
                 os.environ.pop(key, None)
             else:
@@ -264,7 +264,7 @@ def test_real_bind_smoke_constructs_and_closes() -> None:
     server, base_url = result
     try:
         assert base_url.startswith("http://127.0.0.1:"), f"default bind must be internal loopback: {base_url}"
-        assert hasattr(server, "server_close") and hasattr(server, "serve_forever"), "must return a real HTTPServer"
+        assert hasattr(server, "server_close") and hasattr(server, "serve_forever"), "must return a real bound edge server"
     finally:
         server.server_close()  # release the ephemeral socket; the seam never called serve_forever
 
@@ -310,12 +310,12 @@ class _ServeBoom(Exception):
 
 def test_serve_inactive_seam_raises_deterministic_runtimeerror() -> None:
     # Inactive composition -> deterministic RuntimeError; the seam is consulted exactly once per
-    # invocation; and nothing serves (a global HTTPServer.serve_forever trap is armed throughout).
-    def _no_serve(self: object, poll_interval: float = 0.5) -> None:
+    # invocation; and nothing serves (a global AsgiEdgeServer.serve_forever trap is armed throughout).
+    def _no_serve(self: object) -> None:
         raise AssertionError("nothing may serve when the composition is inactive")
 
-    orig_serve = HAA.HTTPServer.serve_forever
-    HAA.HTTPServer.serve_forever = _no_serve  # type: ignore[method-assign, assignment]
+    orig_serve = HAA.AsgiEdgeServer.serve_forever
+    HAA.AsgiEdgeServer.serve_forever = _no_serve  # type: ignore[method-assign, assignment]
     messages: List[str] = []
     try:
         with _patched_serve_seam(lambda: None) as calls:
@@ -328,7 +328,7 @@ def test_serve_inactive_seam_raises_deterministic_runtimeerror() -> None:
                     raise AssertionError("inactive composition must raise RuntimeError (fail closed)")
         assert calls == [1, 1], "the entrypoint must call the env seam exactly once per invocation"
     finally:
-        HAA.HTTPServer.serve_forever = orig_serve  # type: ignore[method-assign]
+        HAA.AsgiEdgeServer.serve_forever = orig_serve  # type: ignore[method-assign]
     assert len(messages) == 2 and messages[0] == messages[1], "the inactive RuntimeError must be deterministic"
     assert SP2_AR_CONTROL_PLANE_READ_BASE_URL in messages[0], "the error must name the inactive selector"
 

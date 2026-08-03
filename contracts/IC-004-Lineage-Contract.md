@@ -130,6 +130,13 @@ Per the **hybrid identity model** (D-03) and **OIDC stateless JWT** authenticati
 - The lineage schema participates in **expand/contract migrations with version-gated readiness** (D-17): a tenant outside the supported schema range is not-ready, and lineage capture for it follows readiness rules.
 - **Per-tenant independence** (D-16): one tenant's lineage store being unavailable MUST NOT affect others; any `degraded` signal is observability-only.
 
+## Composition Boundary (D-44 / IC-012)
+> **References-only cross-reference. No lineage semantic is altered by this section.**
+- The `LineageEmitPort` implementation consumed by the Import edge is **injected by the `deployment` cross-service composition root** (D-44; IC-012 §7), built from this service's own published seam (`lineage_service.emit.LineageEmit`) over the **tenant-scoped, reference-only** secret store with the `"tenant"` key prefix — the composed-core convention that keeps the chain per-tenant and never crossing tenants (D-25; *Cross-Tenant Isolation*).
+- **Lineage semantics remain wholly owned by `lineage_service`.** The *Minimum Lineage Record*, *Source and Target References*, *Actor Identity Requirements*, *Tenant Context Requirements*, *Import Lineage Requirements*, the per-tenant cryptographic hash chain and *Immutability / Append-Only Model* (D-23), *Retention and Archival Considerations* (D-24), unified provenance (D-25), *Access Control*, *Cross-Tenant Isolation*, and *Failure Behavior* are all unchanged. The composition root MUST NOT reimplement, wrap with behaviour, filter, reorder, suppress, synthesize, or interpret any lineage record (IC-012 §7/§17).
+- No lineage double, no-op emitter, or test substitute is ever composed on the production path (IC-012 §11).
+- This section grants **no lineage field, no emission rule, no access capability, and no DDL**.
+
 ## Anti-Vendor-Lock-In Requirements
 - **No Supabase-specific** lineage/storage logic and no Supabase Auth (access is OIDC via IC-005).
 - **No Lovable-specific** runtime dependencies.

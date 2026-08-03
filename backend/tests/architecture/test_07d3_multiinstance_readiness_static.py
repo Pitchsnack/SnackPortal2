@@ -18,11 +18,13 @@ the 07D-3/07D-3b planning packages (folder 32) and the V-1..V-8 verification rid
   composition root wires no concurrent transport (07E not started — transports must honour
   the "fresh unit of work per request, never shared" contract). (c) the dormant HTTP
   read-API binding ``http_read_api.py`` — a REAL request-handler surface in product code
-  (V-1) — stays GET-only, single-threaded (plain ``HTTPServer``), and product-unwired
-  until 07E.
+  (V-1) — stays GET-only (exactly one registered route, and it is a GET), owns no threading
+  machinery of its own, and serves through the shared containment-zone ASGI runtime.
 * **Thread census (V-1).** Product modules importing ``threading`` are frozen to the
-  known-benign set: ``database_router/pool.py`` (lock-guarded per-tenant pool, by design).
-  The guard must PASS on that benign lock and FAIL on any new product thread use.
+  known-benign set: ``database_router/pool.py`` (lock-guarded per-tenant pool) and
+  ``shared/adapters/providers/asgi_runtime.py`` (a ``threading.Event`` shutdown handshake so
+  ``shutdown()`` blocks until the request loop exits — it starts no thread of its own). The
+  guard must PASS on those two and FAIL on any new product thread use.
 * **CAS caller census (V-4).** Exactly 5 production ``compare_and_swap_tenant`` callers;
   the create path stays the only ``put_tenant`` producer (with the b7c1 census).
 
@@ -73,7 +75,14 @@ _TRANSPORT_DENYLIST = {
 }
 
 # Product modules allowed to import `threading` (V-1 benign classification; frozen census).
-_THREADING_ALLOWED = {"database_router/pool.py"}
+# V-1 benign `threading` census. Two members, each proven benign by its non-vacuity check below:
+#   database_router/pool.py            — the lock-guarded per-tenant pool (threading.Lock)
+#   shared/adapters/providers/asgi_runtime.py — the shared ASGI runtime's shutdown handshake
+#     (threading.Event), so `shutdown()` can BLOCK until the request loop has actually exited, as
+#     the stdlib serve lifecycle it replaced did. It starts no thread of its own: `serve_forever()`
+#     runs on the CALLING thread and request concurrency belongs to the ASGI event loop.
+_THREADING_ALLOWED = {"database_router/pool.py", "shared/adapters/providers/asgi_runtime.py"}
+_ASGI_RUNTIME = _scan.BACKEND_ROOT / "shared" / "adapters" / "providers" / "asgi_runtime.py"
 
 # The read edge's blessed production make_server wirers (07E-1 + B5-1 Guard Evolution Matrix).
 # ``http_read_api.py`` is the read adapter itself (skipped in the census by identity);
@@ -327,28 +336,29 @@ def test_http_read_api_per_request_uow_get_only_single_threaded() -> None:
     assert _READ_API.exists(), "http_read_api.py is the wired read edge (07E-1) — update this guard if it moves"
     text = _READ_API.read_text(encoding="utf-8")
     tree = _tree(_READ_API)
-    handlers = [
-        node.name for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("do_")
-    ]
-    assert handlers == ["do_GET"], f"the read edge must stay GET-only (served handlers: {handlers})"
-    for marker in ("ThreadingHTTPServer", "ThreadingMixIn"):
-        assert marker not in text, f"http_read_api.py must stay single-threaded plain HTTPServer (found {marker})"
+    # GET-only census: the edge registers EXACTLY one route, and it is a GET. Every other method
+    # is refused 405 by the shared fail-closed app before anything is dispatched. The census reads
+    # the route decorators, which is where the served method set now lives.
+    methods = _scan.registered_route_methods(tree)
+    assert methods == ["get"], f"the read edge must stay GET-only (registered routes: {methods})"
+    for marker in ("ThreadingHTTPServer", "ThreadingMixIn", "threading.Thread"):
+        assert marker not in text, f"http_read_api.py must own no threading machinery (found {marker})"
+    # The edge serves through the shared containment-zone runtime; it hand-rolls no server.
+    assert "build_asgi_server" in text, "the read edge must build its server through the shared ASGI runtime"
     # Machinery-import ban extended to the transport module (07E-1 §6.7/§6.8).
     banned = {"threading", "asyncio", "contextvars", "psycopg_pool", "concurrent.futures"}
     imported = set(_scan.imported_modules(_READ_API))
     hits = {m for m in imported if m in banned or m.split(".")[0] in {b.split(".")[0] for b in banned}}
     assert not hits, f"http_read_api.py must stay single-threaded stdlib (banned machinery: {hits})"
-    # POSITIVE per-handler-UoW census (non-vacuous): do_GET must exist, must open exactly
-    # one `with ... control_store_unit_of_work() / .acquire()` unit of work, and must not
+    # POSITIVE per-handler-UoW census (non-vacuous): the served GET handler must exist, must open
+    # exactly one `with ... control_store_unit_of_work() / .acquire()` unit of work, and must not
     # touch any ControlPlane facade-bound service.
-    do_get = None
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "do_GET":
-            do_get = node
-    assert do_get is not None, "the wired read edge must define do_GET (positive census is non-vacuous)"
+    served = [node for node in ast.walk(tree) if _scan.own_route_methods(node) == ["get"]]
+    assert len(served) == 1, f"the wired read edge must define exactly one served GET handler (found {len(served)})"
+    handler = served[0]
     uow_withs = [
         w
-        for w in ast.walk(do_get)
+        for w in ast.walk(handler)
         if isinstance(w, ast.With)
         and any(
             isinstance(item.context_expr, ast.Call)
@@ -357,12 +367,12 @@ def test_http_read_api_per_request_uow_get_only_single_threaded() -> None:
             for item in w.items
         )
     ]
-    assert uow_withs, "do_GET must acquire a fresh control_store_unit_of_work() per request (with-block)"
+    assert uow_withs, "the served GET handler must acquire a fresh control_store_unit_of_work() per request (with-block)"
     facade_banned = {"store", "registry", "membership", "federation", "directory", "audit"}
-    facade_hits = sorted({node.attr for node in ast.walk(do_get) if isinstance(node, ast.Attribute) and node.attr in facade_banned})
-    assert not facade_hits, f"do_GET must use ONLY the yielded UoW store — facade-bound access: {facade_hits}"
+    facade_hits = sorted({node.attr for node in ast.walk(handler) if isinstance(node, ast.Attribute) and node.attr in facade_banned})
+    assert not facade_hits, f"the served GET handler must use ONLY the yielded UoW store — facade-bound access: {facade_hits}"
     # The server binds a ControlPlane, never a store; the runnable entrypoint lives here.
-    for fn_name in ("_make_handler", "make_server"):
+    for fn_name in ("_make_app", "make_server"):
         fn = next(n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == fn_name)
         first_arg = fn.args.args[0].arg if fn.args.args else None
         assert first_arg == "control_plane", f"{fn_name} must take the ControlPlane accessor, not a store ({first_arg!r})"
@@ -460,8 +470,18 @@ def test_product_thread_import_census_is_frozen_to_benign_set() -> None:
     assert importers == _THREADING_ALLOWED, (
         f"product `threading` importers must equal the frozen benign census {_THREADING_ALLOWED}; got {sorted(importers)}"
     )
-    # Non-vacuity: the benign member really holds a lock (the distinction the guard proves).
+    # Non-vacuity: each census member really is the benign construct it was admitted for — a lock
+    # and a shutdown event. Neither may START a thread; that is the distinction this guard proves.
     assert "threading.Lock()" in _POOL.read_text(encoding="utf-8"), "pool.py benign lock expected (census member is real)"
+    runtime_text = _ASGI_RUNTIME.read_text(encoding="utf-8")
+    assert "threading.Event()" in runtime_text, "asgi_runtime.py benign shutdown event expected (census member is real)"
+    # Scanned on the AST, not the text, so prose in a docstring can neither trip nor mask the pin.
+    spawned = {
+        node.attr if isinstance(node, ast.Attribute) else node.id
+        for node in ast.walk(_tree(_ASGI_RUNTIME))
+        if (isinstance(node, ast.Attribute) and node.attr in ("Thread", "start")) or (isinstance(node, ast.Name) and node.id == "Thread")
+    }
+    assert not spawned, f"the shared ASGI runtime must start no thread of its own (found {sorted(spawned)})"
 
 
 def test_cas_caller_census_frozen_to_five_production_sites() -> None:

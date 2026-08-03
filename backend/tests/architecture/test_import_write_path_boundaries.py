@@ -246,19 +246,37 @@ def test_import_audit_emitter_wire_is_nine_references_only_keys_no_loop() -> Non
 def test_cp_import_audit_ingest_edge_boundaries() -> None:
     text = _text(_CP_INGEST)
     tops = _import_tops(_CP_INGEST)
-    assert tops <= {"__future__", "json", "http", "typing", "control_plane"}, f"ingest imports outside the adapter surface: {sorted(tops)}"
-    for banned in ("api_gateway", "import_service", "psycopg", "psycopg2", "asyncpg", "sqlalchemy", "threading", "asyncio"):
+    assert tops <= {"__future__", "json", "typing", "fastapi", "control_plane", "shared"}, (
+        f"ingest imports outside the adapter surface: {sorted(tops)}"
+    )
+    # FastAPI is the ONE sanctioned framework; the ASGI server and its socket stay in the shared runtime.
+    for banned in (
+        "api_gateway",
+        "import_service",
+        "psycopg",
+        "psycopg2",
+        "asyncpg",
+        "sqlalchemy",
+        "threading",
+        "asyncio",
+        "starlette",
+        "uvicorn",
+        "http",
+    ):
         assert banned not in tops, f"the ingest edge must not import {banned}"
     assert '"/internal/import-audit/events"' in text, "the internal-only ingest path must be pinned"
     assert '"127.0.0.1"' in text, "the ingest edge must default-bind the loopback host"
-    for marker in ("ThreadingHTTPServer", "ThreadingMixIn"):
-        assert marker not in text, f"the ingest edge must stay single-threaded (found {marker})"
+    for marker in ("HTTPServer", "ThreadingHTTPServer", "ThreadingMixIn"):
+        assert marker not in text, f"the ingest edge must hand-roll no server ({marker}); the shared runtime owns it"
+    assert "build_asgi_server" in text, "the ingest edge must serve through the shared ASGI runtime"
     assert "_FORBIDDEN_EVENT_KEYS" in text and "source_service" in text, "the forbidden-name denylist (incl. source_service) must exist"
     assert "_SECRET_SHAPES" in text, "the secret/token/DSN-shape defense must exist"
     for action in _EXPECTED_ACTIONS:
         assert f'"{action}"' in text, f"the ingest edge must pin the {action} action"
-    served = sorted(n.name for n in ast.walk(_tree(_CP_INGEST)) if isinstance(n, ast.FunctionDef) and n.name.startswith("do_"))
-    assert served == ["do_POST"], f"the ingest edge must be POST-only: {served}"
+    # POST-only: exactly one registered route decorator, and it is a POST (every other method is
+    # refused 405 by the shared fail-closed app before the store is reached).
+    served = _scan.registered_route_methods(_tree(_CP_INGEST))
+    assert served == ["post"], f"the ingest edge must be POST-only: {served}"
 
 
 # --- 5. CP store + port ----------------------------------------------------------------------------

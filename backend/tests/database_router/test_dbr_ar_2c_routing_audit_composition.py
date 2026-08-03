@@ -66,7 +66,7 @@ def _env(read: Optional[str], audit: Optional[str] = None, timeout: Optional[str
     """Set the three seam env vars for one test (None => unset); restore all afterward."""
     prior = {k: os.environ.get(k) for k in _VARS}
     try:
-        for key, value in zip(_VARS, (read, audit, timeout)):
+        for key, value in zip(_VARS, (read, audit, timeout), strict=False):
             if value is None:
                 os.environ.pop(key, None)
             else:

@@ -51,6 +51,37 @@ def relposix(path: Path) -> str:
     return path.relative_to(BACKEND_ROOT).as_posix()
 
 
+# The FastAPI route-decorator verbs. Every serving edge declares its exposed method set through
+# these, so they are what the route/method censuses read (the pre-FastAPI edges expressed the same
+# set as ``do_GET`` / ``do_POST`` handler names).
+ROUTE_VERBS = frozenset({"get", "post", "put", "patch", "delete", "head", "options", "trace"})
+
+
+def own_route_methods(node: ast.AST) -> List[str]:
+    """The HTTP methods declared by THIS function's own ``@app.<method>(...)`` decorators.
+
+    Deliberately does not descend into the node: an app factory (``_make_app``) encloses the
+    decorated handlers, and walking into it would attribute their routes to the factory too.
+    ``@app.middleware`` / ``@app.exception_handler`` are excluded — neither exposes a method.
+    """
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return []
+    methods: List[str] = []
+    for dec in node.decorator_list:
+        func = dec.func if isinstance(dec, ast.Call) else dec
+        if isinstance(func, ast.Attribute) and func.attr in ROUTE_VERBS:
+            methods.append(func.attr)
+    return sorted(methods)
+
+
+def registered_route_methods(tree: ast.AST) -> List[str]:
+    """The sorted HTTP methods a module exposes as routes — its served method census."""
+    methods: List[str] = []
+    for node in ast.walk(tree):
+        methods.extend(own_route_methods(node))
+    return sorted(methods)
+
+
 def run(tests: List[Callable[[], None]]) -> None:
     failed = 0
     for t in tests:
