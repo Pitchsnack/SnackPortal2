@@ -66,7 +66,7 @@ def new_edge_app(*, invalid_status: int = 400, unavailable_status: int = 503) ->
     an EMPTY body. Docs/OpenAPI are disabled: these are closed, internal, contract-governed
     surfaces, not self-describing public APIs.
     """
-    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    app = FastAPI()
     # LOAD-BEARING: Starlette would otherwise answer an unexposed ``/route/`` (or ``/route``)
     # with a 307 redirect to the exposed spelling. The pre-migration edges compared the exact
     # request target and answered 404, and every route allowlist in this codebase is CLOSED —
