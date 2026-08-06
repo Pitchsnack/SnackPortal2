@@ -98,9 +98,16 @@ request was denied. DBR-AR-2 defines the durable, vendor-neutral, references-onl
   resolution, fail-closed first-use, and audit-before-irreversible-commit ordering (B7B-D5).
 - **Boundaries:** import-linter enforces that the six services are mutually independent (no service imports
   another) and `shared` is a leaf; DB drivers are confined to `database_router/adapters/providers/**` and
-  `control_plane/adapters/providers/**`; every server is a plain single-threaded `HTTPServer`
-  (AT-D15T1-10 — no threading anywhere); no runtime DDL on any path; the audit-class taxonomy is closed and
+  `control_plane/adapters/providers/**`; **no server creates a thread, subprocess, worker or reload
+  supervisor of its own, and the authorized process model is one worker and one operating-system
+  process per edge** (AT-D15T1-10); no runtime DDL on any path; the audit-class taxonomy is closed and
   CI-enforced (`backend/tests/architecture/test_audit_class_homes.py`).
+
+  > **Runtime correction.** This boundary statement previously read *"every server is a plain
+  > single-threaded `HTTPServer` (AT-D15T1-10 — no threading anywhere)"*. Since the FastAPI/Uvicorn
+  > migration there is no `HTTPServer` on the served path and the runtime is asyncio, so the literal
+  > form was false at the contract level. The boundary AT-D15T1-10 actually enforces — no
+  > application-created concurrency, one worker, one process — is unchanged and is restated above.
 - **Guard pins:** the three B5 gate documents each pin the exact DBR-AR-2 closure sentence of §1 (Dan-authorized
   governance decision, 2026-07-16 — guard G9; before the closure they pinned the open/follow-on status
   sentence), and SMOKE-C-SPEC-01 §6/§7 pin the in-memory disclosure.
@@ -146,7 +153,8 @@ Why this option, from live evidence:
   constraint (CLAUDE.md architecture constraint 1) and has no repo precedent, no governed DDL story, and no
   standing-environment harness.
 - **Option D — durable outbox/queue then forward (REJECTED for this arc).** A forwarder needs either a
-  background thread (forbidden — AT-D15T1-10, single-threaded servers, no threading anywhere) or a new
+  background thread (forbidden — AT-D15T1-10: no application-created concurrency, one worker and one
+  operating-system process per edge; see the Runtime correction in §3) or a new
   supervised process plus a second durable store whose own integrity would need the same guarantees. It also
   weakens the audit-before-hand-back ordering in §9: an event acknowledged into a local outbox is not yet in the
   audit store when the tenant connection is handed over. Recorded as a possible future scale layer only,

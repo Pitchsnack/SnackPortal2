@@ -60,8 +60,8 @@ _OPS = _BACKEND / "tests" / "control_plane" / "requires_pg" / "b5_standing_topol
 _COMPLETENESS_GUARD = _BACKEND / "tests" / "architecture" / "test_live_pg_workflow_runset_completeness.py"
 
 # The reviewed LF-normalized git-blob SHA-1 pins for the created-not-applied Gateway-audit DDL.
-_REVIEWED_012_BLOB = "87c38a968f8ab89886ef7ce4d9d7fafb7a179271"
-_REVIEWED_013_BLOB = "199664d1afb9e6e0a37e8609f42e4e1528771472"
+_REVIEWED_012_BLOB = "d2c70bab2a1c00d836b428d0c04a3bf61f4df1ae"
+_REVIEWED_013_BLOB = "4377ec309cc7640cf36b35491c63168ef05d60f4"
 
 # The five frozen AuditAction string values (IC-010 §J); V1a wires only the success action.
 _EXPECTED_ACTIONS = ("CarrierMismatch", "CarrierOnControlAnomaly", "RouteDenied", "IsolationAnomaly", "workspace_memberships_read")
@@ -146,6 +146,47 @@ def test_ddl_012_013_created_not_applied_and_unenrolled() -> None:
     module = _load_ops_module()
     for name in ("012_gateway_operational_audit.sql", "013_gateway_operational_audit_append_only.sql"):
         assert name not in module._CONTROL_DDL_ORDER, f"{name} is created-not-applied and must NOT be enrolled in the standing apply order"
+
+
+_NOT_ENROLLED_SENTENCE = "-- It is deliberately NOT enrolled in the B5-4 standing-topology apply order."
+
+
+def test_ddl_012_013_headers_state_a_window_invariant_posture() -> None:
+    """The header posture must be true in EVERY window, and the NOT-enrolled rule must survive verbatim.
+
+    Both files once opened their posture paragraph with "Created, NOT applied". That was true when it
+    was written and is false now: 012/013 have since been applied to the retained LOCAL standing
+    Control database by a separately governed, Dan-authorized run, and the table carries pre-existing
+    rows. A header sentence that flips truth value as standing state moves is worse than no sentence —
+    an operator reads it as current. The Gate-A correction restates the posture as *which apply acts
+    are sanctioned*, which does not flip.
+
+    What must NOT move: the enrollment rule. It is the load-bearing half, it is asserted structurally
+    just above against `_CONTROL_DDL_ORDER`, and it is quoted verbatim across four other guards.
+    """
+    for ddl in (_DDL_012, _DDL_013):
+        text = _text(ddl)
+        header = []
+        for line in text.splitlines():
+            if not line.startswith("--"):
+                break
+            header.append(line)
+        assert header, f"{ddl.name} must open with a contiguous leading comment block"
+        assert "" not in [line.strip() for line in header], f"{ddl.name}: the header block must carry no interior blank line"
+        joined = "\n".join(header)
+        assert _NOT_ENROLLED_SENTENCE in joined, f"{ddl.name} must keep the enrollment rule verbatim: {_NOT_ENROLLED_SENTENCE!r}"
+        assert "TRUE IN EVERY WINDOW" in joined, (
+            f"{ddl.name}: the application-posture paragraph must declare that it is stated window-invariantly, so a future "
+            "editor is told the constraint rather than discovering it"
+        )
+        # The bare claim, as a sentence opener, is what falsifies. It may only appear as the explicitly
+        # quoted historical reference the correction added.
+        for line in header:
+            if "Created, NOT applied" in line:
+                assert '"Created, NOT applied"' in line, (
+                    f'{ddl.name}: "Created, NOT applied" may appear only as a quoted historical reference, never as a '
+                    "current-state claim — 012/013 ARE applied to the retained local standing Control database"
+                )
 
 
 # --- 2. gateway durable emitter --------------------------------------------------------------------
@@ -444,6 +485,7 @@ if __name__ == "__main__":
             test_ddl_012_frozen_shape,
             test_ddl_013_append_only_triggers,
             test_ddl_012_013_created_not_applied_and_unenrolled,
+            test_ddl_012_013_headers_state_a_window_invariant_posture,
             test_emitter_is_stdlib_only_no_driver_no_cross_service_no_dsn,
             test_emitter_wire_is_ten_references_only_keys_single_attempt,
             test_cp_ingest_edge_boundaries,

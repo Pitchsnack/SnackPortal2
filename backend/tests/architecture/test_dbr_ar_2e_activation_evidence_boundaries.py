@@ -183,14 +183,22 @@ _FORBIDDEN_CLAIM_PHRASES = (
     "evidence sufficient for separate activation decision",
 )
 
-# Byte-identity pins: the three B5 gate documents were re-stamped by the B5-BLK-6 governance-effect
+# Byte-identity pins. RE-STAMPED under Gate A (AUTHFIX-B, 2026-08-06, explicitly authorized): the three B5 gate
+# documents each carried a claim falsified by the ~2026-07-21 standing-fixture replacement — "standing topology
+# retained" / "standing auth fixture retained", the B5-4A SATISFIED row, and the (B5-4/B5-4A/Smoke C V2) local-proof
+# citations. Each now carries an ADDITIVE correction note; the merged-history rows themselves are unchanged, no
+# blocker status moved, and the gate remains DO-NOT-ACTIVATE. Byte pins on governance documents mean one character
+# of correction text turns this guard red, which is why the re-stamp needed explicit authorization rather than
+# being a mechanical edit.
+#
+# Previously: the three B5 gate documents were re-stamped by the B5-BLK-6 governance-effect
 # closure (2026-07-20, Dan-authorized — exactly the current-standing census flip to 7 of 9 OPEN and the
 # B5-BLK-6 register/taxonomy CLOSED rows); the B5 evidence template stays at its blob (untouched by 2E
 # and by both closures).
 _B5_GATE_BLOBS = {
-    "docs/runtime/b5_production_runtime_activation_gate.md": "8530d04e67ccadb5614a745b12b296f2257932d3",
-    "docs/runtime/b5_activation_blockers.md": "bdf413a58243a20fbfc932ca82ec26a1bcbdadc8",
-    "docs/runtime/b5_runtime_readiness_matrix.md": "4d8edbdfe3e770aa4c4b19b65db2c4b8848ba187",
+    "docs/runtime/b5_production_runtime_activation_gate.md": "e5807b25690c2206920bd9abfdaab858455cb266",
+    "docs/runtime/b5_activation_blockers.md": "ab07c348e4867042514e58b5defb2170eb60c181",
+    "docs/runtime/b5_runtime_readiness_matrix.md": "b5f1119b28520a82b731efaaf8e24d0132c2958f",
     "docs/runtime/b5_activation_evidence_template.md": "be6ac381feb074741c33ae77511c8aba7b768e60",
 }
 _DDL_BLOBS = {

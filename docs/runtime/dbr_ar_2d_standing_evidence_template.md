@@ -21,7 +21,7 @@ and redacted location reference appear here.
 | Operator identity | `<operator name — references only>` |
 | Date (UTC) | `<YYYY-MM-DD>` |
 | B5-4 status | `6/6 PASS` (before AND after) |
-| B5-4A status | `12/12 PASS` (before AND after) |
+| B5-4A status | `12/12 PASS` (before AND after) — **HISTORICAL / UNSATISFIABLE (AUTHFIX-B).** The b5_standing subject state was replaced around 2026-07-21; this row cannot be satisfied against the current standing environment and must not be filled in as though it could. Record the successor posture instead (`test_pg_clm_standing_auth_posture.py`). |
 | Smoke C V2 prerequisites | `STATUS OK` (zero residue) |
 
 ## 2. Backup (before any DDL)

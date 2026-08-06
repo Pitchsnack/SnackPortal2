@@ -27,6 +27,15 @@ evidence still owed, and keeps every activation blocker OPEN.
 | B5-4A — standing authentication fixture (memberships + non-Ready `b5_standing_dormant`) | #74 | fully closed; standing auth fixture retained |
 | Smoke C V2 — integrated live proof, **including Fix R3** target-branch cleanup | #75 | fully arc-closed |
 
+> **⚠️ AUTHFIX-B correction (Gate A).** Two claims in the table above were true when this record was
+> written and are **false now**: `B5-4 … standing topology retained` and `B5-4A … standing auth
+> fixture retained`. The `b5_standing_alpha` / `b5_standing_beta` / `b5_standing_dormant` subject
+> state was **replaced around 2026-07-21** by the four-cluster standing fixture (`acme` / `nova` /
+> `zeta`). The merged-history rows are left intact — they correctly record what those PRs delivered —
+> but **"retained" must not be read as current standing state.** The accepted replacement for the
+> auth fixture's subject-state verification is
+> `backend/tests/control_plane/requires_pg/test_pg_clm_standing_auth_posture.py`.
+
 **What Smoke C V2 (including Fix R3) proves — at database granularity, over the standing fixture:**
 
 ```text

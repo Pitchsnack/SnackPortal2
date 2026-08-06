@@ -55,7 +55,10 @@ MANUAL_ONLY_EXCEPTIONS = {
         "PRD B5-4 standing-topology disposable proof: single-cluster CI-capable, but loop enrollment "
         "requires editing the live-pg workflow (plus the EXPECTED_HARNESS_COUNT/b7c2-doc lockstep), "
         "which is out of the B5-4 slice's authorized surface (no .github changes); enrollment is a "
-        "tracked follow-up in the B5-4 execution report ATR"
+        "tracked follow-up in the B5-4 execution report ATR. "
+        "AUTHFIX-B (Gate A): ANNOTATE, DO NOT RETIRE — this harness is disposable, does not depend "
+        "on the vanished b5_standing standing rows, and is still green given only SNACKPORTAL_TEST_DSN; "
+        "retiring it alongside the auth-fixture family would destroy 13 live checks for no reason"
     ),
     "tests/control_plane/requires_pg/test_pg_b5_standing_auth_fixture.py": (
         "PRD B5-4A V2 standing-authentication-fixture proof: bound to the ESTABLISHED B5-4 standing "
@@ -63,14 +66,24 @@ MANUAL_ONLY_EXCEPTIONS = {
         "posture) — not runnable on the single ephemeral CI service; loop enrollment would additionally "
         "require the .github workflow edit plus the EXPECTED_HARNESS_COUNT/b7c2-doc lockstep, which is "
         "outside the B5-4A V2 authorized five-file surface; tracked follow-up in the B5-4A V2 execution "
-        "report ATR"
+        "report ATR. "
+        "AUTHFIX-B (Gate A): this harness's subject state — the b5_standing trio — was replaced "
+        "around 2026-07-21 by the four-cluster standing fixture, so it is SUPERSEDED and its non-zero "
+        "exit is EXPECTED and EXPLICIT. It is retained, not retired: Stage 0 forbids partial retirement "
+        "of this family and four default-suite guards still reference it. Accepted replacement: "
+        "tests/control_plane/requires_pg/test_pg_clm_standing_auth_posture.py"
     ),
     "tests/control_plane/requires_pg/test_pg_smoke_c_integrated_live_proof.py": (
         "PRD Smoke C V2 integrated live proof: bound to the ESTABLISHED B5-4 standing topology, the "
         "B5-4A standing auth fixture, the local Docker fixture, and the external secret root — not "
         "runnable on the single ephemeral CI service; loop enrollment would additionally require the "
         ".github workflow edit plus the EXPECTED_HARNESS_COUNT/b7c2-doc lockstep, which is outside the "
-        "Smoke C V2 authorized five-file surface; tracked follow-up in the Smoke C V2 execution report ATR"
+        "Smoke C V2 authorized five-file surface; tracked follow-up in the Smoke C V2 execution report ATR. "
+        "AUTHFIX-B (Gate A): this harness's subject state — the b5_standing trio — was replaced "
+        "around 2026-07-21 by the four-cluster standing fixture, so it is SUPERSEDED and its non-zero "
+        "exit is EXPECTED and EXPLICIT. It is retained, not retired: Stage 0 forbids partial retirement "
+        "of this family and four default-suite guards still reference it. Accepted replacement: "
+        "tests/control_plane/requires_pg/test_pg_clm_standing_auth_posture.py"
     ),
     "tests/control_plane/requires_pg/test_pg_b5_blk6_portal_binding_live_proof.py": (
         "PRD B5-BLK-6C-C disposable real-Control-DB portal-composition proof: single-cluster capable "
@@ -86,7 +99,12 @@ MANUAL_ONLY_EXCEPTIONS = {
         "exactly-once V3 standing evidence (DDL 010/011 manually applied to the retained local Control "
         "DB + the four durable evidence rows) — not runnable on the single ephemeral CI service; the "
         "hosted 14-harness loop is deliberately UNCHANGED by the V3 slice (PRD DBR-AR-2D V3 §10), so "
-        "enrollment is forbidden, not merely deferred"
+        "enrollment is forbidden, not merely deferred. "
+        "AUTHFIX-B (Gate A): this harness's subject state — the b5_standing trio — was replaced "
+        "around 2026-07-21 by the four-cluster standing fixture, so it is SUPERSEDED and its non-zero "
+        "exit is EXPECTED and EXPLICIT. It is retained, not retired: Stage 0 forbids partial retirement "
+        "of this family and four default-suite guards still reference it. Accepted replacement: "
+        "tests/control_plane/requires_pg/test_pg_clm_standing_auth_posture.py"
     ),
     "tests/control_plane/requires_pg/test_pg_gateway_audit_durable.py": (
         "Gateway Operational Audit Persistence V1a disposable durable-persistence proof: single-cluster "
@@ -127,6 +145,41 @@ MANUAL_ONLY_EXCEPTIONS = {
         "authorized surface (no .github changes); operator-run per "
         "infrastructure/runbooks/controlled_rollback_rehearsal.md and pinned by "
         "tests/architecture/test_controlled_rollback_rehearsal_boundaries.py"
+    ),
+    "tests/control_plane/requires_pg/test_pg_clm_standing_auth_posture.py": (
+        "AUTHFIX-B REPLACEMENT standing authentication verification harness — the accepted successor to the "
+        "B5-4A standing auth fixture, whose subject state (the b5_standing trio) was replaced around "
+        "2026-07-21 and no longer exists. Read-only against the ESTABLISHED standing Control database, "
+        "which does not exist on the single ephemeral CI service; it verifies structural invariants and "
+        "REPORTS the roster rather than pinning it, precisely so a future governed fixture change cannot "
+        "silently falsify it again. Deliberately MANUAL_ONLY: the hosted 14-harness loop and the "
+        "EXPECTED_HARNESS_COUNT/b7c2-doc lockstep are unchanged by this slice. Pinned by "
+        "tests/architecture/test_clm_standing_auth_posture_boundaries.py"
+    ),
+    "tests/control_plane/requires_pg/test_pg_clm_acme_dataplane_witness.py": (
+        "CLM ACME tenant data-plane witness (Gateway 8820 -> Tenant Startup 8004 -> Database Router -> "
+        "Control routing record -> SecretRef -> ACME physical tenant DB -> Startup GET/PATCH, plus ZETA "
+        "denial/isolation): bound to the ESTABLISHED four-cluster standing topology, the standing Keycloak "
+        "fixture, an operator-supplied bearer token, and the external tenant secret root — none of which "
+        "exists on the single ephemeral CI service. Its `run` leg additionally performs a REAL business "
+        "write to a physical tenant database (Gate-B class M14) and requires an explicit human START-GATE, "
+        "so it must never be an automatic CI proof. Enrollment is FORBIDDEN rather than deferred: the "
+        "hosted 14-harness loop and the EXPECTED_HARNESS_COUNT/b7c2-doc lockstep are deliberately unchanged "
+        "by this slice. Operator-run per infrastructure/runbooks/clm_acme_dataplane_witness.md and pinned by "
+        "tests/architecture/test_clm_dataplane_witness_boundaries.py"
+    ),
+    "tests/control_plane/requires_pg/test_pg_aw1_gateway_audit_writer_rehearsal.py": (
+        "AW-1 Tier-A disposable least-privilege privilege rehearsal: deliberately MANUAL_ONLY and "
+        "deliberately NOT loop-enrolled — not merely deferred. CREATE ROLE is CLUSTER-scoped, so the "
+        "rehearsal roles land wherever the rehearsal runs; it must therefore own a disposable cluster it "
+        "may create and drop roles on, and it creates the database name snackportal2_control_local exactly "
+        "(asserted absent first) so the byte-frozen §5.4 payload executes verbatim. Neither condition holds "
+        "on the single ephemeral CI service. Enrollment is additionally FORBIDDEN rather than pending: all "
+        "four EXPECTED_HARNESS_COUNT sites parse the workflow loop TEXT and compare len(entries), so bumping "
+        "14->15 while the loop stays 14 turns five assertions red and takes the default suite down. The "
+        "hosted 14-harness loop is UNCHANGED by this slice. Operator-run per "
+        "infrastructure/runbooks/aw1_gateway_audit_writer.md and pinned by "
+        "tests/architecture/test_aw1_gateway_audit_writer_boundaries.py"
     ),
     "tests/control_plane/requires_pg/test_pg_clm_2day_stage_b_rehearsal.py": (
         "CLM 2-Day Stage B controlled-local rehearsal harness (the full D-42 journey: RS256/OIDC login -> "

@@ -54,6 +54,14 @@ IC-002 is the **eight-state** lifecycle (see
 | Frontend integrates only via Gateway | IC-009 portals; Lovable UI-only | Interim Supabase/RLS (DRIFT-01) | B5-BLK-5 |
 | Monitoring / alerting | Ops | Not evidenced | B5-BLK-9 |
 
+> **⚠️ AUTHFIX-B correction (Gate A).** Rows above that cite `(B5-4/B5-4A/Smoke C V2)` as the source
+> of a *local* proof describe evidence produced against the `b5_standing` subject state, which was
+> **replaced around 2026-07-21** by the four-cluster standing fixture. The historical proofs stand;
+> the fixture they ran against does not exist. Re-proof against the current standing environment uses
+> `backend/tests/control_plane/requires_pg/test_pg_clm_standing_auth_posture.py`. **No readiness
+> verdict, no blocker status, and no activation condition changes as a result of this note** — the
+> gate remains DO-NOT-ACTIVATE.
+
 ## Hard rule
 
 ```

@@ -1,5 +1,20 @@
 # Smoke C V2 — Integrated Live Proof (operator runbook)
 
+> ## ⚠️ HISTORICAL — AUTHFIX-B (Gate A)
+>
+> Every prerequisite and status claim in this document that depends on the **B5-4A standing
+> authentication fixture** — in particular the `12/12` extension checks and the "before AND after
+> 12/12" obligation — is **UNSATISFIABLE against the current standing environment** and must be read
+> as historical. The `b5_standing_alpha` / `b5_standing_beta` / `b5_standing_dormant` subject state
+> was replaced around **2026-07-21** by the four-cluster standing fixture. That red is standing and
+> pre-existing; it is not caused by any later change.
+>
+> Nothing here is amended and no claim is deleted: Stage 0 forbids partial retirement of this family,
+> and the procedure remains correct for the state it was written against. The accepted replacement for
+> the fixture's subject-state verification is
+> `backend/tests/control_plane/requires_pg/test_pg_clm_standing_auth_posture.py`.
+
+
 **Scope:** LOCAL / NON-PRODUCTION ONLY (PRD Smoke C V2). This runbook documents how an operator executes
 the **SMOKE-C-SPEC-01** integrated live local topology proof over the **established, permanent** B5-4/B5-4A
 standing fixture, using the operator harness

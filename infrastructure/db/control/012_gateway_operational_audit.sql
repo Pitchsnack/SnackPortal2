@@ -41,12 +41,17 @@
 -- Append-only by design: id is immutable; there is NO UPDATE path and NO DELETE path; corrections, failures, and reversals are
 -- NEW rows. DB-level append-only enforcement is the companion 013_gateway_operational_audit_append_only.sql.
 --
--- Created, NOT applied: this template is authored under PRD Gateway Operational Audit Persistence V1a (controlled
--- non-production). Applying it to a live Control database, and exercising the durable Gateway operational-audit store against a
--- real cluster, is done ONLY by the MANUAL_ONLY disposable proof (create -> prove -> drop; governed ops apply only — never
--- runtime DDL). It is deliberately NOT enrolled in the B5-4 standing-topology apply order. The composed gateway audit default
--- remains the in-memory no-sink emitter (AD-1 Option A); durable mode is explicit and env-selected. Least-privilege writer-role
--- DDL remains separately governed and is not delivered by V1a.
+-- Application posture — stated so that it is TRUE IN EVERY WINDOW. This template is authored under PRD Gateway Operational
+-- Audit Persistence V1a (controlled non-production). It is applied ONLY by an explicit, governed, operator-driven act: never by
+-- a runtime service, never by a migration runner, glob, or directory sweep, and never automatically. Exactly two such acts are
+-- sanctioned — (a) the MANUAL_ONLY disposable proof (create -> prove -> drop), and (b) a separately governed, Dan-authorized
+-- apply to the retained LOCAL standing Control database, which HAS TAKEN PLACE (recorded in the CLM-SS-1 Stage-0 closure; the
+-- table carries pre-existing rows). It remains created-not-applied for every tenant, staging, and production database, and
+-- production enablement remains unauthorized (Production NOT READY / DO-NOT-ACTIVATE). An earlier revision of this header read
+-- "Created, NOT applied"; that sentence described one window only and must not be read as current standing state.
+-- It is deliberately NOT enrolled in the B5-4 standing-topology apply order. The composed gateway audit default remains the
+-- in-memory no-sink emitter (AD-1 Option A); durable mode is explicit and env-selected. Least-privilege writer-role DDL remains
+-- separately governed and is not delivered by V1a.
 
 CREATE TABLE IF NOT EXISTS control_gateway_audit (
     id             bigint       GENERATED ALWAYS AS IDENTITY PRIMARY KEY,  -- DB-generated; adapter never inserts id; ORDER BY id ASC

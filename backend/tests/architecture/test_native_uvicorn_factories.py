@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import ast
 import pathlib
+import re
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -208,33 +209,119 @@ def test_no_edge_imports_the_asgi_server_directly() -> None:
             assert module.split(".")[0] != "uvicorn", f"{rel} must not import uvicorn; only {allowed} may"
 
 
-def test_runbook_pins_all_nine_targets_and_the_canonical_flags() -> None:
-    # On the native path the uvicorn CLI builds its OWN config: access logging, the Server header,
-    # and proxy-header trust default to ON. The runbook command is therefore load-bearing security
-    # documentation, not convenience — every one of the nine commands must carry all four flags.
-    assert _RUNBOOK.is_file(), f"the operator runbook must exist at {_RUNBOOK}"
+def _runbook_command_blocks() -> list[str]:
+    """Every fenced block in the runbook whose body is a uvicorn invocation.
+
+    Splitting on the fence and keeping blocks that CONTAIN `uvicorn ` is what the earlier guard did —
+    but it then joined them all into one string and counted. That is the weakness this replaces: a
+    file-wide `count(flag) >= 9` stays green when six newly added commands each omit a different flag,
+    because the original nine still supply nine occurrences of every flag.
+    """
     runbook = _RUNBOOK.read_text(encoding="utf-8")
-    assert "--factory" in runbook, "the runbook must document the native application-factory startup"
-    for rel, _shared in _EDGES:
-        target = rel[:-3].replace("/", ".") + f":{_FACTORY}"
-        assert target in runbook, f"the runbook must document the native target {target}"
-    for flag in _CANONICAL_FLAGS:
-        occurrences = runbook.count(flag)
-        assert occurrences >= len(_EDGES), (
-            f"the runbook must carry {flag} on all {len(_EDGES)} canonical startup commands (found {occurrences})"
+    # `<module>` / `<port>` blocks are the prose TEMPLATE at the head of the runbook, not a command.
+    return [block for block in runbook.split("```") if "uvicorn " in block and "<module>" not in block]
+
+
+def _parse_command(block: str) -> tuple[str, int]:
+    """(module target, port) for one command block."""
+    target = re.search(r"uvicorn\s+([A-Za-z0-9_.]+:%s)" % _FACTORY, block)
+    port = re.search(r"--port\s+(\d+)", block)
+    assert target, f"a uvicorn command block must name a `<module>:{_FACTORY}` target:\n{block}"
+    assert port, f"a uvicorn command block must pin an explicit --port:\n{block}"
+    return target.group(1), int(port.group(1))
+
+
+def _smoke_map_from_harness() -> dict[str, int]:
+    """The isolated smoke map, read from the harness that HARD-CODES it — not restated here.
+
+    Restating it would let the runbook and the harness drift apart while both guards stayed green.
+    """
+    text = (_BACKEND / "tests" / "deployment" / "native_uvicorn_process_smoke.py").read_text(encoding="utf-8")
+    pairs = re.findall(r'\(\s*(\d{4}),\s*"[^"]+",\s*"([^"]+):%s"' % _FACTORY, text, re.DOTALL)
+    return {f"{module}:{_FACTORY}": int(port) for port, module in pairs}
+
+
+def test_runbook_pins_every_command_block_with_all_canonical_flags() -> None:
+    # On the native path the uvicorn CLI builds its OWN config: access logging, the Server header, and
+    # proxy-header trust default to ON. Each runbook command is therefore load-bearing security
+    # documentation. The assertion is PER BLOCK: one command missing one flag fails, regardless of how
+    # many other commands carry it.
+    assert _RUNBOOK.is_file(), f"the operator runbook must exist at {_RUNBOOK}"
+    blocks = _runbook_command_blocks()
+    assert blocks, "the runbook must contain fenced uvicorn command blocks"
+    for block in blocks:
+        target, port = _parse_command(block)
+        for flag in _CANONICAL_FLAGS:
+            assert flag in block, f"the runbook command for {target} (port {port}) is missing {flag}"
+        assert "--host 127.0.0.1" in block, (
+            f"the runbook command for {target} (port {port}) must bind the loopback host explicitly. On the native path "
+            "the composition seam's host allow-list is bypassed, so the command line is the ONLY place the internal-only "
+            "bind (IC-010 §R/§M) is enforced — and an omitted --host additionally falls through to UVICORN_HOST."
         )
-    # Scan the COMMAND blocks only — the prose deliberately names these to say they are forbidden.
-    commands = "\n".join(block for block in runbook.split("```") if "uvicorn " in block)
-    assert commands, "the runbook must contain fenced uvicorn command blocks"
-    for unauthorized in ("--reload", "gunicorn", "--workers 2", "--workers 4"):
-        assert unauthorized not in commands, f"{unauthorized} must never appear in a documented startup command"
-    # The internal-only bind (IC-010 §R/§M) moves from the composition seam's loopback allow-list to
-    # the command line on the native path, so the command line is where it must now be pinned. Without
-    # this, a documented `--host 0.0.0.0` would expose eight internal edges and no guard would notice.
-    assert "--host 0.0.0.0" not in commands, "no documented startup command may bind all interfaces"
-    loopback_binds = commands.count("--host 127.0.0.1")
-    assert loopback_binds >= len(_EDGES), (
-        f"all {len(_EDGES)} documented startup commands must bind the loopback host explicitly (found {loopback_binds})"
+        for unauthorized in ("--host 0.0.0.0", "--reload", "gunicorn", "--workers 2", "--workers 4"):
+            assert unauthorized not in block, f"{unauthorized} must never appear in a documented startup command ({target})"
+
+
+def test_runbook_documents_both_port_maps_and_pins_each_to_its_source() -> None:
+    """The runbook carries TWO disjoint maps. Each is pinned to the artifact that owns it.
+
+    `8080-8088` is the ISOLATED SMOKE map, owned by `native_uvicorn_process_smoke.py`.
+    `8001/8002/8003/8004/8005/8820` is the STANDING map, owned by the governed launcher.
+
+    Before Gate A the runbook carried only the smoke map, presented itself as the canonical standing
+    method, ended its startup order at `API Gateway :8080`, and probed 8080 on shutdown — while the
+    real standing Gateway ran on 8820, a number that appeared nowhere in the repository. An operator
+    following the runbook verbatim started a SECOND Gateway and nothing would have revealed the split.
+    No guard pinned any port, which is why nothing caught it.
+    """
+    import test_standing_launcher_flags as _launcher_guard  # same directory; single source for the standing map
+
+    observed: dict[str, set[int]] = {}
+    for block in _runbook_command_blocks():
+        target, port = _parse_command(block)
+        observed.setdefault(target, set()).add(port)
+
+    smoke = _smoke_map_from_harness()
+    assert len(smoke) == len(_EDGES), f"the smoke harness must enumerate all {len(_EDGES)} edges, found {len(smoke)}"
+
+    standing = {f"{module}:{_FACTORY}": port for module, port in _launcher_guard.GOVERNED_STANDING_MAP.items()}
+
+    for target, port in smoke.items():
+        assert port in observed.get(target, set()), (
+            f"the runbook must document the isolated-smoke command for {target} on port {port} "
+            f"(found {sorted(observed.get(target, set()))})"
+        )
+    for target, port in standing.items():
+        assert port in observed.get(target, set()), (
+            f"the runbook must document the STANDING command for {target} on port {port} (found {sorted(observed.get(target, set()))})"
+        )
+
+    # Nothing outside the union of the two maps may appear as a documented port.
+    allowed = set(smoke.values()) | set(standing.values())
+    for target, ports in observed.items():
+        stray = ports - allowed
+        assert not stray, f"the runbook documents {target} on unpinned port(s) {sorted(stray)}"
+
+    # The standing Gateway is 8820 and is never documented on 8080 as a standing command.
+    gateway = f"api_gateway.adapters.providers.http_gateway_edge:{_FACTORY}"
+    assert standing[gateway] == 8820, "the standing API Gateway must be 8820"
+    assert observed[gateway] == {8080, 8820}, (
+        "the runbook must document the Gateway exactly twice — once on the smoke map (8080) and once on the standing "
+        f"map (8820), found {sorted(observed[gateway])}"
+    )
+    runbook = _RUNBOOK.read_text(encoding="utf-8")
+    for scope_label in ("ISOLATED SMOKE", "STANDING"):
+        assert scope_label in runbook, f"the runbook must label the maps explicitly ({scope_label})"
+
+
+def test_runbook_port_map_guard_is_non_vacuous() -> None:
+    assert _parse_command("uvicorn a.b:create_app_from_env --factory --host 127.0.0.1 --port 8820") == (
+        "a.b:create_app_from_env",
+        8820,
+    )
+    smoke = _smoke_map_from_harness()
+    assert smoke.get("api_gateway.adapters.providers.http_gateway_edge:create_app_from_env") == 8080, (
+        "the smoke-map parser must actually read the harness"
     )
 
 
@@ -263,7 +350,9 @@ if __name__ == "__main__":
             test_factory_declares_no_route_of_its_own,
             test_factory_creates_no_worker_subprocess_or_supervisor,
             test_no_edge_imports_the_asgi_server_directly,
-            test_runbook_pins_all_nine_targets_and_the_canonical_flags,
+            test_runbook_pins_every_command_block_with_all_canonical_flags,
+            test_runbook_documents_both_port_maps_and_pins_each_to_its_source,
+            test_runbook_port_map_guard_is_non_vacuous,
             test_factory_census_nonvacuity,
         ]
     )

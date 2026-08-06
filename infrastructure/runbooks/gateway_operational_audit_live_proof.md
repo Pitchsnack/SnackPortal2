@@ -5,12 +5,19 @@ operator procedure for exercising the reviewed Gateway operational-audit DDL
 (`infrastructure/db/control/012_gateway_operational_audit.sql` +
 `013_gateway_operational_audit_append_only.sql`) against a **disposable** PostgreSQL database, verifying
 the durable store, and handling incidents. V1a delivers **durable persistence only** — operator retrieval
-(V1b) is out of scope. The DDL is **created, NOT applied to any standing, staging, or production
-database**, and is deliberately **NOT enrolled** in the B5-4 standing-topology apply order. Applying it to
-a standing Control database is a separately governed, Dan-authorized standing-environment run (not
-performed by this slice). The disposable proof that validates every step below is
+(V1b) is out of scope.
+
+> **Current standing state (do not read the historical wording below as a state claim).** The DDL is
+> deliberately **NOT enrolled** in the B5-4 standing-topology apply order, and it remains
+> **created-not-applied for every tenant, staging, and production database**. It has, however, been
+> applied to the retained **LOCAL standing Control database** by a separately governed, Dan-authorized
+> standing-environment run — that act was never performed by this slice and is recorded in the CLM-SS-1
+> Stage-0 closure. Anywhere this document says "created, NOT applied", read it as scoped to **this
+> procedure** (the disposable proof), not as a claim that no standing database carries the objects.
+
+The disposable proof that validates every step below is
 `backend/tests/control_plane/requires_pg/test_pg_gateway_audit_durable.py` (create → prove → drop; no
-standing database touched). **Production enablement remains unauthorized** (8 of 9 activation blockers
+standing database touched). **Production enablement remains unauthorized** (7 of 9 activation blockers
 OPEN; Production NOT READY / DO-NOT-ACTIVATE).
 
 Standing rules (inherited from `infrastructure/runbooks/README.md`): secret references only (D-14 — never
@@ -27,12 +34,28 @@ database driver and no Control-DB descriptor; the Control Plane is the sole Cont
    instance or the ephemeral CI service — NEVER production, shared staging, the standing Control database,
    or any tenant database. The proof creates and drops its own database `sp2_gateway_audit_v1a_proof`.
 2. **Reviewed DDL blob IDs.** The reviewed LF-normalized git-blob SHA-1 pins are:
-   - `012_gateway_operational_audit.sql` → `5df1ae4edb7a943b33f36fc3800d81c8cb75804b`
-   - `013_gateway_operational_audit_append_only.sql` → `199664d1afb9e6e0a37e8609f42e4e1528771472`
+   - `012_gateway_operational_audit.sql` → `d2c70bab2a1c00d836b428d0c04a3bf61f4df1ae`
+   - `013_gateway_operational_audit_append_only.sql` → `4377ec309cc7640cf36b35491c63168ef05d60f4`
 
-   These are cross-checked in the default suite by
-   `backend/tests/architecture/test_b7c1_control_audit_ddl_blob_pins.py` and by the disposable proof's own
-   STOP-before-connect check.
+   > **What is and is not machine-checked.** The two literals **immediately above are prose in this
+   > runbook and no guard reads them.** A governed `012`/`013` change must move **SIX** sites by hand,
+   > and only **THREE** of them are defended by CI:
+   >
+   > | # | Site | Defended by CI? |
+   > |---|---|---|
+   > | 1 | `backend/tests/architecture/test_b7c1_control_audit_ddl_blob_pins.py` — `_PIN_012` / `_PIN_013` | **yes** (self-asserted against the committed DDL bytes) |
+   > | 2 | `backend/tests/architecture/test_gateway_operational_audit_boundaries.py` — `_REVIEWED_012_BLOB` / `_REVIEWED_013_BLOB` | **yes** (self-asserted) |
+   > | 3 | `backend/tests/control_plane/requires_pg/test_pg_gateway_audit_durable.py` — `_REVIEWED_012_BLOB` / `_REVIEWED_013_BLOB` | **yes** (cross-checked remotely by site 1) |
+   > | 4 | `backend/tests/control_plane/requires_pg/test_pg_clm_2day_stage_b_rehearsal.py` — `_REHEARSAL_BLOB_012` / `_REHEARSAL_BLOB_013` | **no** |
+   > | 5 | `backend/tests/control_plane/requires_pg/test_pg_aw1_gateway_audit_writer_rehearsal.py` — `_REHEARSAL_BLOB_012` / `_REHEARSAL_BLOB_013` | **no** |
+   > | 6 | the two literals in §1.2 of this runbook | **no** |
+   >
+   > Sites 4 and 5 are invisible to the pin-completeness meta-guard because its `_REVIEWED_[A-Z0-9]+_BLOB`
+   > discovery regex does not match `_REHEARSAL_BLOB_*`; site 6 is prose. Both rehearsal sites do STOP
+   > before connecting or applying on a mismatch, so an undefended site fails safe — it just fails late.
+   > The pins in §1.2 were **stale at the merged baseline** (the 012 value predated a committed DDL edit)
+   > precisely because nothing observed them; that is what the earlier "cross-checked in the default
+   > suite" sentence concealed.
 3. **Credentials by reference only.** The DSN reaches the proof only through the `_pg` runner
    (`SNACKPORTAL_TEST_DSN`, by name); its value is used in memory at connect time and never echoed,
    logged, or written.

@@ -149,7 +149,14 @@ def _is_valid_import_target(target: str) -> bool:
     bytes of one or more ``/``-separated segments, each ``[A-Za-z0-9][A-Za-z0-9._-]*``. Every bare / empty /
     ``.`` / ``..`` / percent-encoded / backslash / query / fragment form fails to match and is ``404``
     pre-core. A bounded parameterized matcher — NEVER a generic wildcard or prefix router (the static
-    allowlist stays closed to {/memberships, /health, /readiness})."""
+    allowlist stays closed to {/memberships, /health, /readiness}).
+
+    Status note (PR #111 M-3): a rejected target answers ``404`` pre-core, so ``404`` on this family is
+    a *matcher* verdict and does not distinguish "route not exposed" from "unknown source_ref" — pair
+    any ``404`` observation with a positive control before drawing a conclusion from it. Enforcement
+    does not rest on this docstring: it is this function plus four independent handler gates, every
+    denial is fixed-status with an empty body, and ``POST`` on an invalid target still returns ``404``
+    pre-core."""
     if not target.startswith(_IMPORT_PREFIX):
         return False
     suffix = target[len(_IMPORT_PREFIX) :]
