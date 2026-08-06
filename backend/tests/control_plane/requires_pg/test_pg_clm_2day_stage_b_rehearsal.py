@@ -89,8 +89,8 @@ _CRYPTO_FIXTURE_PATH = pathlib.Path(__file__).resolve().parents[2] / "api_gatewa
 # Rehearsal LF-normalized git-blob SHA-1 pins for the Gateway-audit control DDL (D-42 widened 012's
 # action CHECK to seven values + the record_ref column; 013 is unchanged). A mismatch STOPS the
 # exercise BEFORE any connection is opened.
-_REHEARSAL_BLOB_012 = "87c38a968f8ab89886ef7ce4d9d7fafb7a179271"
-_REHEARSAL_BLOB_013 = "199664d1afb9e6e0a37e8609f42e4e1528771472"
+_REHEARSAL_BLOB_012 = "d2c70bab2a1c00d836b428d0c04a3bf61f4df1ae"
+_REHEARSAL_BLOB_013 = "4377ec309cc7640cf36b35491c63168ef05d60f4"
 
 # Control DDL applied UNPINNED beside 012/013 (base control schema: tenants, memberships, directory).
 # 010/011 (routing audit) and 014/015 (import audit) are deliberately ABSENT — the router uses the
@@ -569,13 +569,25 @@ def test_pg_clm_2day_stage_b_rehearsal(admin_dsn: str) -> None:
         assert _startup_count(acme_conn) == 1 and _startup_count(zeta_conn) == 1, "CLM-11: one Startup row per physical tenant DB"
         assert _scalar(acme_conn, "SELECT current_database()") == _REH_ACME, "CLM-11: ACME identity readback intact"
         assert _scalar(zeta_conn, "SELECT current_database()") == _REH_ZETA, "CLM-11: ZETA identity readback intact"
-        print("PASS: CLM-11 physical multi-database routing proof (ACME success reached only the ACME DB; ZETA never returned tenant data)")
+        # The two databases below are DISPOSABLE (`sp2_clm_acme` / `sp2_clm_zeta`), created and dropped by this
+        # harness on ONE cluster reached through SNACKPORTAL_TEST_DSN. Naming them "ACME"/"ZETA" is a rehearsal
+        # convenience and NOTHING MORE: this is not the standing ACME database on 5541 nor the standing ZETA
+        # database on 5542, and this harness proves physical multi-DATABASE routing — it does NOT prove the
+        # four-cluster standing topology, and it must never be cited as tenant data-plane evidence.
+        print(
+            "PASS: CLM-11 physical multi-database routing proof on the DISPOSABLE rehearsal pair "
+            f"({_REH_ACME}/{_REH_ZETA}, one cluster — NOT the standing 5541/5542 tenant databases): the "
+            "rehearsal-ACME success reached only the rehearsal-ACME DB; rehearsal-ZETA never returned tenant data"
+        )
 
         # PROOF CLM-12 — rollback and restore: return ACME to the exact original local state.
         acme_conn.execute("UPDATE startups SET short_description = %s WHERE global_startup_id = %s", (_ORIGINAL_DESCRIPTION, _STARTUP_REF))
         after_restore_digest = _digest(acme_conn)
         assert after_restore_digest == before_digest, "CLM-12: rollback must restore the EXACT original local ACME state (digest match)"
-        print("PASS: CLM-12 rollback and restore returned the ACME physical DB to the exact original local state (before == after)")
+        print(
+            f"PASS: CLM-12 rollback and restore returned the DISPOSABLE rehearsal-ACME DB ({_REH_ACME}, dropped in "
+            "the finally block — NOT the standing ACME database on 5541) to the exact original local state (before == after)"
+        )
 
     finally:
         # PROOF CLM-13 — deterministic shutdown of every served process, then disposal of the topology.

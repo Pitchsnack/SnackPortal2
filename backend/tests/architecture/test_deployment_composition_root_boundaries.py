@@ -238,6 +238,15 @@ _IC012_ANCHORS = (
     "any malformed required startup selector or composition value -> the factory must raise",
     "this does not alter the lazy secretref resolution rule in §9",
     "the module census above is exhaustive and is not open-ended",
+    # Anchored under Gate A so the IC-012 M-2 DEFERRAL is tamper-evident. This §11 sentence is the
+    # exact text that the retained Edge-9 code contradicts: `import_service/main.py` returns None when
+    # SP2_IMPORT_AUDIT_SINK_BASE_URL is unset, and the composition falls to `InMemoryAuditSink()`. The
+    # divergence is DEFERRED, not resolved — IC-012 stays Draft / Proposed and standing Import stays
+    # disabled (IMPORT-A / D-3). Anchoring the sentence means a future silent NARROWING of the
+    # contract, which would make the divergence disappear without anyone deciding to, turns this guard
+    # red instead. Removing this anchor is itself the governed act.
+    "there must be no fallback to an in-memory session provider, a lineage double, or a non-durable audit sink",
+    "degraded composition is prohibited, not merely discouraged",
     "backend/deployment/__init__.py",
     "backend/deployment/import_edge.py",
     "deployment must not be added to it",

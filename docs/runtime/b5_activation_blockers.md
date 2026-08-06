@@ -52,6 +52,12 @@ multi-cluster distinctness, **not** production deployment, and **not** MVP compl
 | Standing authentication memberships + non-Ready `b5_standing_dormant` tenant | SATISFIED — MERGED AND VERIFIED | B5-4A / PR #74 |
 | Integrated authenticated routing through all real seams — alpha → alpha DB only, beta → beta DB only, dormant → `tenant_not_ready`, unknown → `tenant_access_denied`, denials perform zero dispatch / pool / tenant-DB connection, before-state == after-state | SATISFIED AT DATABASE GRANULARITY | Smoke C V2 + Fix R3 / PR #75 |
 
+> **⚠️ AUTHFIX-B correction (Gate A).** The row `Standing authentication memberships + non-Ready
+> b5_standing_dormant tenant — SATISFIED` records what B5-4A / PR #74 delivered and is correct as
+> merged history. It is **not** a statement of current standing state: that subject state was
+> replaced around **2026-07-21** by the four-cluster standing fixture, and the harness that verified
+> it is SUPERSEDED (AUTHFIX-B). No blocker status changes as a result of this note.
+
 ### Blocker evidence taxonomy (B5-BLK-4 CLOSED per B5-E and B5-BLK-6 CLOSED per the 2026-07-20 governance-effect closure; every remaining blocker REMAINS OPEN — the gate stays DO-NOT-ACTIVATE)
 
 | Blocker | Evidence taxonomy | Re-grounded note |

@@ -55,6 +55,7 @@ import io
 import pathlib
 import sys
 import tempfile
+import unittest
 from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -108,8 +109,7 @@ def _census() -> Optional[Dict[str, Any]]:
 def test_dbr_ar_2d_standing_witnesses_readonly() -> None:
     skip = _available()
     if skip is not None:
-        print(f"SKIP: standing configuration absent — {skip}")
-        return
+        raise unittest.SkipTest(f"standing configuration absent — {skip}")
     control_dsn, admin_dsn = ops._resolve_dsns()
     outputs: List[str] = []
 
@@ -207,6 +207,9 @@ def test_dbr_ar_2d_standing_witnesses_readonly() -> None:
 def main() -> int:
     try:
         test_dbr_ar_2d_standing_witnesses_readonly()
+    except unittest.SkipTest as exc:
+        print(f"SKIP: {exc}")
+        return 0
     except AssertionError as exc:
         print(f"FAIL: {exc}")
         return 1

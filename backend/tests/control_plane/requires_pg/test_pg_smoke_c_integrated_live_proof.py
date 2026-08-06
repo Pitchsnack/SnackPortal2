@@ -111,7 +111,18 @@ def test_smoke_c_integrated_live_proof() -> None:
     # SCV2-1 — clean-skip only when NOTHING is configured; a partial configuration fails closed.
     present, absent = _configuration_pieces()
     if not present:
-        print(f"SKIP: standing configuration absent — {absent}")
+        # B-13 residual, recorded deliberately. The other two harnesses in this family now raise
+        # unittest.SkipTest so pytest records a genuine SKIP rather than a PASS. This file cannot:
+        # its import surface is a CLOSED pin that forbids `unittest` outright, and widening that pin
+        # is outside the authorized Gate-A surface. The exposure here is materially smaller — SCV2-1
+        # already fails closed on a PARTIAL configuration, so only a machine with NOTHING configured
+        # reaches this branch — but a bare `return` is still recorded by pytest as a PASS. The banner
+        # below is the compensating control; the residual is carried in the Gate-A report.
+        print("=" * 96)
+        print("SKIPPED — NOT A PASS. Standing configuration absent; NOTHING below was proven.")
+        print(f"absent: {absent}")
+        print("Do not cite this run as evidence of anything, including an E28 re-proof.")
+        print("=" * 96)
         return
     assert not absent, f"SCV2-1: PARTIAL standing configuration (present={present}, absent={absent}) — fail closed, never a silent skip"
     control_dsn, admin_dsn = ops._resolve_dsns()

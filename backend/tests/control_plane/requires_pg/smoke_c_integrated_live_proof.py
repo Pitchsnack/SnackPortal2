@@ -52,6 +52,17 @@ the standing fixture, exactly as SMOKE-C-SPEC-01 bounds it — nothing about pro
 deployment, supervision, TLS, ingress, durability, scale, or cluster-level distinctness. Routing
 audit evidence is IN-MEMORY in this proof (DBR-AR-2 remains open). B5-BLK-4 remains OPEN; the
 Physical Multi-Database MVP remains mandatory and is NOT completed by this harness.
+
+AUTHFIX-B SUPERSESSION NOTE (Gate A) — read before interpreting any "12/12" line below.
+This operator delegates to the B5-4A standing authentication fixture and counts its PASS lines
+exactly. That fixture is SUPERSEDED: the b5_standing subject state it verifies was replaced around
+2026-07-21 by the four-cluster standing fixture, so the delegation is red now and in every window,
+for reasons that predate CLM-SS-1 entirely. The "12/12" labels, `_B5_4A_PASS_COUNT`, and the
+delegating call sites are DELIBERATELY LEFT UNCHANGED: Stage 0 forbids partial retirement of this
+family, and re-pointing some call sites while leaving others would produce a half-migrated surface
+that is worse than an honest one. Read every "12/12" claim here as HISTORICAL. The accepted
+replacement for the fixture's subject-state verification is
+tests/control_plane/requires_pg/test_pg_clm_standing_auth_posture.py.
 """
 
 from __future__ import annotations

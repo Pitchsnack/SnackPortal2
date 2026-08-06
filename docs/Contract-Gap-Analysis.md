@@ -162,3 +162,50 @@ Consolidated open questions requiring a **business (B)**, **architecture (A)**, 
 **Resolved decisions (25 full + D-09 ingress + JWT lifecycle + D-31, D-32 Approved):** D-01–D-05 (foundational), D-06 + D-30 + JWT lifecycle (auth/routing finalization), D-07, D-13–D-17 (tenant infrastructure), D-08, D-22–D-25 (lineage), D-18–D-21 + D-09 ingress (import), D-10–D-12 (startup finalization), and **D-31, D-32 (post-freeze amendments)**. See [Architecture-Decision-Register.md](Architecture-Decision-Register.md) — the authoritative record.
 
 **Still open (4 full + D-09 egress slice):** D-26–D-29 + D-09 **egress** — all **IC-006 AI, post-MVP** (deferred per D-02). **No open MVP architecture decisions remain.** **IC-007 (Deal Collaboration & Cross-Tenant Sharing)** is a Deferred future contract (cross-tenant; not in MVP). **D-08 has a standing business/legal action** (name the compliance floor regime) — its *architecture* is resolved.
+
+---
+
+## Tracked open divergence — **IC-012 M-2** (opened 2026-08-06, Gate A; **DEFERRED**)
+
+**Status: OPEN and DEFERRED. IC-012 remains `Draft / Proposed` (IC-012-DRAFT-1). It is NOT marked Final.**
+
+**The divergence.** Four artifacts assert absolutely that Edge 9 has no non-durable audit fallback;
+the code has one.
+
+| Cite | Text |
+|---|---|
+| `contracts/IC-012-…md` §11 | "There MUST be **no fallback** to an in-memory session provider, a lineage double, or a non-durable audit sink. … Degraded composition is prohibited, not merely discouraged." |
+| `docs/Architecture-Decision-Register.md` — **D-44 item 7, ratified** | "there is no in-memory session-provider, lineage, or audit fallback." |
+| `backend/deployment/import_edge.py` docstring | the same absolute assertion |
+| **Against:** `backend/import_service/main.py` | returns `None` when `SP2_IMPORT_AUDIT_SINK_BASE_URL` is unset → passed through → `audit = audit or InMemoryAuditSink()` |
+| **And:** `docs/runbooks/backend_service_startup_fastapi.md` §4 | documents that fallback as **intended** — "unset keeps the in-memory sink" — while §9 of the same file asserted the opposite absolutely (§9 is corrected under Gate A) |
+
+**Disposition: DEFERRED.** Reconciliation is a prerequisite of IC-012 Final under §19. Reasons:
+
+1. **Import is outside the controlled local MVP journey.** Stage 0 returned IMPORT-A and D-3 decided
+   that Import is not exercised, DDL 014/015 stay out of scope, and the standing composition must not
+   set `SP2_GW_IMPORT_BASE_URL`. `SP2_IMPORT_AUDIT_SINK_BASE_URL` must likewise remain UNSET. The
+   standing launcher starts six edges and names neither the Import edge nor the import-audit ingest.
+2. **Contract amendment is not a Gate-A change class.** Narrowing §11 would be an unauthorized
+   widening of this arc.
+3. **Narrowing §11 also falsifies a ratified ADR.** D-44 item 7 is Approved, and D-44 was approved
+   *"subject to one **non-semantic** IC-012 §11 wording clarification"*. A second §11 edit that
+   **relaxes a MUST** is emphatically semantic and cannot ride that ratification.
+4. **The stronger fix has a hard live prerequisite.** Making Edge 9 fail closed instead requires DDL
+   014/015 applied and the import-audit ingest edge standing; `control_import_audit` is **ABSENT**
+   live, so failing closed today would make Edge 9 **unstartable** — a regression, not a fix. It also
+   cannot live in the composition root: IC-012 §5 forbids the root from parsing a selector the owning
+   service already parses.
+5. **Nothing is presently harmed.** IC-012 is Draft / Proposed, production is DO-NOT-ACTIVATE, no
+   standing Import path runs, and the behaviour is pre-existing and unchanged by PR #111.
+
+**Tamper-evidence.** The §11 sentence and its "degraded composition is prohibited" clause are now
+pinned verbatim as `_IC012_ANCHORS` entries in
+`backend/tests/architecture/test_deployment_composition_root_boundaries.py`. A future *silent*
+narrowing of the contract — which would make this divergence disappear without anyone deciding to —
+turns the default suite red instead. Removing the anchor is itself the governed act.
+
+**Note for the record — the existing in-memory guard gives false assurance.**
+`test_native_uvicorn_factories.py` scans only names used *inside* `create_app_from_env`; the fallback
+happens two frames down in `import_service/main.py`. Any future "we have a guard for that" claim about
+Edge 9 and in-memory sinks is wrong as written.

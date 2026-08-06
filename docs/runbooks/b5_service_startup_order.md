@@ -1,5 +1,20 @@
 # B5 Service Startup Order — Runbook (B5-2)
 
+> ## ⚠️ SUPERSEDED FOR THE SERVED TOPOLOGY — do not start services from this document
+>
+> `docs/runbooks/backend_service_startup_fastapi.md` is the canonical startup runbook. This document
+> predates the FastAPI/Uvicorn migration, the served API Gateway edge, and the tenant-Startup edge.
+>
+> | Still valid here | Superseded here |
+> |---|---|
+> | The **dependency order** (§2) and why each URL feeds the next composition | Every runtime description: these edges are no longer plain stdlib `HTTPServer` processes |
+> | The fail-closed configuration semantics (§6) | The three `python -c … serve_*()` commands (§5) — retained **compatibility path only**, never standing |
+> | The one-service-per-process rule (§4) | The claim that the API Gateway has no inbound HTTP edge (§1) — **it has one, and it is the only externally reachable surface** |
+> | The no-overclaim status (§8) | The three-service census — the served topology is **six** standing edges |
+>
+> The supersession notice previously existed only in the *superseding* document, which an operator
+> opening this file never sees. That is corrected here, in place.
+
 **Scope.** B5-2 provides **blocking serve entrypoints only**. This runbook explains how to start the
 three internal backend services manually, in the correct order, each in its own process. It does not
 deploy, supervise, or monitor anything.
@@ -15,7 +30,14 @@ No Smoke C proof is performed.
 ## 1. What B5-2 gives you
 
 Three blocking entrypoints, each composing its service from environment configuration via the merged
-env-composition seams and then serving a **single-threaded** plain `HTTPServer` on the calling thread:
+env-composition seams and then serving on the calling thread.
+
+> **Runtime correction.** When this was written each entrypoint served a plain stdlib `HTTPServer`.
+> Since the FastAPI/Uvicorn migration every edge is a **FastAPI application served by Uvicorn** — an
+> ASGI event loop, not a stdlib handler class, and not one-request-at-a-time. The retained
+> `serve_*()` seams below still block on the calling thread and still bind exactly one socket per
+> process, so the **process model** described in §4 is unchanged; the **runtime description** is not.
+> The authorized process model remains one uvicorn worker and one OS process per edge.
 
 | Service | Entrypoint | Composition seam | Bind knobs |
 |---|---|---|---|
@@ -23,9 +45,24 @@ env-composition seams and then serving a **single-threaded** plain `HTTPServer` 
 | Auth Router authenticate edge | `auth_router.adapters.providers.http_authenticate_api.serve_authenticate_api()` (B5-2) | `build_authenticate_server_from_env` | `SP2_AR_AUTHENTICATE_HOST` / `SP2_AR_AUTHENTICATE_PORT` |
 | Database Router dispatch edge | `database_router.adapters.providers.http_dispatch_api.serve_dispatch_api()` (B5-2) | `build_dispatch_server_from_env` | `SP2_DBR_DISPATCH_HOST` / `SP2_DBR_DISPATCH_PORT` |
 
-The API Gateway has **no inbound HTTP edge** (ingress is deployment-owned, IC-010): it is driven
-**in-process** (`Gateway.handle`) by its caller and composes its two transport clients from
-`SP2_GW_AUTH_ROUTER_BASE_URL` / `SP2_GW_DB_ROUTER_BASE_URL`.
+> ### ❌ CORRECTED: "The API Gateway has no inbound HTTP edge" — **this is now false**
+>
+> When B5-2 was written the API Gateway was driven **in-process** (`Gateway.handle`) by its caller and
+> had no listening socket. That has not been true since the *Served API Gateway Edge V1* slice.
+>
+> **The API Gateway now has an inbound HTTP edge, and it is the only externally reachable surface in
+> the topology.** It serves `GET /memberships`, `POST /import/<source_ref>`, and — since the D-42 CLM
+> slice — `GET`/`PATCH /tenant/startups/<startup_ref>`, the last of which is a **write** path into a
+> physical tenant database. Standing port **8820**.
+>
+> An operator following the uncorrected sentence would not start the northbound Gateway at all, and
+> would not know one exists. See `infrastructure/runbooks/gateway_edge_v1_serve.md` for the request
+> contract and `docs/runbooks/backend_service_startup_fastapi.md` §6.1 for how to start it.
+
+Historically (B5-2), the Gateway composed its two transport clients from
+`SP2_GW_AUTH_ROUTER_BASE_URL` / `SP2_GW_DB_ROUTER_BASE_URL` and was driven in-process. The served edge
+adds `SP2_GW_CONTROL_READ_BASE_URL` as a third required transport, plus the optional
+`SP2_GW_TENANT_STARTUP_BASE_URL`, `SP2_GW_AUDIT_SINK_BASE_URL` and `SP2_GW_IMPORT_BASE_URL` selectors.
 
 ## 2. Startup order (dependency chain)
 
@@ -55,13 +92,32 @@ Database Router URL-> SP2_GW_DB_ROUTER_BASE_URL            (Gateway -> dispatch 
 
 ## 4. Process model — one service per process
 
-Every server here is an intentionally **single-threaded** plain `HTTPServer` (one in-flight request
-each; no `ThreadingHTTPServer`, no production threads). Each service **must run in its own
-operating-system process**: hosting two of these servers in one process cannot work (the first
-`serve_forever` blocks the only thread), and the Auth Router calls the read edge **during** request
-handling — a shared process would deadlock.
+**One service per operating-system process. That rule is unchanged and still binding** — it is the
+authorized process model (one uvicorn worker, one OS process per edge; no application-created worker,
+subprocess, or reload supervisor). Hosting two of these servers in one process cannot work: on the
+retained `serve_*()` path the first `serve_forever` blocks the only thread, and the Auth Router calls
+the read edge **during** request handling, so a shared process would deadlock.
 
-## 5. Manual start (documented `python -c` invocations; no `[project.scripts]`)
+> **Runtime correction.** The original text described each server as an intentionally single-threaded
+> plain `HTTPServer` with one in-flight request each and no `ThreadingHTTPServer`. The
+> *single-process, no-application-threads* half of that is still enforced. The *one-request-at-a-time*
+> half is not: a Uvicorn-served FastAPI edge handles concurrent requests on its ASGI event loop. Do
+> not rely on serialized request handling as a safety property anywhere.
+
+## 5. Manual start — COMPATIBILITY PATH ONLY, not the standing method
+
+> ⚠️ **The three `python -c … serve_*()` commands below are the retained compatibility path.** They are
+> kept for existing tests, the rehearsal harness, and rollback. **Do not use them for standing
+> operation.** The canonical standing commands are in
+> `docs/runbooks/backend_service_startup_fastapi.md` §6.1 (`uvicorn <module>:create_app_from_env
+> --factory --host 127.0.0.1 --port <governed port> --workers 1 --no-access-log --no-server-header
+> --no-proxy-headers`), and a local environment should use the governed launcher
+> `backend/tools/local/start-sp2-local.ps1`.
+>
+> Two specific hazards on this path: every `build_*_server` / `serve_*` seam defaults to **`port=0`
+> (ephemeral)** and none of them prints the bound address, so an unparameterized invocation produces a
+> healthy-looking unreachable process; and these seams do **not** apply the five canonical uvicorn
+> flags, because they do not go through the uvicorn CLI at all.
 
 Run each from `backend/` in its **own terminal/process**, with that service's environment set. Env
 var **names and `<placeholder>` tokens** only are shown — substitute your own local values at run
@@ -113,10 +169,11 @@ python -c "from database_router.adapters.providers.http_dispatch_api import serv
 ## 7. Orderly shutdown
 
 Stop services in the **reverse** order (gateway caller → Database Router → Auth Router → read edge).
-Send `Ctrl+C` (SIGINT) to the service process: `KeyboardInterrupt` propagates out of
-`serve_forever` **unswallowed**, and the entrypoint's `finally` always runs `server_close()`,
-releasing the listening socket. In-flight requests on these single-threaded servers complete or fail
-closed; there is no drain phase, retry loop, or signal framework.
+Send `Ctrl+C` (SIGINT) to the service process. On the retained compatibility path `KeyboardInterrupt`
+propagates out of `serve_forever` **unswallowed** and the entrypoint's `finally` always runs
+`server_close()`, releasing the listening socket; there is no drain phase, retry loop, or signal
+framework. On the canonical Uvicorn path, Ctrl+C stops accepting, **drains in-flight requests**, and
+exits — see `docs/runbooks/backend_service_startup_fastapi.md` §11 for the standing shutdown order.
 
 ## 8. No-overclaim status
 

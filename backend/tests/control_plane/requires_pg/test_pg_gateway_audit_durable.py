@@ -89,8 +89,8 @@ _DDL_013 = _CONTROL / "013_gateway_operational_audit_append_only.sql"
 # equal these reviewed-and-merged blobs; a mismatch STOPS the exercise BEFORE any connection is
 # opened or any SQL is applied. Cross-checked in the default suite by
 # tests/architecture/test_b7c1_control_audit_ddl_blob_pins.py.
-_REVIEWED_012_BLOB = "87c38a968f8ab89886ef7ce4d9d7fafb7a179271"
-_REVIEWED_013_BLOB = "199664d1afb9e6e0a37e8609f42e4e1528771472"
+_REVIEWED_012_BLOB = "d2c70bab2a1c00d836b428d0c04a3bf61f4df1ae"
+_REVIEWED_013_BLOB = "4377ec309cc7640cf36b35491c63168ef05d60f4"
 
 _INGEST_PATH = "/internal/gateway-audit/events"
 

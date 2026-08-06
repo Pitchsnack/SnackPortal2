@@ -77,11 +77,32 @@ InboundRequest -> Gateway.handle (IN-PROCESS) -> real Auth Router over the auth 
   through the B5-2 entrypoint `serve_dispatch_api`.
 - **Per-server hosting**: each server is hosted independently — either as separate operator-run
   processes via the B5-2 blocking entrypoints (`serve_read_api` / `serve_authenticate_api` /
-  `serve_dispatch_api`; startup order per `docs/runbooks/b5_service_startup_order.md`) or on
-  test-owned daemon threads each hosting exactly one server (the Smoke A/B in-suite precedent).
-- **No threading inside any server**: every server is the plain **single-threaded** `HTTPServer` —
-  no `ThreadingHTTPServer`, no `ThreadingMixIn`, no asyncio/concurrency machinery (AT-D15T1-10
-  HARD-GATE). **No runtime DDL** anywhere on the path.
+  `serve_dispatch_api`) or on test-owned daemon threads each hosting exactly one server (the Smoke A/B
+  in-suite precedent).
+
+  > **Startup-order reference corrected.** This clause pointed operators at
+  > `docs/runbooks/b5_service_startup_order.md`, which is **superseded for the served topology** (it
+  > predates the FastAPI migration and states that the API Gateway has no inbound HTTP edge). The
+  > canonical startup runbook is `docs/runbooks/backend_service_startup_fastapi.md`; the standing local
+  > map is 8001 / 8002 / 8003 / 8004 / 8005 / 8820, and the `8080–8088` map there is isolated
+  > smoke/verification only. The B5-2 `serve_*` entrypoints named above remain the retained
+  > **compatibility** path, which is what this spec was written against.
+- **No application threading inside any server** (AT-D15T1-10 HARD-GATE): no server creates a thread,
+  daemon, subprocess, worker, or reload supervisor of its own, and the authorized process model is one
+  worker and one operating-system process per edge. **No runtime DDL** anywhere on the path.
+
+  > **Runtime correction (post-FastAPI/Uvicorn migration).** This clause originally read: *"every
+  > server is the plain **single-threaded** `HTTPServer` — no `ThreadingHTTPServer`, no
+  > `ThreadingMixIn`, no asyncio/concurrency machinery."* Two of those three statements are now false.
+  > Every edge is a FastAPI application served by Uvicorn: there is no `HTTPServer` and no
+  > `ThreadingHTTPServer` on the served path, and the runtime is **asyncio** by construction. What
+  > survives, and what the HARD-GATE actually protects, is the process model above — no
+  > *application-created* concurrency, one worker, one process. The single-threaded per-request
+  > serialization that the original wording implied is **not** a property of the current runtime and
+  > must not be relied on as a safety argument anywhere.
+  >
+  > The spec's identity, granularity, evidence and failure-mode obligations are unaffected; only this
+  > runtime description changed.
 
 ## 4. Happy-path proof obligations (per tenant, twice)
 

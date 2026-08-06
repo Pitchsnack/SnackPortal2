@@ -32,9 +32,21 @@ What is composed, and by whose seam (no wiring is re-derived here):
 
 Fail closed (IC-010 §L): a missing routing selector, a missing tenant secret directory, a missing
 directory-read selector, or a malformed value raises BEFORE anything is served. There is
-deliberately NO fallback to an in-memory session provider, lineage double, or audit sink: the
-standing Import path must always write through the real Database Router to a real physical tenant
-database, with real lineage and a real durable audit trail.
+deliberately NO fallback to an in-memory **session provider** or **lineage double**: the standing
+Import path must always write through the real Database Router to a real physical tenant database,
+with real lineage.
+
+⚠️ **The audit sink is the exception, and it is a tracked open divergence — IC-012 M-2, DEFERRED.**
+This docstring previously asserted "no fallback to an in-memory session provider, lineage double, or
+audit sink" absolutely. The first two hold. The third does not: with
+``SP2_IMPORT_AUDIT_SINK_BASE_URL`` unset, ``import_service.main`` returns ``None`` for the sink and
+the composition falls to ``InMemoryAuditSink()``. IC-012 §11 forbids exactly that, which is one of
+the reasons IC-012 remains **Draft / Proposed**. The divergence is deferred rather than resolved
+because Import is outside the controlled local MVP journey (IMPORT-A / D-3), and because the stronger
+fix — failing closed — would make this edge **unstartable** today: ``control_import_audit`` is absent
+live and DDL 014/015 are un-enrolled. Recorded in ``docs/Contract-Gap-Analysis.md`` and made
+tamper-evident by the ``_IC012_ANCHORS`` pins in
+``backend/tests/architecture/test_deployment_composition_root_boundaries.py``.
 
 Import-time inertness: nothing below runs at module import. Every service import inside the factory
 is function-local, so importing this module reads no environment variable, opens no connection,

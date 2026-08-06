@@ -103,8 +103,17 @@ def create_app_from_env() -> FastAPI:
 
     Fail closed (IC-010 §L): ``create_app()`` applies its own selector-coherence validation and
     raises on incoherent or blank required configuration, so a misconfigured process never reaches
-    a served state. There is deliberately NO fallback to an in-memory store — the standing backend
-    must keep the physical Control database as its only durable authority.
+    a served state.
+
+    ⚠️ **Precisely what "fail closed" does and does not cover here.** An UNSET
+    ``SP2_CP_CONTROL_STORE`` still composes the in-memory, **test-only** store and serves — that is
+    the documented B-7B default and this factory deliberately does not override Control Plane
+    posture. What fails closed is an *unsupported* value and, since the Gate-A blank-value addendum,
+    a SET-but-empty/whitespace value (``control_store_selector``). So a listening read edge is
+    **not** evidence that the physical Control database is the authority behind it; the standing
+    profile must set ``SP2_CP_CONTROL_STORE=postgres`` explicitly and the operator must verify it.
+    (The earlier absolute claim here — "deliberately NO fallback to an in-memory store" — was false
+    for the unset case and is corrected under Gate A.)
 
     Per-request unit-of-work is unchanged (PRD 07E-1): this factory acquires NO store, opens no
     connection, and runs no query. ``ControlPlane`` construction is lazy-connect, so composition
@@ -127,8 +136,18 @@ def make_server(control_plane: "ControlPlane", host: str = "127.0.0.1", port: in
     return build_asgi_server(_make_app(control_plane), host, port)
 
 
-def serve_read_api(host: str = "127.0.0.1", port: int = 8080) -> None:  # pragma: no cover
-    """Runnable entrypoint: compose the app and serve the internal read edge (blocking)."""
+def serve_read_api(host: str = "127.0.0.1", port: int = 0) -> None:  # pragma: no cover
+    """Runnable entrypoint: compose the app and serve the internal read edge (blocking).
+
+    ``port=0`` binds an EPHEMERAL port, matching every other ``build_*_server`` / ``make_server``
+    default in the repository. The previous default was ``8080``, which is the port the operator
+    documentation uses for the **API Gateway**: a no-argument compatibility invocation therefore
+    bound the Control Plane read edge on the Gateway's port, and a client aimed at the Gateway hit
+    the Control-Plane catch-all instead. Corrected under Gate A — no documentation fix can remove a
+    code-level collision. The governed STANDING map is authoritative and pins the Control Plane read
+    edge to 8003 and the API Gateway to 8820 (``docs/runbooks/backend_service_startup_fastapi.md``);
+    standing operation uses the native ``create_app_from_env`` path, not this seam.
+    """
     from control_plane.main import create_app  # function-local intra-package import (07E-1 §5A)
 
     server, _ = make_server(create_app(), host, port)

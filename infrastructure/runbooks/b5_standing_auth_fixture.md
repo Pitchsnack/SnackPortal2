@@ -1,5 +1,27 @@
 # B5-4A V2 — Standing Authentication Fixture Extension (operator runbook)
 
+> ## ⚠️ SUPERSEDED — AUTHFIX-B (Gate A). A non-zero exit from this harness is EXPECTED and EXPLICIT.
+>
+> **The subject state described below no longer exists.** The `b5_standing_alpha` /
+> `b5_standing_beta` / `b5_standing_dormant` trio and the whole-table membership count of exactly
+> three were replaced around **2026-07-21** by the four-cluster standing fixture, which holds
+> `acme` / `nova` / `zeta`. Run today, the harness fails at least six of its checks plus its B5-4 6/6
+> delegation. That red is **standing and pre-existing** — not caused by any later change — and,
+> because the family is MANUAL_ONLY, it was never observed by an automated gate in any window.
+>
+> **Accepted replacement:** `backend/tests/control_plane/requires_pg/test_pg_clm_standing_auth_posture.py`,
+> which verifies structural invariants of the standing authentication posture and *reports* the roster
+> instead of pinning it — so a future governed fixture change cannot silently falsify it the way this
+> one was falsified.
+>
+> **Everything below is retained verbatim as a HISTORICAL record**, because the procedure was correct
+> for the state it was written against and four default-suite guards still reference it. Do not run
+> `apply`. Nothing here is amended, and no check is neutered: amending would be supersession wearing
+> amendment's clothes, which Stage 0 explicitly rejected.
+>
+> Read every status claim below — including the "6/6", "12/12" and Smoke C statements — as
+> **historical**, describing the fixture's own window and not current standing state.
+
 **Scope:** LOCAL / NON-PRODUCTION ONLY (PRD B5-4A V2). This runbook documents how an operator extends the
 **established** B5-4 standing local topology (see `b5_standing_topology.md`) with the **permanent** standing
 authentication fixture rows, using the operator harness

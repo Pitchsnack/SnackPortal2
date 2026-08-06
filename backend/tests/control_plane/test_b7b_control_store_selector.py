@@ -92,6 +92,39 @@ def test_invalid_selector_fails_closed() -> None:
             pass
 
 
+def test_blank_selector_fails_closed_and_never_composes_in_memory() -> None:
+    # Gate-A blank-value addendum. A SET-but-blank selector is an operator who INTENDED to configure
+    # the store and landed an empty value (a dropped launcher env relay is the standing case). The
+    # old `or "in_memory"` normalization turned that into a silent, non-durable, test-only store
+    # behind a listening socket. Both blank forms must now raise, and neither may yield a store.
+    for blank in ("", "   ", "\t\n"):
+        with _env({CONTROL_STORE_ENV: blank}):
+            try:
+                cp = ControlPlane()
+            except ValueError as exc:
+                assert CONTROL_STORE_ENV in str(exc), "the blank-value error must name the offending selector"
+                # The message must not echo the (blank) value as though it were a supported token.
+                assert "expected 'in_memory' or 'postgres'" not in str(exc), "a blank value is a distinct failure from an unsupported token"
+            else:
+                assert False, f"a blank SP2_CP_CONTROL_STORE={blank!r} must raise (fail closed), got {type(cp.store).__name__}"
+
+
+def test_blank_selector_still_honours_the_explicit_injected_store_seam() -> None:
+    # The `store=` constructor parameter is the deliberate test/harness composition bypass (B-7A).
+    # The blank-value addendum must not close it: an explicitly injected store never consults the
+    # selector, exactly as an unsupported token already did not.
+    sentinel = InMemoryControlStore()
+    with _env({CONTROL_STORE_ENV: "   "}):
+        assert ControlPlane(store=sentinel).store is sentinel
+
+
+def test_unset_selector_default_is_unchanged_by_the_blank_value_addendum() -> None:
+    # Gate A does NOT move the standing runtime to PostgreSQL and does NOT retire the documented
+    # unset default. Only SET-but-blank changed behaviour.
+    with _env({CONTROL_STORE_ENV: None}):
+        assert isinstance(ControlPlane().store, InMemoryControlStore)
+
+
 def test_explicit_store_overrides_env_and_builds_no_durable_store() -> None:
     sentinel = InMemoryControlStore()
     with _env({CONTROL_STORE_ENV: "postgres"}):
@@ -121,6 +154,9 @@ if __name__ == "__main__":
             test_postgres_value_builds_lazy_durable_store_no_io,
             test_custom_dsn_ref_env_is_honored,
             test_invalid_selector_fails_closed,
+            test_blank_selector_fails_closed_and_never_composes_in_memory,
+            test_blank_selector_still_honours_the_explicit_injected_store_seam,
+            test_unset_selector_default_is_unchanged_by_the_blank_value_addendum,
             test_explicit_store_overrides_env_and_builds_no_durable_store,
             test_create_app_default_is_in_memory,
             test_create_app_postgres_mode_constructs_without_io_and_preserves_bootstrap_secret_store,

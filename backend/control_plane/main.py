@@ -97,12 +97,18 @@ PROVISIONING_ADAPTER_ENV = "SP2_CP_PROVISIONING_ADAPTER"
 DISTINCTNESS_LEDGER_ENV = "SP2_CP_DISTINCTNESS_LEDGER"
 
 # Control-Store selection (PRD 06 B-7B; controlled non-production runtime audit-sink wiring).
-# Unset/empty -> in-memory (the default persistence — construction performs no I/O). The value
+# UNSET -> in-memory (the default persistence — construction performs no I/O). The value
 # 'postgres' selects the durable Control-DB-backed ControlStore (the operational audit sink is
 # ONE consumer of this store — B-7B selects a durable ControlStore, not a separate audit sink);
 # it is lazy-connect (no I/O at construction; connects and fails closed on first store
 # operation). Any other value raises (fail closed), mirroring the SP2_CP_PROVISIONING_ADAPTER /
 # SP2_CP_DISTINCTNESS_LEDGER selectors. No production activation, no runtime DDL.
+#
+# Gate-A addendum (blank-value fail-closed): a value that is PRESENT but empty or whitespace-only
+# now RAISES instead of resolving to the in-memory default. A typo already failed closed; blankness
+# did not — and blankness is what a launcher/relay produces when it drops a variable, so the
+# silent-degradation vector was "operator intended durable, got test-only, no error". UNSET keeps
+# the documented default unchanged: Gate A does not move the standing runtime to PostgreSQL.
 CONTROL_STORE_ENV = "SP2_CP_CONTROL_STORE"
 
 # Name of the secret-store REFERENCE (SecretRef.store_ref) for the durable Control-Store DSN
@@ -326,6 +332,36 @@ class _MixedPostureRecoveryGuard:
         self._deny("scan_for_orphans")
 
 
+def control_store_selector() -> str:
+    """The effective ``SP2_CP_CONTROL_STORE`` token — blank-value FAIL-CLOSED (Gate-A addendum).
+
+    Resolution, in order:
+
+    * variable **absent** → ``"in_memory"``. This is the documented B-7B default and is unchanged;
+      Gate A does not move the standing runtime to PostgreSQL.
+    * variable **present but empty / whitespace-only** → ``ValueError``. An operator (or a launcher
+      env relay) that sets the selector and lands a blank value INTENDED to configure the store; the
+      old ``or "in_memory"`` normalization turned that intent into a silent test-only composition
+      with no error, no log line, and a listening socket. Blankness — not typo tolerance — was the
+      hole: a typo already raised below.
+    * anything else → the stripped, lower-cased token, handed to the caller's own fail-closed check.
+
+    Performs no I/O. Callers must treat this as the ONE normalization for this selector so the
+    builders cannot drift apart (07D-2a R1-10).
+    """
+    raw = os.environ.get(CONTROL_STORE_ENV)
+    if raw is None:
+        return "in_memory"
+    kind = raw.strip().lower()
+    if not kind:
+        raise ValueError(
+            f"blank {CONTROL_STORE_ENV}; the selector is SET but empty/whitespace-only. Set it to"
+            " 'postgres' (durable Control DB) or 'in_memory' (test-only), or leave it UNSET for the"
+            " in-memory default — a blank value must never silently compose a non-durable store"
+        )
+    return kind
+
+
 class ControlPlane:
     """Assembled control plane. Construction performs no I/O and no bootstrap."""
 
@@ -474,7 +510,15 @@ class ControlPlane:
         """One selector's effective value — normalized BYTE-EQUAL to the builders (07D-2a R1-10).
 
         A value like ``'  IN_MEMORY  '`` must classify identically here and in ``_build_store`` /
-        ``_build_provisioning`` / ``_build_schema_applicator`` / ``_build_ledger``."""
+        ``_build_provisioning`` / ``_build_schema_applicator`` / ``_build_ledger``.
+
+        ONE deliberate divergence (Gate-A blank-value addendum): a SET-but-blank
+        ``SP2_CP_CONTROL_STORE`` classifies as ``in_memory`` HERE — this function only decides
+        whether the four selectors are MIXED — while ``control_store_selector`` raises for it in
+        ``_build_store`` / ``_build_store_factory``. Both branches still fail closed: blank +
+        live-side ``postgres`` raises RULE 1 here (before any builder runs), and blank + a
+        non-postgres live side raises in the builder. The divergence cannot produce a served,
+        silently non-durable store."""
         return (os.environ.get(env_name) or "in_memory").strip().lower()
 
     def _check_selector_coherence(self) -> None:
@@ -504,13 +548,14 @@ class ControlPlane:
     def _build_store(self) -> ControlStore:
         """Select the Control-Store backend (controlled non-production; PRD 06 B-7B).
 
-        Default (env unset/empty) is the in-memory adapter — construction performs no I/O.
+        Default (env UNSET) is the in-memory adapter — construction performs no I/O.
         ``postgres`` selects the durable Control-DB-backed store (lazy-connect; the audit sink
         is one consumer). Any other value raises (fail closed), mirroring the fail-closed
-        pattern of ``_build_provisioning`` / ``_build_ledger``.
+        pattern of ``_build_provisioning`` / ``_build_ledger``. A SET-but-blank value raises in
+        ``control_store_selector`` (Gate-A addendum) rather than resolving to the default.
         """
-        kind = (os.environ.get(CONTROL_STORE_ENV) or "in_memory").strip().lower()
-        if kind in ("", "in_memory"):
+        kind = control_store_selector()
+        if kind == "in_memory":
             return InMemoryControlStore(schema_version=1)
         if kind == "postgres":
             return self._build_durable_control_store()
@@ -527,8 +572,8 @@ class ControlPlane:
         acquire one unit of work per request from this factory and never share it."""
         if explicit_store:
             return SharedControlStoreFactory(self.store)
-        kind = (os.environ.get(CONTROL_STORE_ENV) or "in_memory").strip().lower()
-        if kind in ("", "in_memory"):
+        kind = control_store_selector()
+        if kind == "in_memory":
             return SharedControlStoreFactory(self.store)
         if kind == "postgres":
             control_store_secrets, ref = self._control_store_secret_binding()

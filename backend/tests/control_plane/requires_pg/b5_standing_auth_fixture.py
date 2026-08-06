@@ -1,5 +1,29 @@
 """B5-4A V2 standing authentication fixture extension — operator harness (standalone-only; PRD B5-4A V2).
 
+================================================================================================
+SUPERSEDED (AUTHFIX-B, Gate A). A NON-ZERO EXIT FROM THIS TOOL IS EXPECTED AND EXPLICIT.
+================================================================================================
+The subject state this harness verifies **no longer exists**. Its census is pinned to the
+``b5_standing_alpha`` / ``b5_standing_beta`` / ``b5_standing_dormant`` trio and to a whole-table
+``control_memberships`` count of **exactly three**; the standing Control database was replaced
+around **2026-07-21** by the four-cluster fixture and now holds ``acme`` / ``nova`` / ``zeta``. Run
+today, this tool fails at least six of its checks plus its B5-4 6/6 delegation. That red is
+**standing and pre-existing** — it is not caused by any later change, and because this family is
+MANUAL_ONLY it was never observed by an automated gate in any window.
+
+**Accepted replacement:** ``test_pg_clm_standing_auth_posture.py`` (same directory). It verifies
+structural invariants of the standing authentication posture and *reports* the roster instead of
+pinning it, so a future governed fixture change cannot silently falsify it the way this one was
+falsified.
+
+**This file is deliberately left INTACT.** Amending it would mean deleting or neutering checks 1-7
+and 10 — which is supersession wearing amendment's clothes, and which Stage 0 rejected. Four
+default-suite guards and the MANUAL_ONLY completeness invariants also still reference it, so
+deleting it turns those red. It stands as a historical artifact: the checks below are correct **for
+the state they were written against**, and that state is gone.
+================================================================================================
+
+
 An OPERATOR TOOL, not application runtime code and not a test: it extends the ESTABLISHED B5-4 standing
 local topology with the PERMANENT standing authentication fixture rows that Smoke C V2 will read —
 
@@ -616,8 +640,25 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _print_supersession_banner() -> None:
+    """Emit the AUTHFIX-B supersession notice before any command runs.
+
+    Deliberately contains NO ``PASS:`` substring: the two delegating operators (the Smoke C
+    integrated live proof and the DBR-AR-2D standing witnesses) count occurrences of that literal
+    EXACTLY when they subprocess this tool, so a banner carrying it would silently break their
+    arithmetic while looking like documentation.
+    """
+    print("=" * 96)
+    print("SUPERSEDED (AUTHFIX-B, Gate A) — a non-zero exit from this tool is EXPECTED and EXPLICIT.")
+    print("The b5_standing subject state was replaced around 2026-07-21 by the four-cluster fixture;")
+    print("this harness verifies a roster that no longer exists and is retained as a historical artifact.")
+    print("Accepted replacement: tests/control_plane/requires_pg/test_pg_clm_standing_auth_posture.py")
+    print("=" * 96)
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(list(argv) if argv is not None else None)
+    _print_supersession_banner()
     handlers: dict = {"plan": cmd_plan, "apply": cmd_apply, "status": cmd_status}
     try:
         return int(handlers[args.command](args))

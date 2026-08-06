@@ -61,6 +61,15 @@ REFUSES to run rather than dropping anything it does not own (PM-B54-2).
 SECRET HYGIENE (D-14). SNACKPORTAL_TEST_DSN is used by NAME only; its value (and every DSN derived
 from it) is never printed or persisted; the tmp secret dir is removed in ``finally``. B5-BLK-4
 remains OPEN; the Physical Multi-Database MVP remains mandatory and is NOT completed by this test.
+
+AUTHFIX-B DISPOSITION (Gate A) — ANNOTATE, DO NOT RETIRE. This harness is a sibling of the superseded
+B5-4A standing authentication fixture family, but it is NOT superseded with it and must not be
+retired alongside it. It is fully DISPOSABLE: it creates the scratch Control DB ``sp2_b54_ctl``, uses
+a tmp secret dir, and drops everything in ``finally``. It does NOT depend on the vanished
+b5_standing standing rows, and it is still green given only ``SNACKPORTAL_TEST_DSN``. Retiring it
+would destroy 13 live checks for no reason. Its operator module ``b5_standing_topology.py`` is
+additionally the single in-repo source of ``_CONTROL_DDL_ORDER``, load-bearing for four unrelated
+default-suite guards that assert DDL 010-015 are not auto-enrolled — it must not be deleted either.
 """
 
 from __future__ import annotations

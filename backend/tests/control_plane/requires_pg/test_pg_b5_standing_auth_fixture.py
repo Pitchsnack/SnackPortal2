@@ -58,6 +58,7 @@ import importlib
 import io
 import pathlib
 import sys
+import unittest
 from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -113,8 +114,7 @@ def _counts() -> Dict[str, Any]:
 def test_b5_standing_auth_fixture_live() -> None:
     skip = _available()
     if skip is not None:
-        print(f"SKIP: standing configuration absent — {skip}")
-        return
+        raise unittest.SkipTest(f"standing configuration absent — {skip}")
     psycopg = importlib.import_module("psycopg")
     control_dsn, admin_dsn = ops._resolve_dsns()
     secret_dir = ops._validated_secret_dir()
@@ -257,6 +257,9 @@ def test_b5_standing_auth_fixture_live() -> None:
 def main() -> int:
     try:
         test_b5_standing_auth_fixture_live()
+    except unittest.SkipTest as exc:
+        print(f"SKIP: {exc}")
+        return 0
     except AssertionError as exc:
         print(f"FAIL: {exc}")
         return 1

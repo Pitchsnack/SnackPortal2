@@ -9,9 +9,15 @@
 -- control-plane operational audit and carries NO hash-chain. No purge exception is added by V1a: the only sanctioned removal is
 -- policy-driven expiry under the IC-001 retention policy (operator-authorized, audited), which is NOT implemented here.
 --
--- Created, NOT applied: authored under PRD Gateway Operational Audit Persistence V1a (controlled non-production). Applying it is
--- done ONLY by the MANUAL_ONLY disposable proof (create -> prove -> drop; governed ops apply only — never runtime DDL). It is
--- deliberately NOT enrolled in the B5-4 standing-topology apply order.
+-- Application posture — stated so that it is TRUE IN EVERY WINDOW. Authored under PRD Gateway Operational Audit Persistence V1a
+-- (controlled non-production). It is applied ONLY by an explicit, governed, operator-driven act: never by a runtime service,
+-- never by a migration runner, glob, or directory sweep, and never automatically. Exactly two such acts are sanctioned — (a) the
+-- MANUAL_ONLY disposable proof (create -> prove -> drop), and (b) a separately governed, Dan-authorized apply to the retained
+-- LOCAL standing Control database, which HAS TAKEN PLACE (recorded in the CLM-SS-1 Stage-0 closure). It remains
+-- created-not-applied for every tenant, staging, and production database, and production enablement remains unauthorized. An
+-- earlier revision of this header read "Created, NOT applied"; that sentence described one window only and must not be read as
+-- current standing state.
+-- It is deliberately NOT enrolled in the B5-4 standing-topology apply order.
 
 CREATE OR REPLACE FUNCTION control_gateway_audit_append_only() RETURNS trigger
     LANGUAGE plpgsql AS $$

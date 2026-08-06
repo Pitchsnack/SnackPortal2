@@ -58,6 +58,31 @@ from api_gateway.adapters.providers.http_gateway_edge import (  # noqa: E402
 )
 
 _EDGE = _scan.BACKEND_ROOT / "api_gateway" / "adapters" / "providers" / "http_gateway_edge.py"
+
+# The two parameterized families register through module constants, so the served method set has to be
+# read from the DECORATORS keyed by the constant NAME — not from a sibling constant, which would only
+# ever agree with itself.
+_IMPORT_ROUTE_TEMPLATE_NAME = "_IMPORT_ROUTE_TEMPLATE"
+_TENANT_STARTUP_ROUTE_TEMPLATE_NAME = "_TENANT_STARTUP_ROUTE_TEMPLATE"
+
+
+def _served_methods(route_key: str) -> frozenset:
+    """The methods the edge ACTUALLY registers for ``route_key`` (literal path or constant name).
+
+    Raises if the registration's ``methods=`` is a computed expression: the two parameterized families
+    must stay statically enumerable, or this guard silently goes blind again.
+    """
+    tree = ast.parse(_EDGE.read_text(encoding="utf-8"), filename=str(_EDGE))
+    served = frozenset(method for path, method in _scan.route_registrations(tree) if path == route_key)
+    assert _scan.COMPUTED_METHODS.upper() not in served, (
+        f"{route_key} registers a COMPUTED methods= expression. The three unparameterized routes may do that (they are "
+        "registered FROM the _EXPOSED_ROUTES allowlist, which is separately pinned), but the two parameterized families "
+        "must declare a literal method list — otherwise no static guard can see the served surface widen."
+    )
+    assert served, f"{route_key} registers no route at all — the census cannot be vacuous"
+    return served
+
+
 # The shared containment-zone ASGI runtime the edge MUST serve through (it constructs no server).
 _RUNTIME = _scan.BACKEND_ROOT / "shared" / "adapters" / "providers" / "asgi_runtime.py"
 
@@ -299,8 +324,13 @@ def test_edge_import_route_is_bounded_multisegment_and_post_only() -> None:
     assert _MAX_SOURCE_REF_BYTES == 512, "the source_ref byte bound must be pinned at 512"
     assert _is_valid_import_target("/import/" + "a" * 512), "a 512-byte source_ref is at the bound (accepted)"
     assert not _is_valid_import_target("/import/" + "a" * 513), "a 513-byte source_ref exceeds the bound (rejected)"
-    # POST + OPTIONS only — never GET/PUT/PATCH/DELETE/HEAD.
-    assert _IMPORT_TARGET_METHODS == frozenset({"POST", "OPTIONS"}), "the import target must expose exactly POST, OPTIONS"
+    # POST + OPTIONS only — never GET/PUT/PATCH/DELETE/HEAD, asserted against the SERVED registrations.
+    assert _served_methods(_IMPORT_ROUTE_TEMPLATE_NAME) == frozenset({"POST", "OPTIONS"}), (
+        f"the import route family must SERVE exactly POST, OPTIONS (served: {sorted(_served_methods(_IMPORT_ROUTE_TEMPLATE_NAME))})"
+    )
+    assert _IMPORT_TARGET_METHODS == _served_methods(_IMPORT_ROUTE_TEMPLATE_NAME), (
+        "the _IMPORT_TARGET_METHODS constant must equal the SERVED method set — a constant that agrees only with itself notices nothing"
+    )
     # The matcher is wired into the edge dispatch, and the static allowlist stays closed (no /import key).
     text = _EDGE.read_text(encoding="utf-8")
     assert "_is_valid_import_target(target)" in text, "the edge dispatch must gate the import route on the bounded matcher"
@@ -334,9 +364,16 @@ def test_edge_tenant_startup_route_is_bounded_single_segment_get_patch_only() ->
     assert _MAX_STARTUP_REF_BYTES == 512, "the startup_ref byte bound must be pinned at 512"
     assert _is_valid_tenant_startup_target("/tenant/startups/" + "a" * 512), "a 512-byte startup_ref is at the bound (accepted)"
     assert not _is_valid_tenant_startup_target("/tenant/startups/" + "a" * 513), "a 513-byte startup_ref exceeds the bound (rejected)"
-    # GET + PATCH + OPTIONS only — never POST/PUT/DELETE/HEAD (no create/delete capability).
-    assert _TENANT_STARTUP_METHODS == frozenset({"GET", "PATCH", "OPTIONS"}), (
-        "the tenant Startup target must expose exactly GET, PATCH, OPTIONS"
+    # GET + PATCH + OPTIONS only — never POST/PUT/DELETE/HEAD (no create/delete capability), asserted
+    # against the SERVED registrations. This family is exactly the surface Gate-B class M14 authorizes
+    # persistent writes on, and V7 §21.1 states that M14 "does not authorize a new route, new HTTP
+    # method" — so the guard that would notice a widening must observe the decorator, not a constant.
+    assert _served_methods(_TENANT_STARTUP_ROUTE_TEMPLATE_NAME) == frozenset({"GET", "PATCH", "OPTIONS"}), (
+        "the tenant Startup route family must SERVE exactly GET, PATCH, OPTIONS "
+        f"(served: {sorted(_served_methods(_TENANT_STARTUP_ROUTE_TEMPLATE_NAME))})"
+    )
+    assert _TENANT_STARTUP_METHODS == _served_methods(_TENANT_STARTUP_ROUTE_TEMPLATE_NAME), (
+        "the _TENANT_STARTUP_METHODS constant must equal the SERVED method set — a constant that agrees only with itself notices nothing"
     )
     # The PATCH body budget is pinned at exactly 16384 bytes (IC-010 CLM).
     assert _MAX_PATCH_BODY_BYTES == 16384, "the tenant Startup PATCH body budget must be pinned at 16384 bytes"

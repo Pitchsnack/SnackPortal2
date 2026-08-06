@@ -14,7 +14,11 @@ SECRET_PATTERNS = [
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
     re.compile(r"xox[baprs]-[0-9A-Za-z-]{10,}"),
 ]
-SCAN_SUFFIXES = {".py", ".toml", ".template", ".md", ".yml", ".yaml", ".txt", ".cfg", ""}
+# `.ps1` joined the census with the Gate-A governed standing launcher
+# (backend/tools/local/start-sp2-local.ps1). Before that the repository tracked no shell script at
+# all, so the suffix set had no reason to include one — and the ungoverned out-of-repo launcher was
+# scanned by nothing, in either repository.
+SCAN_SUFFIXES = {".py", ".toml", ".template", ".md", ".yml", ".yaml", ".txt", ".cfg", ".ps1", ""}
 
 
 def _template_files():
