@@ -321,7 +321,7 @@ def test_exact_field_set_closure_rejects_a_planted_pii_field() -> None:
     # NON-VACUITY COMPANION (OBS-PMV-11): a PII-shaped field is caught ONLY by exact
     # closure. Each plant is judged through the SAME `_field_names` helper the real check
     # uses, on a dataclass built to mirror a real shape plus one extra `str` field.
-    for cls, planted_field in zip((DirectoryEntryDTO, ImportInitiationDTO, GlobalInvestorSummaryDTO), _PLANTED_PII_FIELDS):
+    for cls, planted_field in zip((DirectoryEntryDTO, ImportInitiationDTO, GlobalInvestorSummaryDTO), _PLANTED_PII_FIELDS, strict=False):
         expected = _EXACT_FIELD_SETS[cls]
         planted = dataclasses.make_dataclass(cls.__name__, [*((name, str) for name in sorted(expected)), (planted_field, str)], frozen=True)
         assert _field_names(planted) != expected, f"exact closure must reject {cls.__name__}.{planted_field} (a planted PII-shaped field)"

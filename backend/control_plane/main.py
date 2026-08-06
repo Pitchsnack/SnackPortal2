@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 import uuid
 from dataclasses import replace
-from typing import Callable, ContextManager, Dict, Iterable, List, NoReturn, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Callable, ContextManager, Dict, Iterable, List, NoReturn, Optional, Set, Tuple
 
 from shared.adapters.providers.env_reference_secret_store import DEFAULT_ALLOWED, EnvReferenceSecretStore
 from shared.secrets import SecretRef
@@ -65,6 +65,13 @@ from .recovery import (
 from .registry import TenantRegistry
 from .schema_compat import SchemaCompatibilityChecker
 from .verification import TenantDatabaseProbe
+
+if TYPE_CHECKING:  # typing only — the durable store providers stay lazily imported at composition time
+    from .adapters.providers.postgres_store import (
+        PostgresGatewayAuditStore,
+        PostgresImportAuditStore,
+        PostgresRoutingAuditStore,
+    )
 
 SERVICE = "control_plane"
 SUPPORTED_SCHEMA_MIN = 1
@@ -765,7 +772,7 @@ def build_read_server_from_env() -> Optional[Tuple[object, str]]:
     Side-effect boundary (LOAD-BEARING): this seam is DB-connection-inert, network-read-inert,
     thread-inert, and serve-inert — ``create_app()`` construction opens no database (lazy-connect),
     performs no network read, and the seam starts no serve loop, thread, daemon, or service. But it
-    is NOT socket-inert: when active, ``make_server`` constructs an ``HTTPServer`` which binds +
+    is NOT socket-inert: when active, ``make_server`` binds +
     activates a local listening socket at construction (default ``port=0`` → ephemeral). Callers /
     tests own the socket lifecycle and must close it.
 
@@ -777,7 +784,7 @@ def build_read_server_from_env() -> Optional[Tuple[object, str]]:
     if not host:
         return None
     port = _read_port_from_env()
-    # Lazy relative import keeps control_plane/main.py transport-free at module import (http.server
+    # Lazy relative import keeps control_plane/main.py transport-free at module import (the serving stack
     # is pulled in via the read adapter only when the seam is active); make_server binds the socket.
     from .adapters.providers.http_read_api import make_server
 
@@ -826,6 +833,40 @@ def _routing_audit_port_from_env() -> int:
     return port
 
 
+def build_routing_audit_store_from_env() -> "PostgresRoutingAuditStore":
+    """The durable routing-audit STORE composition — the ONE dependency-construction path.
+
+    Extracted so the native ASGI application factory
+    (``adapters/providers/http_routing_audit_api.create_app_from_env``) and the compatibility
+    ``build_routing_audit_server_from_env`` seam construct their collaborator through exactly the
+    same code: there is no second composition root, and the reference-only control-store secret
+    binding is not written twice.
+
+    Binds the SAME reference-only control-store secret composition as the durable ControlStore
+    (D-14; no raw descriptor value transits here): a blank effective
+    ``SP2_CP_CONTROL_STORE_DSN_REF`` → ``ValueError`` at composition; an unresolvable reference
+    fails closed at FIRST STORE USE (the B-7B lazy pattern), never at import or composition.
+
+    Side-effect boundary: DB-inert (``PostgresRoutingAuditStore`` is lazy-connect — construction
+    performs no I/O), socket-inert, and serve-inert. No DDL is applied.
+    """
+    store_ref = (os.environ.get(CONTROL_STORE_DSN_REF_ENV) or DEFAULT_CONTROL_STORE_DSN_REF).strip()
+    if not store_ref:
+        raise ValueError(
+            f"blank {CONTROL_STORE_DSN_REF_ENV}; the durable routing-audit store requires the"
+            " control-store secret REFERENCE (references only — never a raw descriptor value)"
+        )
+    # The shared reference-only control-store secret binding (D-14): a resolver whose allow-list is
+    # widened for the control-store ref ONLY, plus the reference itself — never a resolved value.
+    secrets = EnvReferenceSecretStore(allowed=frozenset({*DEFAULT_ALLOWED, store_ref}))
+    ref = SecretRef(store_ref=store_ref, version="1")
+    # Function-local provider import (Driver Containment Standard): the composition root binds no
+    # DB driver at module load.
+    from .adapters.providers.postgres_store import PostgresRoutingAuditStore
+
+    return PostgresRoutingAuditStore(secrets=secrets, ref=ref)
+
+
 def build_routing_audit_server_from_env() -> Optional[Tuple[object, str]]:
     """The config-selectable routing-audit ingest-server composition seam (DBR-AR-2C).
 
@@ -870,22 +911,11 @@ def build_routing_audit_server_from_env() -> Optional[Tuple[object, str]]:
             " not echoed)"
         )
     port = _routing_audit_port_from_env()
-    store_ref = (os.environ.get(CONTROL_STORE_DSN_REF_ENV) or DEFAULT_CONTROL_STORE_DSN_REF).strip()
-    if not store_ref:
-        raise ValueError(
-            f"blank {CONTROL_STORE_DSN_REF_ENV}; the durable routing-audit store requires the"
-            " control-store secret REFERENCE (references only — never a raw descriptor value)"
-        )
-    # The shared reference-only control-store secret binding (D-14): a resolver whose allow-list is
-    # widened for the control-store ref ONLY, plus the reference itself — never a resolved value.
-    secrets = EnvReferenceSecretStore(allowed=frozenset({*DEFAULT_ALLOWED, store_ref}))
-    ref = SecretRef(store_ref=store_ref, version="1")
-    # Function-local provider imports (Driver Containment Standard / transport containment): the
-    # composition root binds no DB driver and no transport module at module load.
+    store = build_routing_audit_store_from_env()
+    # Function-local provider import (transport containment): the composition root binds no
+    # transport module at module load.
     from .adapters.providers.http_routing_audit_api import build_routing_audit_server
-    from .adapters.providers.postgres_store import PostgresRoutingAuditStore
 
-    store = PostgresRoutingAuditStore(secrets=secrets, ref=ref)
     return build_routing_audit_server(store, host=host, port=port)
 
 
@@ -931,6 +961,41 @@ def _gateway_audit_port_from_env() -> int:
     return port
 
 
+def build_gateway_audit_store_from_env() -> "PostgresGatewayAuditStore":
+    """The durable Gateway-audit STORE composition — the ONE dependency-construction path.
+
+    Extracted so the native ASGI application factory
+    (``adapters/providers/http_gateway_audit_api.create_app_from_env``) and the compatibility
+    ``build_gateway_audit_server_from_env`` seam construct their collaborator through exactly the
+    same code: there is no second composition root, and the reference-only control-store secret
+    binding is not written twice.
+
+    Binds the SAME reference-only control-store secret composition as the durable ControlStore
+    (D-14; no raw descriptor value transits here): a blank effective
+    ``SP2_CP_CONTROL_STORE_DSN_REF`` → ``ValueError`` at composition; an unresolvable reference
+    fails closed at FIRST STORE USE (the B-7B lazy pattern), never at import or composition.
+
+    Side-effect boundary: DB-inert (``PostgresGatewayAuditStore`` is lazy-connect — construction
+    performs no I/O), socket-inert, and serve-inert. No DDL is applied. Audit residency is
+    unchanged: the Control Plane remains the sole Control-DB writer.
+    """
+    store_ref = (os.environ.get(CONTROL_STORE_DSN_REF_ENV) or DEFAULT_CONTROL_STORE_DSN_REF).strip()
+    if not store_ref:
+        raise ValueError(
+            f"blank {CONTROL_STORE_DSN_REF_ENV}; the durable Gateway-audit store requires the"
+            " control-store secret REFERENCE (references only — never a raw descriptor value)"
+        )
+    # The shared reference-only control-store secret binding (D-14): a resolver whose allow-list is
+    # widened for the control-store ref ONLY, plus the reference itself — never a resolved value.
+    secrets = EnvReferenceSecretStore(allowed=frozenset({*DEFAULT_ALLOWED, store_ref}))
+    ref = SecretRef(store_ref=store_ref, version="1")
+    # Function-local provider import (Driver Containment Standard): the composition root binds no
+    # DB driver at module load.
+    from .adapters.providers.postgres_store import PostgresGatewayAuditStore
+
+    return PostgresGatewayAuditStore(secrets=secrets, ref=ref)
+
+
 def build_gateway_audit_server_from_env() -> Optional[Tuple[object, str]]:
     """The config-selectable Gateway operational-audit ingest-server composition seam (Gateway Audit V1a).
 
@@ -971,22 +1036,11 @@ def build_gateway_audit_server_from_env() -> Optional[Tuple[object, str]]:
             " not echoed)"
         )
     port = _gateway_audit_port_from_env()
-    store_ref = (os.environ.get(CONTROL_STORE_DSN_REF_ENV) or DEFAULT_CONTROL_STORE_DSN_REF).strip()
-    if not store_ref:
-        raise ValueError(
-            f"blank {CONTROL_STORE_DSN_REF_ENV}; the durable Gateway-audit store requires the"
-            " control-store secret REFERENCE (references only — never a raw descriptor value)"
-        )
-    # The shared reference-only control-store secret binding (D-14): a resolver whose allow-list is
-    # widened for the control-store ref ONLY, plus the reference itself — never a resolved value.
-    secrets = EnvReferenceSecretStore(allowed=frozenset({*DEFAULT_ALLOWED, store_ref}))
-    ref = SecretRef(store_ref=store_ref, version="1")
-    # Function-local provider imports (Driver Containment Standard / transport containment): the
-    # composition root binds no DB driver and no transport module at module load.
+    store = build_gateway_audit_store_from_env()
+    # Function-local provider import (transport containment): the composition root binds no
+    # transport module at module load.
     from .adapters.providers.http_gateway_audit_api import build_gateway_audit_server
-    from .adapters.providers.postgres_store import PostgresGatewayAuditStore
 
-    store = PostgresGatewayAuditStore(secrets=secrets, ref=ref)
     return build_gateway_audit_server(store, host=host, port=port)
 
 
@@ -1031,6 +1085,41 @@ def _import_audit_port_from_env() -> int:
     return port
 
 
+def build_import_audit_store_from_env() -> "PostgresImportAuditStore":
+    """The durable Import-audit STORE composition — the ONE dependency-construction path.
+
+    Extracted so the native ASGI application factory
+    (``adapters/providers/http_import_audit_api.create_app_from_env``) and the compatibility
+    ``build_import_audit_server_from_env`` seam construct their collaborator through exactly the
+    same code: there is no second composition root, and the reference-only control-store secret
+    binding is not written twice.
+
+    Binds the SAME reference-only control-store secret composition as the durable ControlStore
+    (D-14; no raw descriptor value transits here): a blank effective
+    ``SP2_CP_CONTROL_STORE_DSN_REF`` → ``ValueError`` at composition; an unresolvable reference
+    fails closed at FIRST STORE USE (the B-7B lazy pattern), never at import or composition.
+
+    Side-effect boundary: DB-inert (``PostgresImportAuditStore`` is lazy-connect — construction
+    performs no I/O), socket-inert, and serve-inert. No DDL is applied. Audit residency is
+    unchanged: the Control Plane remains the sole Control-DB writer.
+    """
+    store_ref = (os.environ.get(CONTROL_STORE_DSN_REF_ENV) or DEFAULT_CONTROL_STORE_DSN_REF).strip()
+    if not store_ref:
+        raise ValueError(
+            f"blank {CONTROL_STORE_DSN_REF_ENV}; the durable Import-audit store requires the"
+            " control-store secret REFERENCE (references only — never a raw descriptor value)"
+        )
+    # The shared reference-only control-store secret binding (D-14): a resolver whose allow-list is
+    # widened for the control-store ref ONLY, plus the reference itself — never a resolved value.
+    secrets = EnvReferenceSecretStore(allowed=frozenset({*DEFAULT_ALLOWED, store_ref}))
+    ref = SecretRef(store_ref=store_ref, version="1")
+    # Function-local provider import (Driver Containment Standard): the composition root binds no
+    # DB driver at module load.
+    from .adapters.providers.postgres_store import PostgresImportAuditStore
+
+    return PostgresImportAuditStore(secrets=secrets, ref=ref)
+
+
 def build_import_audit_server_from_env() -> Optional[Tuple[object, str]]:
     """The config-selectable Import operational-audit ingest-server composition seam (W1a).
 
@@ -1069,20 +1158,9 @@ def build_import_audit_server_from_env() -> Optional[Tuple[object, str]]:
             " not echoed)"
         )
     port = _import_audit_port_from_env()
-    store_ref = (os.environ.get(CONTROL_STORE_DSN_REF_ENV) or DEFAULT_CONTROL_STORE_DSN_REF).strip()
-    if not store_ref:
-        raise ValueError(
-            f"blank {CONTROL_STORE_DSN_REF_ENV}; the durable Import-audit store requires the"
-            " control-store secret REFERENCE (references only — never a raw descriptor value)"
-        )
-    # The shared reference-only control-store secret binding (D-14): a resolver whose allow-list is widened
-    # for the control-store ref ONLY, plus the reference itself — never a resolved value.
-    secrets = EnvReferenceSecretStore(allowed=frozenset({*DEFAULT_ALLOWED, store_ref}))
-    ref = SecretRef(store_ref=store_ref, version="1")
-    # Function-local provider imports (Driver Containment Standard / transport containment): the composition
-    # root binds no DB driver and no transport module at module load.
+    store = build_import_audit_store_from_env()
+    # Function-local provider import (transport containment): the composition root binds no
+    # transport module at module load.
     from .adapters.providers.http_import_audit_api import build_import_audit_server
-    from .adapters.providers.postgres_store import PostgresImportAuditStore
 
-    store = PostgresImportAuditStore(secrets=secrets, ref=ref)
     return build_import_audit_server(store, host=host, port=port)

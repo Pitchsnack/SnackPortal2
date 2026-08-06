@@ -757,7 +757,7 @@ def test_write_insert_param_ddl_alignment() -> None:
     try:
         _adapter().record_evidence("tW", ev)
         _, params = cur.executed[0]
-        by_col = dict(zip(insert_cols, params))
+        by_col = dict(zip(insert_cols, params, strict=False))
         assert by_col["tenant_id"] == "tW"
         assert by_col["system_identifier"] == "SYS"
         assert by_col["database_identity"] == "DBID"

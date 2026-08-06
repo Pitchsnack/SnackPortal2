@@ -1178,15 +1178,31 @@ def test_07d_composition_onboarding(admin_dsn: str) -> None:
 # imports are function-local (Driver Containment + the harness's no-top-level-database_router discipline).
 # =====================================================================================================
 
-# §10 never-cross material scanned in the raw HTTP response bytes (DT-7). Matching is CASE-SENSITIVE
-# over the FULL raw bytes (status line + headers + body): the lowercase 'content' needle must NOT match
-# the standard 'Content-Type'/'Content-Length' framing headers (RF/C-5). 'data' does not match 'Date'.
+# §10 never-cross material scanned in the raw HTTP response bytes (DT-5 denial path, DT-7 success path).
+# The raw bytes are split at the first CRLFCRLF and the halves are scanned separately, because the
+# server's own framing FIELD NAMES are framing, not leaked material:
+#   * header block — the framing field-name tokens are removed, then the remainder (status line, every
+#     other field name, and ALL field values) is scanned CASE-INSENSITIVELY;
+#   * body         — scanned CASE-INSENSITIVELY against the same needle set.
+# This is strictly STRONGER than the previous CASE-SENSITIVE scan over the undivided bytes, which could
+# only see a needle in the exact case listed. It also removes the false positive the FastAPI/Uvicorn
+# migration introduced: ASGI servers emit field names LOWERCASE ('content-length:', 'content-type:'),
+# so the bare lowercase 'content' needle matched the framing headers that stdlib http.server's
+# 'Content-Type'/'Content-Length' capitalisation had kept invisible (RF/C-5). A real 'content'
+# occurrence anywhere else — including inside a framing header's VALUE — still trips, because only the
+# field-name tokens are removed. 'data' still does not match 'date'.
 _LEAK_NEEDLES = (
     "DSN", "dsn", "dbname", "database", "host", "port", "store_ref", "SecretRef", "secret", "credential",
     "password", "passwd", "token", "authorization", "route_ref", "TenantConnection", "RouteResult",
     "TenantRoutingView", "topology", "pool", "body", "payload", "data", "content", "stack trace",
     "exception", "vendor payload", "secret version", "internal diagnostic", "lifecycle reason",
 )  # fmt: skip
+
+# Framing FIELD NAMES emitted by the server itself. Removed from the header block (never from the body,
+# and never from any field value) before the case-insensitive scan. Lowercase because the header block is
+# lower-cased first: ASGI/Uvicorn already emit these lowercase, stdlib http.server capitalised them, and
+# HTTP/1.1 field names are case-insensitive either way.
+_FRAMING_FIELD_NAMES = ("content-length:", "content-type:")
 
 
 def _raw_dispatch(base_url: str, ctx, category: str) -> bytes:
@@ -1228,12 +1244,20 @@ def _raw_dispatch(base_url: str, ctx, category: str) -> bytes:
         sock.close()
 
 
-def _assert_no_leak(raw_bytes: bytes, *db_names: str) -> None:
+def _assert_no_leak(raw_bytes: bytes, *db_names: str, label: str = "DT-7") -> None:
+    """Scan the FULL raw response for §10 never-cross material. `label` names the calling check."""
     text = raw_bytes.decode("latin-1")  # byte-faithful; no re-encode surprises
-    for needle in _LEAK_NEEDLES:
-        assert needle not in text, f"DT-7 raw-byte leak: needle {needle!r} present in the response bytes"
-    for name in db_names:
-        assert name not in text, f"DT-7 raw-byte leak: database name {name!r} present in the response bytes"
+    head, separator, body = text.partition("\r\n\r\n")
+    if not separator:  # no header/body boundary -> scan the whole thing as a header block
+        head, body = text, ""
+    headers = head.lower()
+    for framing in _FRAMING_FIELD_NAMES:
+        headers = headers.replace(framing, "")
+    for region, scanned in (("headers", headers), ("body", body.lower())):
+        for needle in _LEAK_NEEDLES:
+            assert needle.lower() not in scanned, f"{label} raw-byte leak: needle {needle!r} present in the response {region}"
+        for name in db_names:
+            assert name.lower() not in scanned, f"{label} raw-byte leak: database name {name!r} present in the response {region}"
 
 
 def test_07d_dispatch_transport_pair(admin_dsn: str) -> None:
@@ -1335,7 +1359,7 @@ def test_07d_dispatch_transport_pair(admin_dsn: str) -> None:
         # DT-5 invalid tenant -> 404/not_found/false with no topology leak.
         out5 = client.dispatch(ctx("dt-5", "ghost", "TENANT_AGENT"), tenant_dec)
         assert (out5.status, out5.public_code, out5.dispatched) == (404, "not_found", False)
-        _assert_no_leak(_raw_dispatch(base_url, ctx("dt-5b", "ghost", "TENANT_AGENT"), "TENANT_OPERATION"), tenant_db, ctl_db)
+        _assert_no_leak(_raw_dispatch(base_url, ctx("dt-5b", "ghost", "TENANT_AGENT"), "TENANT_OPERATION"), tenant_db, ctl_db, label="DT-5")
         print("PASS: DT-5 invalid tenant -> 404/not_found/false; raw denial carries no dbname/host/port/store_ref/credential/topology")
 
         # DT-6 administratively disabled / suspended routing -> 403/administratively_disabled/false.
@@ -1343,9 +1367,9 @@ def test_07d_dispatch_transport_pair(admin_dsn: str) -> None:
         assert (out6.status, out6.public_code, out6.dispatched) == (403, "administratively_disabled", False)
         print("PASS: DT-6 administratively disabled / suspended routing -> 403/administratively_disabled/false, no topology leak")
 
-        # DT-7 raw HTTP response byte leak scan (case-sensitive, full raw bytes) on the success path.
-        _assert_no_leak(_raw_dispatch(base_url, ctx("dt-7", tid, "TENANT_AGENT"), "TENANT_OPERATION"), tenant_db, ctl_db)
-        print("PASS: DT-7 raw response byte scan (success + denial): no never-cross material (case-sensitive; framing headers safe)")
+        # DT-7 raw HTTP response byte leak scan (case-insensitive, header block + body) on the success path.
+        _assert_no_leak(_raw_dispatch(base_url, ctx("dt-7", tid, "TENANT_AGENT"), "TENANT_OPERATION"), tenant_db, ctl_db, label="DT-7")
+        print("PASS: DT-7 raw response byte scan (success + denial): no never-cross material (case-insensitive; framing names excluded)")
 
         # DT-8 release hygiene: N (> max_per_tenant=5) sequential dispatches all succeed; in_use stays 0.
         for i in range(6):

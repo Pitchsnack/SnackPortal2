@@ -50,6 +50,13 @@ SERVICE = "import_service"
 # before any socket (fail closed — never a silent fallback from malformed production config).
 SP2_IMPORT_AUDIT_SINK_BASE_URL = "SP2_IMPORT_AUDIT_SINK_BASE_URL"
 
+# The Global-directory read base URL — the internal Control-Plane read edge this service reads Global records
+# from. NON-SECRET internal routing config (never a credential). Unset/empty → ``None`` from
+# ``build_directory_read_from_env`` (the caller must then inject a ``DirectoryReadPort`` explicitly); a
+# structurally valid internal http URL → the in-package ``HttpDirectoryRead`` transport client; anything else →
+# ValueError before any socket (fail closed — never a silent fallback from malformed production config).
+SP2_IMPORT_DIRECTORY_READ_BASE_URL = "SP2_IMPORT_DIRECTORY_READ_BASE_URL"
+
 # The served internal Import-initiate edge bind host — the ACTIVATION selector (the CP seam idiom). Non-secret
 # internal config. Unset / empty / whitespace-only → the seam is inactive (returns ``None``); otherwise the
 # stripped value must be one of the internal loopback hosts (IC-010 §R).
@@ -164,6 +171,41 @@ def build_import_audit_sink_from_env() -> Optional[OperationalAudit]:
     return BoundedImportAuditPolicy(DurableImportAuditEmitter(raw), transport_error=ImportAuditTransportError)
 
 
+def build_directory_read_from_env() -> Optional[DirectoryReadPort]:
+    """The config-selectable Global-directory read transport seam (the audit-sink selector idiom).
+
+    This is the ONE of import_service's three collaborator ports that CAN be composed inside this
+    package: ``HttpDirectoryRead`` is an in-package adapter over the internal Control-Plane read edge, so
+    selecting it here imports no sibling service and preserves DAG independence. The routed session provider
+    and the lineage emit port remain injection-only (they are implemented by ``database_router`` /
+    ``lineage_service`` and cannot be constructed here).
+
+    * ``SP2_IMPORT_DIRECTORY_READ_BASE_URL`` unset, or empty/whitespace after stripping → ``None``; the
+      caller must inject a ``DirectoryReadPort`` explicitly.
+    * a structurally valid internal ``http://host[:port]`` value → ``HttpDirectoryRead`` bound to it. The
+      client is lazy: construction performs no network I/O.
+    * anything else → ``ValueError`` at the composition boundary, raised BEFORE any socket — never a silent
+      fallback from malformed production config.
+
+    Validation is structural only (``urlsplit`` scheme + netloc; scheme pinned to ``http`` — internal
+    transport; TLS termination is deployment scope). No network I/O, no ``control_plane`` import, no database
+    access, no secret handling (the base URL is non-secret internal routing config; no SecretRef).
+    """
+    raw = (os.environ.get(SP2_IMPORT_DIRECTORY_READ_BASE_URL) or "").strip()
+    if not raw:
+        return None
+    parts = urlsplit(raw)
+    if parts.scheme != "http" or not parts.netloc:
+        raise ValueError(
+            f"unsupported {SP2_IMPORT_DIRECTORY_READ_BASE_URL}={raw!r}; expected an internal "
+            "http://host[:port] Global-directory read base URL (fail closed — no silent fallback)"
+        )
+    # Lazy relative import (the merged seam shape): the transport client is deferred to selection time.
+    from .adapters.providers.http_directory_read import HttpDirectoryRead
+
+    return HttpDirectoryRead(raw)
+
+
 def _import_port_from_env() -> int:
     """Parse ``SP2_IMPORT_PORT`` fail-closed: unset/empty/whitespace → ``0`` (ephemeral); otherwise a base-10
     integer in ``[0, 65535]``, else ``ValueError`` — raised BEFORE the server is built and any socket bind so
@@ -178,6 +220,51 @@ def _import_port_from_env() -> int:
     if not (0 <= port <= 65535):
         raise ValueError(f"invalid {SP2_IMPORT_PORT}={raw!r}; port out of range [0, 65535]")
     return port
+
+
+def build_import_service_from_env(
+    *,
+    session_provider: Optional[RoutedSessionProvider] = None,
+    lineage: Optional[LineageEmitPort] = None,
+    directory_read: Optional[DirectoryReadPort] = None,
+) -> ImportService:
+    """The composed-core Import SERVICE composition — the ONE dependency-construction path.
+
+    Extracted so every startup path — the native ASGI application factory owned by the deployment
+    composition root, and the compatibility ``build_import_server_from_env`` seam — builds the
+    ``ImportService`` through exactly the same code. Import business semantics, the contract, the
+    lineage semantics, the schema, and the route set are untouched by this extraction: it composes
+    the SAME ``build_import_service`` call with the SAME ``StartupDirectorySource`` mapping and the
+    SAME env-selected durable audit sink that the seam previously built inline.
+
+    Cross-package ports (LOAD-BEARING, DAG): the routing ``session_provider`` (implemented by
+    database_router) and the ``lineage`` emit port (implemented by lineage_service) CANNOT be
+    constructed inside import_service — the import-linter independence contract forbids importing
+    either package. A deployment composition root that may import all three injects them here.
+
+    ``directory_read`` is the one port this package CAN compose for itself: when not injected it is
+    selected from the environment via ``build_directory_read_from_env`` (the in-package
+    ``HttpDirectoryRead`` adapter over the internal Control-Plane read edge).
+
+    Fail closed: when any of the three ports is still missing after injection + env selection, this
+    raises ``ValueError`` — never a partial, in-memory, or silently degraded Import service.
+    """
+    directory = directory_read if directory_read is not None else build_directory_read_from_env()
+    if session_provider is None or lineage is None or directory is None:
+        raise ValueError(
+            "the composed Import service requires the injected routing session provider and lineage emit"
+            f" port, plus a directory read port (injected or selected by {SP2_IMPORT_DIRECTORY_READ_BASE_URL});"
+            " a deployment composition root wires the first two, because import_service must not import"
+            " database_router / lineage_service — DAG independence. Fail closed — no partial service composed."
+        )
+    audit = build_import_audit_sink_from_env()
+    return build_import_service(
+        session_provider=session_provider,
+        lineage=lineage,
+        directory_read=directory,
+        directory_source=StartupDirectorySource(directory),
+        audit=audit,
+    )
 
 
 def build_import_server_from_env(
@@ -218,21 +305,12 @@ def build_import_server_from_env(
             f" must bind one of {_IMPORT_LOOPBACK_HOSTS} (fail closed — the configured value is not echoed)"
         )
     port = _import_port_from_env()
-    if session_provider is None or lineage is None or directory_read is None:
-        raise ValueError(
-            f"active {SP2_IMPORT_HOST} requires the injected routing session provider, lineage emit port, and"
-            " directory read port (a higher deployment root wires them; import_service must not import"
-            " database_router / lineage_service — DAG independence). Fail closed — no partial service composed."
-        )
-    audit = build_import_audit_sink_from_env()
-    service = build_import_service(
+    service = build_import_service_from_env(
         session_provider=session_provider,
         lineage=lineage,
         directory_read=directory_read,
-        directory_source=StartupDirectorySource(directory_read),
-        audit=audit,
     )
-    # Lazy relative import keeps import_service/main.py import-light (http.server is pulled in only when active);
+    # Lazy relative import keeps import_service/main.py import-light (the serving stack is pulled in when active);
     # build_import_server binds the ephemeral socket.
     from .adapters.providers.http_import_api import build_import_server
 

@@ -887,7 +887,7 @@ def _snapshot_witness_census_problems(tree: ast.Module) -> List[str]:
     keys = [key.value if isinstance(key, ast.Constant) else None for key in witness.keys]
     if keys != list(_SNAPSHOT_WITNESS_KEYS):
         problems.append(f"the witness snapshot census drifted from the pinned dimensions: {keys}")
-    for key, value in zip(witness.keys, witness.values):
+    for key, value in zip(witness.keys, witness.values, strict=False):
         if isinstance(value, ast.Constant):
             label = key.value if isinstance(key, ast.Constant) else ast.unparse(key)
             problems.append(f"witness dimension {label!r} is hard-coded to a literal (a constant witness cannot observe state)")

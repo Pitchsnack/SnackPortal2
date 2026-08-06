@@ -524,35 +524,72 @@ def test_2c_cp_seam_shape() -> None:
     seam = _func(tree, "build_routing_audit_server_from_env")
     assert seam is not None, "build_routing_audit_server_from_env must exist"
     seg = _segment(_CP_MAIN, seam)
-    # Host-gate-first, then host allow-list, then port, then secret ref — all BEFORE the
-    # store construction and the socket-binding server construction.
+    # The store construction is factored into build_routing_audit_store_from_env so the native
+    # ASGI application factory and this socket-binding seam share ONE dependency-construction
+    # path (no second composition root). The fail-closed ORDER is unchanged and is now proven
+    # across the pair: gate→host→port→store-composition→server here, and ref→store there.
+    store_seam = _func(tree, "build_routing_audit_store_from_env")
+    assert store_seam is not None, "build_routing_audit_store_from_env must exist — it is the ONE store composition path"
+    store_seg = _segment(_CP_MAIN, store_seam)
     order = (
         "return None",
         "host not in _ROUTING_AUDIT_LOOPBACK_HOSTS",
         "_routing_audit_port_from_env(",
-        "CONTROL_STORE_DSN_REF_ENV",
-        "PostgresRoutingAuditStore(secrets=secrets, ref=ref)",
+        "build_routing_audit_store_from_env(",
         "build_routing_audit_server(store, host=host, port=port)",
     )
     positions = [seg.index(needle) for needle in order]
-    assert positions == sorted(positions), "the fail-closed validation order (gate→host→port→ref→store→server) must hold"
-    # Reference-only: the seam handles the secret REFERENCE, never a resolved value.
-    assert "SecretRef(store_ref=store_ref, version=" in seg, "the store must be constructed from the reference"
-    assert ".resolve(" not in seg and ".material" not in seg, "the seam must never resolve the secret itself (lazy first-use)"
-    assert "SNACKPORTAL_TEST_DSN" not in seg, "the test DSN env must never be reused as runtime config"
+    assert positions == sorted(positions), "the fail-closed validation order (gate→host→port→store→server) must hold"
+    store_order = (
+        "CONTROL_STORE_DSN_REF_ENV",
+        "SecretRef(store_ref=store_ref, version=",
+        "PostgresRoutingAuditStore(secrets=secrets, ref=ref)",
+    )
+    store_positions = [store_seg.index(needle) for needle in store_order]
+    assert store_positions == sorted(store_positions), "the store seam must validate the secret REFERENCE before constructing the store"
+    # Reference-only: the seams handle the secret REFERENCE, never a resolved value.
+    for segment in (seg, store_seg):
+        assert ".resolve(" not in segment and ".material" not in segment, "the seam must never resolve the secret itself (lazy first-use)"
+        assert "SNACKPORTAL_TEST_DSN" not in segment, "the test DSN env must never be reused as runtime config"
     assert "not echoed" in seg, "the host ValueError must state the no-echo posture"
+    # No second composition root: the socket-binding seam must not re-construct the store itself.
+    assert "PostgresRoutingAuditStore(" not in seg, "the server seam must compose the store through the shared store seam only"
+    # No early secret handling. The ORIGINAL guard pinned CONTROL_STORE_DSN_REF_ENV's POSITION inside
+    # this seam, which also proved the secret reference was not touched before the host/port gates.
+    # Extraction moved the reference to the store seam, so the equivalent (and strictly stronger)
+    # assertion is that this seam does not touch the secret reference AT ALL — at any position.
+    assert "CONTROL_STORE_DSN_REF_ENV" not in seg, (
+        "the server seam must not read or mention the control-store secret reference; secret binding "
+        "belongs exclusively to build_routing_audit_store_from_env (no early secret handling)"
+    )
     # Provider imports are function-local (driver/transport containment).
-    body_imports = [n for n in ast.walk(seam) if isinstance(n, ast.ImportFrom)]
-    imported = {n.module for n in body_imports if n.module}
-    assert any(m and m.endswith("postgres_store") for m in imported), "the store provider import must be function-local"
-    assert any(m and m.endswith("http_routing_audit_api") for m in imported), "the ingest adapter import must be function-local"
+    imported = {n.module for n in ast.walk(seam) if isinstance(n, ast.ImportFrom) and n.module}
+    store_imported = {n.module for n in ast.walk(store_seam) if isinstance(n, ast.ImportFrom) and n.module}
+    assert any(m.endswith("postgres_store") for m in store_imported), "the store provider import must be function-local"
+    assert any(m.endswith("http_routing_audit_api") for m in imported), "the ingest adapter import must be function-local"
 
 
 def test_2c_cp_seam_nonvacuity() -> None:
-    inverted = "store = PostgresRoutingAuditStore(secrets=secrets, ref=ref)\nport = _routing_audit_port_from_env(\nreturn None"
-    needles = ("return None", "_routing_audit_port_from_env(", "PostgresRoutingAuditStore(secrets=secrets, ref=ref)")
+    # Every detector in test_2c_cp_seam_shape carries a planted companion here. The needle sets below
+    # mirror the LIVE `order` / `store_order` tuples; if either is edited without updating this test,
+    # the planted sample stops matching and the accreditation is visibly stale.
+    inverted = "store = build_routing_audit_store_from_env(\nport = _routing_audit_port_from_env(\nreturn None"
+    needles = ("return None", "_routing_audit_port_from_env(", "build_routing_audit_store_from_env(")
     positions = [inverted.index(n) for n in needles]
-    assert positions != sorted(positions), "an inverted validation order must be detectable"
+    assert positions != sorted(positions), "an inverted seam validation order must be detectable"
+    # The store seam's own ordering (reference validated BEFORE the store is constructed).
+    _secret_ref = 'SecretRef(store_ref=store_ref, version="1")'
+    _store_ctor = "PostgresRoutingAuditStore(secrets=secrets, ref=ref)"
+    store_inverted = f"{_store_ctor}\n{_secret_ref}\nCONTROL_STORE_DSN_REF_ENV"
+    store_needles = ("CONTROL_STORE_DSN_REF_ENV", _secret_ref, _store_ctor)
+    store_positions = [store_inverted.index(n) for n in store_needles]
+    assert store_positions != sorted(store_positions), "an inverted store-seam order must be detectable"
+    # A second composition root (the server seam re-constructing the store) must be detectable.
+    second_root = "    store = PostgresRoutingAuditStore(secrets=secrets, ref=ref)\n"
+    assert "PostgresRoutingAuditStore(" in second_root, "a duplicated store construction must be detectable"
+    # Early secret handling in the server seam must be detectable.
+    early_secret = "    _pre = os.environ.get(CONTROL_STORE_DSN_REF_ENV)\n    host = ...\n"
+    assert "CONTROL_STORE_DSN_REF_ENV" in early_secret, "an early secret-reference read in the server seam must be detectable"
     widened = _module_constant(ast.parse('_ROUTING_AUDIT_LOOPBACK_HOSTS = ("0.0.0.0",)'), "_ROUTING_AUDIT_LOOPBACK_HOSTS")
     assert widened != _LOOPBACK_HOSTS, "a widened host allow-list must be detectable"
     resolved = "descriptor = secrets.resolve(ref).material"
@@ -595,9 +632,12 @@ def test_2c_atr_2b1_not_silently_implemented() -> None:
     # separately: the 2B ingest adapter must keep its merged refusal shape and gain no
     # header-suppression override.
     ingest = _text(_CP_INGEST)
-    assert "do_GET = do_PUT = do_DELETE = do_PATCH = do_HEAD = do_OPTIONS = _method_not_allowed" in ingest, (
-        "the merged 2B non-POST refusal shape must be unchanged"
-    )
+    # The 2B non-POST refusal shape, expressed against the FastAPI edge: the ingest adapter
+    # registers EXACTLY one route and it is a POST, so every other method is still refused 405
+    # with an EMPTY body. NOTE: the ATR-2B-1 substance (no default HTML error body, no Server:
+    # header) is now provided platform-wide by the shared ASGI runtime, NOT by an un-taken
+    # per-adapter change — this adapter still carries no bespoke header-suppression override.
+    assert _scan.registered_route_methods(ast.parse(ingest)) == ["post"], "the merged 2B non-POST refusal shape must be unchanged"
     for token in ("server_version", "sys_version", "version_string"):
         assert token not in ingest, f"ATR-2B-1 hardening ({token}) must not be silently implemented"
 

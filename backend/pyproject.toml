@@ -2,19 +2,29 @@
 name = "snackportal2-backend"
 version = "0.0.0"
 description = "SnackPortal2 backend — Build Phase 1 scaffolding (no business logic, no contract behavior)."
-requires-python = ">=3.8"
+# The FastAPI serving stack (fastapi / starlette / uvicorn / anyio) requires >=3.10, so the
+# migration raises the runtime floor from 3.8 to 3.10. mypy's python_version now matches this
+# floor exactly rather than sitting above it.
+requires-python = ">=3.10"
 # Runtime dependencies are added per build phase, kept minimal and vendor-neutral.
-#   - shared/ remains pure standard library (vendor-neutral leaf).
 #   - Build Phase 3 adds portable JWT/JWKS validation (used only by the auth_router
 #     SignatureVerifier provider under auth_router/adapters/providers; not a cloud SDK).
 #   - Build Phase 4 adds a portable PostgreSQL driver, used ONLY by the database
 #     drivers confined to database_router/adapters/providers/** (tenant serving) and
 #     control_plane/adapters/providers/** (Control-DB persistence + verification probe).
 #     Standard PostgreSQL only; not exercised by the stdlib test suite.
+#   - The FastAPI migration adds the HTTP serving stack. FastAPI is imported by the nine
+#     service edges under */adapters/providers/**; uvicorn is imported in exactly ONE place,
+#     shared/adapters/providers/asgi_runtime.py, so the concrete ASGI server stays inside the
+#     sanctioned containment zone. Both are open-source and vendor-neutral (ASGI is a standard
+#     interface; neither ties the deployment to a cloud or a hosting provider), satisfying the
+#     CLAUDE.md anti-vendor-lock-in constraint.
 dependencies = [
   "pyjwt>=2",
   "cryptography",
   "psycopg[binary]>=3",
+  "fastapi>=0.115",
+  "uvicorn>=0.30",
 ]
 
 [project.optional-dependencies]
@@ -40,11 +50,16 @@ include = [
   "control_plane*",
   "import_service*",
   "lineage_service*",
+  # The deployment composition root (D-44 / IC-012 sec.16): the ONE package permitted to compose more
+  # than one service, and then only the narrow authorized set (import_service, database_router,
+  # lineage_service, shared). It sits ABOVE them (it may import them; none may import it) and owns no
+  # business logic.
+  "deployment*",
 ]
 
 [tool.ruff]
 line-length = 140
-target-version = "py38"
+target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B"]
@@ -60,8 +75,8 @@ select = ["E", "F", "I", "B"]
 exclude = ["tests/lineage_service/requires_pg/*"]
 
 [tool.mypy]
-# mypy >= 2.x cannot target below 3.10; the runtime floor remains 3.8, enforced by
-# requires-python and ruff target-version py38 (not by mypy). PRD-P6-V1-E1 F3.
+# Matches the runtime floor exactly (requires-python >=3.10, ruff target-version py310) since
+# the FastAPI migration raised it; mypy no longer targets above the floor. PRD-P6-V1-E1 F3.
 python_version = "3.10"
 strict = true
 ignore_missing_imports = true
@@ -103,6 +118,9 @@ root_packages = [
   "control_plane",
   "import_service",
   "lineage_service",
+  # Analyzed so the composition root is POLICED, not merely unlisted: an unlisted package would be
+  # invisible to the graph and could silently become a back-channel between two services. (IC-012 sec.13)
+  "deployment",
 ]
 
 [[tool.importlinter.contracts]]
@@ -128,4 +146,36 @@ modules = [
   "control_plane",
   "import_service",
   "lineage_service",
+]
+
+# The deployment composition root sits ABOVE the services it is authorized to compose: it may import
+# them, but nothing may import IT. Without this contract the root would be a legal back-channel —
+# service A could reach service B through it and the independence contract above would never see the
+# chain. (IC-012 sec.4 / sec.13)
+[[tool.importlinter.contracts]]
+name = "nothing may import the deployment composition root (it is the top of the DAG)"
+type = "forbidden"
+source_modules = [
+  "shared",
+  "api_gateway",
+  "auth_router",
+  "database_router",
+  "control_plane",
+  "import_service",
+  "lineage_service",
+]
+forbidden_modules = ["deployment"]
+
+# The root's cross-service authority is EXHAUSTIVE, not general: Edge 9 requires import_service,
+# database_router, lineage_service and shared, and nothing else. Forbidding the remaining three
+# services makes the narrow grant machine-enforced, so widening it needs an IC-012 amendment
+# (sec.5.1) rather than an unreviewed import. (IC-012 sec.3 / sec.13)
+[[tool.importlinter.contracts]]
+name = "the deployment root may compose only the authorized Edge 9 services"
+type = "forbidden"
+source_modules = ["deployment"]
+forbidden_modules = [
+  "api_gateway",
+  "auth_router",
+  "control_plane",
 ]

@@ -139,8 +139,8 @@ def _assert_least_privilege(attrs) -> None:
     actual = tuple(attrs)
     assert actual == _EXPECTED_ROLE_ATTRS, (
         "sp2_provisioner least-privilege violated: "
-        + ", ".join(f"{label}={value!r}" for label, value in zip(_LEAST_PRIV_LABELS, actual))
-        + f"; expected {dict(zip(_LEAST_PRIV_LABELS, _EXPECTED_ROLE_ATTRS))}"
+        + ", ".join(f"{label}={value!r}" for label, value in zip(_LEAST_PRIV_LABELS, actual, strict=False))
+        + f"; expected {dict(zip(_LEAST_PRIV_LABELS, _EXPECTED_ROLE_ATTRS, strict=False))}"
     )
 
 

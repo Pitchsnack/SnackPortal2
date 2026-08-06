@@ -1,12 +1,13 @@
-"""Internal Gateway->Database-Router tenant Startup operations transport server (stdlib http.server) — D-42 CLM Stage B.
+"""Internal Gateway->Database-Router tenant Startup operations transport server (FastAPI/uvicorn) — D-42 CLM Stage B.
 
 The Database-Router side of the CLM tenant Startup wire (IC-010 CLM section). Exposes TWO
 internal-only surfaces, ``POST /internal/tenant/startups/read`` and ``POST
 /internal/tenant/startups/update``, which MUST remain internal-only and MUST NEVER be
 portal-reachable or registered as a public/frontend ingress (the northbound served
 ``GET/PATCH /tenant/startups/<startup_ref>`` lives at the API Gateway edge). It binds
-``127.0.0.1`` by default and runs on a plain single-threaded ``HTTPServer`` (no threading /
-asyncio / concurrency machinery here — AT-D15T1-10).
+``127.0.0.1`` by default and serves through the shared uvicorn runtime
+(``shared.adapters.providers.asgi_runtime``); the FastAPI app declares exactly the two routes
+and the OpenAPI/docs surface is disabled, so the closed two-surface posture is unchanged.
 
 Wire contract. The read envelope is exactly the five references-only keys ``{v, startup_ref,
 target_tenant_ref, correlation_id, actor_ref}``; the update envelope adds EXACTLY the one
@@ -19,12 +20,14 @@ fields only: no tenant row beyond that projection, no credential, DSN, hostname,
 ever crosses this edge.
 
 Fail closed (IC-010 §L): a wrong path is refused ``404`` empty; a non-POST method is refused
-``405`` empty; a malformed / wrong-shape / over-length / secret-shaped envelope answers
+``405`` empty; a query-bearing request target is refused ``404`` empty (the pre-migration edge
+compared the raw request target, so a stray ``?query`` never matched a path — restored
+explicitly here); a malformed / wrong-shape / over-length / secret-shaped envelope answers
 ``400 {"version": 1, "result": "INVALID"}``; an unknown ``startup_ref`` within the bound
 tenant database answers ``404 {"version": 1, "result": "NOT_FOUND"}`` (the consistent IC-002
 not-found semantic; nothing was written); and ANY executor/routing/session exception collapses
 to ``503 {"version": 1, "result": "UNAVAILABLE"}`` with no leakage — no partial write can
-survive (the executor rolls back). No stdlib ``send_error`` HTML body is ever emitted.
+survive (the executor rolls back). No framework error body is ever emitted.
 
 Uncomposed until env-selected: ``build_tenant_startup_server`` CONSTRUCTS the server bound to
 a composed ``TenantStartupOperations`` and returns it with its base URL;
@@ -37,10 +40,13 @@ executor's injected routed-session port.
 from __future__ import annotations
 
 import json
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Dict, Optional, Tuple, cast
 
+from fastapi import FastAPI, Request, Response
+
 from database_router.tenant_startup_ops import TenantStartupOperations, TenantStartupRecord
+from shared.adapters.providers.asgi_runtime import AsgiEdgeServer, build_asgi_server
+from shared.adapters.providers.fastapi_edge import empty_response, has_query_string, json_response, new_edge_app
 
 _READ_PATH = "/internal/tenant/startups/read"
 _UPDATE_PATH = "/internal/tenant/startups/update"
@@ -113,90 +119,120 @@ def _record_json(record: TenantStartupRecord) -> Dict[str, object]:
     }
 
 
-def _make_handler(ops: TenantStartupOperations) -> "type[BaseHTTPRequestHandler]":
-    class _TenantStartupHandler(BaseHTTPRequestHandler):
-        def do_POST(self) -> None:  # noqa: N802 (http.server API)
-            if self.path not in (_READ_PATH, _UPDATE_PATH):
-                self._respond_empty(404)  # wrong path: refused, no executor call
-                return
-            short_description: Optional[str] = None
-            try:
-                length = int(self.headers.get("Content-Length") or 0)
-                if length < 0 or length > _MAX_BODY_BYTES:
-                    raise _RequestError("body exceeds the bounded envelope size")
-                raw = self.rfile.read(length) if length > 0 else b""
-                if self.path == _UPDATE_PATH:
-                    envelope = _parse_envelope(raw, _UPDATE_KEYS)
-                    short_description = _bounded_short_description(envelope)
-                else:
-                    envelope = _parse_envelope(raw, _READ_KEYS)
-                arguments = {
-                    "tenant_ref": _required_ref(envelope, "target_tenant_ref"),
-                    "startup_ref": _required_ref(envelope, "startup_ref"),
-                    "correlation_id": _required_ref(envelope, "correlation_id"),
-                    "actor_ref": _required_ref(envelope, "actor_ref"),
-                }
-            except Exception:
-                # Malformed/invalid envelope -> fixed 400 INVALID (no detail, no echo).
-                self._respond_result(400, "INVALID")
-                return
-            try:
-                if self.path == _UPDATE_PATH:
-                    record = ops.update(short_description=short_description, **arguments)
-                else:
-                    record = ops.read(**arguments)
-            except Exception:
-                # ANY routing/session/executor failure collapses to the bounded UNAVAILABLE
-                # envelope: no exception text, SQL, row content, topology, or credential state
-                # may leak; the executor rolled back, so no partial write survives.
-                self._respond_result(503, "UNAVAILABLE")
-                return
-            if record is None:
-                # Unknown startup_ref within the bound tenant database (IC-002 not-found).
-                self._respond_result(404, "NOT_FOUND")
-                return
-            self._write(200, {"version": _ENVELOPE_VERSION, "record": _record_json(record)})
-
-        def _method_not_allowed(self) -> None:
-            # POST-only edge: every non-POST method is refused 405 with an EMPTY body.
-            self._respond_empty(405)
-
-        do_GET = do_PUT = do_DELETE = do_PATCH = do_HEAD = do_OPTIONS = _method_not_allowed
-
-        def _respond_empty(self, status: int) -> None:
-            self.send_response(status)
-            self.send_header("Content-Length", "0")
-            self.end_headers()
-
-        def _respond_result(self, status: int, result: str) -> None:
-            self._write(status, {"version": _ENVELOPE_VERSION, "result": result})
-
-        def _write(self, status: int, body: Dict[str, object]) -> None:
-            payload = json.dumps(body).encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
-
-        def log_message(self, *args: object) -> None:  # silence default stderr logging
-            return
-
-    return _TenantStartupHandler
+def _result_response(status: int, result: str) -> Response:
+    """The fixed two-key result envelope (the only shape for every non-record answer)."""
+    return json_response(status, {"version": _ENVELOPE_VERSION, "result": result})
 
 
-def build_tenant_startup_server(ops: TenantStartupOperations, host: str = "127.0.0.1", port: int = 0) -> Tuple[HTTPServer, str]:
+async def _handle(ops: TenantStartupOperations, request: Request, *, is_update: bool) -> Response:
+    """The shared read/update body: validate the bounded envelope, then execute exactly one
+    routed tenant operation. Both surfaces share this one executor call site."""
+    if has_query_string(request):
+        return empty_response(404)  # query-bearing target: refused, no executor call
+    short_description: Optional[str] = None
+    try:
+        raw = await request.body()
+        if len(raw) > _MAX_BODY_BYTES:
+            raise _RequestError("body exceeds the bounded envelope size")
+        if is_update:
+            envelope = _parse_envelope(raw, _UPDATE_KEYS)
+            short_description = _bounded_short_description(envelope)
+        else:
+            envelope = _parse_envelope(raw, _READ_KEYS)
+        arguments = {
+            "tenant_ref": _required_ref(envelope, "target_tenant_ref"),
+            "startup_ref": _required_ref(envelope, "startup_ref"),
+            "correlation_id": _required_ref(envelope, "correlation_id"),
+            "actor_ref": _required_ref(envelope, "actor_ref"),
+        }
+    except Exception:
+        # Malformed/invalid envelope -> fixed 400 INVALID (no detail, no echo).
+        return _result_response(400, "INVALID")
+    try:
+        if is_update:
+            record = ops.update(short_description=short_description, **arguments)
+        else:
+            record = ops.read(**arguments)
+    except Exception:
+        # ANY routing/session/executor failure collapses to the bounded UNAVAILABLE
+        # envelope: no exception text, SQL, row content, topology, or credential state
+        # may leak; the executor rolled back, so no partial write survives.
+        return _result_response(503, "UNAVAILABLE")
+    if record is None:
+        # Unknown startup_ref within the bound tenant database (IC-002 not-found).
+        return _result_response(404, "NOT_FOUND")
+    return json_response(200, {"version": _ENVELOPE_VERSION, "record": _record_json(record)})
+
+
+def _make_app(ops: TenantStartupOperations) -> FastAPI:
+    """Build the FastAPI app exposing EXACTLY the two internal tenant Startup surfaces.
+
+    The app declares two routes and one method each; every other path is ``404`` and every
+    other method ``405``, both with an EMPTY body, decided by the app's fail-closed handlers
+    before the executor is ever reached (``new_edge_app``). Docs/OpenAPI are disabled.
+    """
+    app = new_edge_app(invalid_status=400, unavailable_status=503)
+
+    @app.post(_READ_PATH)
+    async def read(request: Request) -> Response:
+        return await _handle(ops, request, is_update=False)
+
+    @app.post(_UPDATE_PATH)
+    async def update(request: Request) -> Response:
+        return await _handle(ops, request, is_update=True)
+
+    return app
+
+
+def create_app_from_env() -> FastAPI:
+    """The CANONICAL native ASGI application factory for the tenant Startup operations edge.
+
+    Run directly by the operator through the ASGI runtime's own command line::
+
+        uvicorn database_router.adapters.providers.http_tenant_startup_api:create_app_from_env --factory ...
+
+    Takes NO arguments: the listening host and port belong to the runtime process, not to the
+    application, so this factory binds no socket and owns no address. It returns the composed
+    ``FastAPI`` app and nothing else.
+
+    ONE composition path (no second composition root): the executor is built by
+    ``database_router.main.build_tenant_startup_ops_from_env`` — the SAME single
+    env-parsing/adapter-wiring function the compatibility ``build_tenant_startup_server_from_env``
+    seam uses — and the app is built by the SAME ``_make_app``. The router, the routed session
+    provider, and the bounded operations executor therefore have exactly one source of truth.
+
+    Fail closed (IC-010 §L): the operator invoked this process deliberately, so an INACTIVE
+    composition is a misconfiguration, not a no-op. ``SP2_DBR_ROUTING_READ_BASE_URL`` unset/empty →
+    ``RuntimeError``; a malformed value → ``ValueError`` (inherited). There is deliberately NO
+    fallback to an in-memory double: one routed tenant session must always resolve to EXACTLY ONE
+    physical tenant database (IC-010 §K/§O; D-07).
+
+    Import-time inertness is preserved: nothing here runs at module import, and the driver-bearing
+    provider modules are imported lazily inside the composition function, never at module load.
+    """
+    # Function-local absolute import (the established composition-root idiom): the adapter module
+    # stays import-light and cycle-free, and importing it performs no composition.
+    from database_router.main import build_tenant_startup_ops_from_env
+
+    ops = build_tenant_startup_ops_from_env()
+    if ops is None:
+        raise RuntimeError(
+            "create_app_from_env: tenant-startup composition is INACTIVE — "
+            "SP2_DBR_ROUTING_READ_BASE_URL is unset/empty (fail closed: no application composed)"
+        )
+    return _make_app(ops)
+
+
+def build_tenant_startup_server(ops: TenantStartupOperations, host: str = "127.0.0.1", port: int = 0) -> Tuple[AsgiEdgeServer, str]:
     """Construct the internal tenant Startup operations HTTP server bound to a composed
     ``TenantStartupOperations``.
 
-    ``port=0`` binds an ephemeral port. This factory constructs the plain single-threaded server
-    only — it does NOT start serving (the blocking runnable entrypoint is
-    ``serve_tenant_startup_api``; tests may host the single-threaded server directly). Returns
+    ``port=0`` binds an ephemeral port. This factory constructs the server only — it does NOT
+    start serving (the blocking runnable entrypoint is ``serve_tenant_startup_api``; tests may
+    host the server directly via ``serve_forever``/``shutdown``/``server_close``). Returns
     ``(server, base_url)``.
     """
-    server = HTTPServer((host, port), _make_handler(ops))
-    bound_host, bound_port = cast(str, server.server_address[0]), server.server_address[1]
-    return server, f"http://{bound_host}:{bound_port}"
+    return build_asgi_server(_make_app(ops), host, port)
 
 
 def serve_tenant_startup_api() -> None:
@@ -208,10 +244,11 @@ def serve_tenant_startup_api() -> None:
     * inactive composition (the router selector unset/empty) → deterministic ``RuntimeError`` —
       fail closed; no socket was bound and nothing is served;
     * malformed composition config → ``ValueError`` from the seam (inherited, fail closed);
-    * active → ``server.serve_forever()`` exactly once on a single-threaded plain ``HTTPServer``
-      (AT-D15T1-10: one server per operating-system process; no thread, daemon, subprocess,
-      supervisor, or retry loop here), and ``server.server_close()`` ALWAYS runs in ``finally`` —
-      ``KeyboardInterrupt`` and any serve-time exception propagate to the caller unswallowed.
+    * active → ``server.serve_forever()`` exactly once on the calling thread (AT-D15T1-10: one
+      server per operating-system process; no thread, daemon, subprocess, supervisor, or retry
+      loop is created HERE — request concurrency is the ASGI runtime's own event loop), and
+      ``server.server_close()`` ALWAYS runs in ``finally`` — ``KeyboardInterrupt`` and any
+      serve-time exception propagate to the caller unswallowed.
 
     No overclaim: this makes the edge RUNNABLE — it does not deploy or supervise it, prove a
     served-request live topology, activate production, or close any B5 blocker.
@@ -226,7 +263,7 @@ def serve_tenant_startup_api() -> None:
             "SP2_DBR_ROUTING_READ_BASE_URL is unset/empty (fail closed: no socket bound, nothing served)"
         )
     server_obj, _base_url = composed
-    server = cast(HTTPServer, server_obj)
+    server = cast(AsgiEdgeServer, server_obj)
     try:
         server.serve_forever()
     finally:

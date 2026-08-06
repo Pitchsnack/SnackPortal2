@@ -14,10 +14,12 @@ module disappears or empties, and each carries a companion proving it flags a ba
   token/authorization logging (no ``logging`` import, no ``print``); bounded timeout; single
   attempt (no retry loop); adapter-only top-level defs.
 * **Server guard** (``http_authenticate_api.py``): internal-only ``127.0.0.1`` bind + literal
-  ``/internal/auth/authenticate`` path; POST-only served handler; single-threaded plain
-  ``HTTPServer`` (no ``ThreadingHTTPServer``/threading/asyncio/concurrent/multiprocessing);
-  fixed-503/405/404 empty-body edges with no stdlib ``send_error`` HTML; ``log_message``
-  silenced; the ``{v,...}`` / 4-field-success / ``{status, public_code}`` shapes present; NO
+  ``/internal/auth/authenticate`` path; exactly ONE registered route and it is a POST; the
+  server is built through the shared containment-zone ASGI runtime and hand-rolls no server or
+  concurrency machinery (no ``HTTPServer``/threading/asyncio/concurrent/multiprocessing);
+  fixed-503/405/404 empty-body edges with neither stdlib ``send_error`` HTML nor a framework
+  detail body; request logging silenced at the shared runtime (the migrated home of
+  ``log_message``); the ``{v,...}`` / 4-field-success / ``{status, public_code}`` shapes present; NO
   ``api_gateway`` import; no ``RequestContext`` emission; no public login/password/OAuth route;
   no token/authorization logging; adapter-only top-level defs + import surface. The server
   guard PERMITS ``jwt`` (auth_router owns validation) — the client guard forbids it.
@@ -94,7 +96,8 @@ _FORBIDDEN_KEYS = frozenset(
 
 _CLIENT_IMPORT_TOPS_ALLOW = frozenset({"__future__", "json", "urllib", "typing", "api_gateway"})
 # The server allow-set PERMITS jwt (auth_router owns validation) — the asymmetry vs the client.
-_SERVER_IMPORT_TOPS_ALLOW = frozenset({"__future__", "json", "http", "typing", "auth_router", "jwt"})
+# FastAPI is the ONE sanctioned framework; the ASGI server and its socket live in the shared runtime.
+_SERVER_IMPORT_TOPS_ALLOW = frozenset({"__future__", "json", "typing", "fastapi", "shared", "auth_router", "jwt"})
 
 # NOTE (07E-3c polish): no "PyJWT" entry — the PyPI distribution PyJWT imports as module
 # ``jwt`` (already banned); a "PyJWT" top is unreachable via _import_tops and would be a
@@ -150,9 +153,10 @@ _SERVER_TOPLEVEL_ALLOW = frozenset(
         "_reduce_carriers",
         "_map_denied",
         "_authenticate",
-        "_make_handler",
+        "_make_app",
+        "create_app_from_env",  # the CANONICAL native ASGI application factory (no socket, no host/port)
         "build_authenticate_server",
-        "serve_authenticate_api",  # B5-2: the single blessed blocking entrypoint
+        "serve_authenticate_api",  # B5-2: the retained compatibility blocking entrypoint
     }
 )
 
@@ -392,22 +396,26 @@ def test_server_boundary_guard() -> None:
     # Internal-only surface: literal path + loopback default bind (IC-010 §R/§M; Section B).
     assert '"/internal/auth/authenticate"' in text, "server must pin the literal internal auth path"
     assert "127.0.0.1" in text, "server must default-bind the internal loopback host"
-    # Single-threaded plain HTTPServer; no threaded server / concurrency machinery (07E-3c scope).
-    assert "HTTPServer" in used, "server must use a plain HTTPServer"
-    for marker in ("ThreadingHTTPServer", "ThreadingMixIn"):
-        assert marker not in text, f"server must stay single-threaded (found {marker})"
+    # The edge serves through the SHARED containment-zone ASGI runtime and hand-rolls no server
+    # or concurrency machinery of its own (the runtime owns the socket and the request loop).
+    assert "build_asgi_server" in used, "server must be built through the shared ASGI runtime"
+    for marker in ("HTTPServer", "ThreadingHTTPServer", "ThreadingMixIn", "threading.Thread"):
+        assert marker not in text, f"server must not hand-roll its own server/threads (found {marker})"
     banned = {"threading", "asyncio", "contextvars", "concurrent.futures", "multiprocessing"}
     banned_tops = {b.split(".")[0] for b in banned}
     conc_hits = {m for m in _scan.imported_modules(_SERVER_MOD) if m in banned or m.split(".")[0] in banned_tops}
     assert not conc_hits, f"server must import no concurrency machinery: {conc_hits}"
-    # POST-only SERVED handler; fail-closed empty-body edges; no stdlib send_error HTML.
-    served = sorted(n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name.startswith("do_"))
-    assert served == ["do_POST"], f"the auth edge must be POST-only (served do_* handlers: {served})"
+    # POST-only SERVED route; fail-closed empty-body edges; no framework detail body.
+    served = _scan.registered_route_methods(tree)
+    assert served == ["post"], f"the auth edge must be POST-only (registered routes: {served})"
     assert "send_error" not in used, "server must never call stdlib send_error (HTML bodies)"
-    assert 'send_header("Content-Length", "0")' in text, "server must emit empty bodies on the fail-closed/refused edges"
+    assert "empty_response" in used, "server must emit empty bodies on the fail-closed/refused edges"
+    assert "HTTPException" not in used, "server must not raise framework HTTPExceptions (they render a detail body)"
     for code in ("503", "405", "404"):
         assert code in text, f"server must pin the {code} fail-closed/refused edge"
-    assert any(isinstance(n, ast.FunctionDef) and n.name == "log_message" for n in ast.walk(tree)), "server must silence log_message"
+    # Request logging is silenced at the shared runtime now (the migrated home of log_message).
+    runtime = (_scan.BACKEND_ROOT / "shared" / "adapters" / "providers" / "asgi_runtime.py").read_text(encoding="utf-8")
+    assert "access_log=False" in runtime and "log_config=None" in runtime, "server must silence request logging"
     assert "build_authenticate_server" in _top_level_defs(tree), "server must expose the build_authenticate_server factory"
     # Exact wire shapes present; references-only responses.
     groups = _string_key_groups(tree)

@@ -376,8 +376,13 @@ def test_pyproject_dependencies_unchanged() -> None:
     block = re.search(r"^dependencies\s*=\s*\[(.*?)^\]", text, re.S | re.M)
     assert block is not None, "pyproject dependencies block must exist"
     entries = re.findall(r'"([^"]+)"', block.group(1))
-    assert entries == ["pyjwt>=2", "cryptography", "psycopg[binary]>=3"], (
-        f"backend dependencies must stay EXACTLY the three declared entries (B5-5 adds none): {entries}"
+    # The declared runtime dependency set is closed and reviewed. B5-5 adds none; the FastAPI
+    # migration added exactly two — the HTTP serving stack (fastapi for the nine service edges,
+    # uvicorn for the single shared ASGI runtime). Both are vendor-neutral open source over the
+    # standard ASGI interface, so the anti-vendor-lock-in constraint is unaffected. Any further
+    # entry needs the same explicit review this list represents.
+    assert entries == ["pyjwt>=2", "cryptography", "psycopg[binary]>=3", "fastapi>=0.115", "uvicorn>=0.30"], (
+        f"backend dependencies must stay EXACTLY the five reviewed entries: {entries}"
     )
 
 

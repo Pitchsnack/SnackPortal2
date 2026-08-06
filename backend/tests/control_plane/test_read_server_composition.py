@@ -46,7 +46,7 @@ def _env(host: Optional[str], port: Optional[str]) -> Iterator[None]:
     """Set the two read-edge env vars for one test (None => unset); restore both afterward."""
     prior = {k: os.environ.get(k) for k in _VARS}
     try:
-        for key, value in zip(_VARS, (host, port)):
+        for key, value in zip(_VARS, (host, port), strict=False):
             if value is None:
                 os.environ.pop(key, None)
             else:
@@ -257,7 +257,7 @@ def test_real_bind_smoke_constructs_and_closes() -> None:
     server, base_url = result
     try:
         assert base_url.startswith("http://127.0.0.1:"), f"default bind must be internal loopback: {base_url}"
-        assert hasattr(server, "server_close") and hasattr(server, "serve_forever"), "must return a real HTTPServer"
+        assert hasattr(server, "server_close") and hasattr(server, "serve_forever"), "must return a real bound edge server"
     finally:
         server.server_close()  # release the ephemeral socket; the seam never called serve_forever
 

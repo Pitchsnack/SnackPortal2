@@ -188,6 +188,15 @@ These are **acceptance criteria for the future implementation**, not obligations
 ## Multi-Database Compatibility
 The gateway resolves (via the Database Router) to the Control Database **or** exactly one tenant database — never both, never spanning tenants. It introduces no provider-specific feature and runs against standard PostgreSQL backends (AWS RDS / Azure / Google Cloud SQL / self-hosted). Routing metadata and the registry remain control-plane concerns (D-07); the gateway carries none of it as client-controlled state.
 
+## Composition Boundary (D-44 / IC-012)
+> **References-only cross-reference to §H / §K / §O. No gateway behavior is altered by this section.**
+- The `deployment` cross-service composition root (D-44; IC-012) **supplies** the Database Router to the Import edge but **selects no database**: it holds no DSN, no tenant→database mapping, no naming convention, and no override (IC-012 §6/§9). Registry-authoritative resolution (D-07) stays inside the Database Router.
+- **§H unchanged** — the Database Router remains the **sole** database selector; supplying it is not selecting with it, and no service acquires another service's database authority.
+- **§K unchanged** — one request → one active tenant → one database. A routed tenant session is a live transactional handle constructed and consumed in-process (IC-012 §8/§10); there is no cross-tenant connection, no shared pool across tenants, and no cross-tenant query path.
+- **§O unchanged** — the Control Database and the tenant databases remain **physically separate**; no shared database, shared schema, or `tenant_id` isolation architecture is introduced or enabled. One routed tenant session still resolves to **exactly one** physical tenant database.
+- The API Gateway remains the **sole served ingress** (§I / §M / §R). The composition root is not an ingress: it exposes no surface, serves no request, and is reachable by no caller — it is a start-up-time assembler only, and nothing may import it (IC-012 §4).
+- **Non-overclaim:** this section adds **no route, no dispatch category, no carrier, no `public_code`, and no audit class**. The §Q dispatch taxonomy is unchanged, §J is unchanged, and §V response composition is untouched.
+
 ## Anti-Vendor-Lock-In Requirements
 - **No Supabase** gateway logic, no Supabase Auth, no Supabase data SDK/PostgREST/RLS-as-authorization at the edge or behind it (D-37 §5).
 - **No Lovable** or other frontend-platform runtime dependency in the gateway boundary.

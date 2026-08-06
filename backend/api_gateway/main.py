@@ -128,6 +128,7 @@ __all__ = [
     "build_authenticator_from_env",
     "build_control_plane_read_from_env",
     "build_gateway",
+    "build_gateway_edge_deps_from_env",
     "build_gateway_edge_server_from_env",
     "build_import_initiation_from_env",
     "build_router_dispatch_from_env",
@@ -512,6 +513,58 @@ def _edge_allowed_origins_from_env() -> Tuple[str, ...]:
     return tuple(origin.strip() for origin in raw.split(",") if origin.strip())
 
 
+def build_gateway_edge_deps_from_env() -> Optional[Tuple[Gateway, Tuple[str, ...]]]:
+    """The served gateway-edge DEPENDENCY composition — the ONE dependency-construction path.
+
+    Extracted so the native ASGI application factory
+    (``adapters/providers/http_gateway_edge.create_app_from_env``) and the compatibility
+    ``build_gateway_edge_server_from_env`` seam construct their collaborators through exactly the
+    same code: there is no second composition root, and no transport selector is parsed twice.
+    Returns ``(gateway, allowed_origins)`` — everything the edge application needs and nothing
+    about where it listens.
+
+    Composition-gate-first: assemble the COMPLETE real Gateway from the three existing transport
+    seams — ``build_authenticator_from_env`` (IC-005), ``build_router_dispatch_from_env``
+    (IC-010 §H), and ``build_control_plane_read_from_env`` (IC-010 §V). ``build_gateway``
+    structurally requires all three ports; the served edge therefore activates ONLY on a complete
+    real composition and NEVER on a partial one or a silent in-memory stub. If ANY of the three
+    transport selectors is unset/empty this returns ``None``. A malformed transport URL raises
+    ``ValueError`` (inherited).
+
+    Side-effect boundary (LOAD-BEARING): DB-inert, network-read-inert, serve-inert AND
+    socket-inert — no bind knob is read here and no address is ever claimed. Only the caller
+    decides whether a socket is bound.
+    """
+    authenticator = build_authenticator_from_env()
+    control_read = build_control_plane_read_from_env()
+    router = build_router_dispatch_from_env()
+    if authenticator is None or control_read is None or router is None:
+        return None
+    # Gateway Audit V1a: the durable operational-audit sink is wired at THIS composition call site
+    # (never a forced default; B5-BLK-1 preserved). Unset SP2_GW_AUDIT_SINK_BASE_URL → None →
+    # build_gateway keeps the in-memory no-sink default (AD-1 Option A); a valid URL → the fail-closed
+    # durable policy. A malformed value raises ValueError here (before anything is served).
+    audit = build_audit_emitter_from_env()
+    # W1a composed-core: the Gateway→Import transport port is wired at THIS composition call site (never a
+    # forced default). Unset SP2_GW_IMPORT_BASE_URL → None → the IMPORT_INITIATION accepted-initiation
+    # envelope default; a valid URL → the transport HttpImportInitiation client; malformed → ValueError here.
+    import_initiation = build_import_initiation_from_env()
+    # D-42 CLM Stage B: the Gateway→Database-Router tenant Startup operations port is wired at THIS
+    # composition call site (never a forced default). Unset SP2_GW_TENANT_STARTUP_BASE_URL → None →
+    # every TENANT_OPERATION keeps the pre-CLM router handoff; a valid URL → the transport
+    # HttpTenantStartupOperations client; malformed → ValueError here.
+    tenant_startup = build_tenant_startup_from_env()
+    gateway = build_gateway(
+        authenticator=authenticator,
+        router=router,
+        control_read=control_read,
+        audit=audit,
+        import_initiation=import_initiation,
+        tenant_startup=tenant_startup,
+    )
+    return gateway, _edge_allowed_origins_from_env()
+
+
 def build_gateway_edge_server_from_env() -> Optional[Tuple[object, str]]:
     """The served northbound gateway-edge composition seam (Served API Gateway Edge V1).
 
@@ -544,39 +597,14 @@ def build_gateway_edge_server_from_env() -> Optional[Tuple[object, str]]:
     No overclaim: it composes a served edge *object* from config; it does NOT serve requests,
     run a production service, terminate TLS, activate production, or close any B5 blocker.
     """
-    authenticator = build_authenticator_from_env()
-    control_read = build_control_plane_read_from_env()
-    router = build_router_dispatch_from_env()
-    if authenticator is None or control_read is None or router is None:
+    deps = build_gateway_edge_deps_from_env()
+    if deps is None:
         return None
+    gateway, allowed_origins = deps
     host = (os.environ.get(GW_EDGE_HOST_ENV) or "").strip() or "127.0.0.1"
     port = _edge_port_from_env()
-    allowed_origins = _edge_allowed_origins_from_env()
-    # Gateway Audit V1a: the durable operational-audit sink is wired at THIS composition call site
-    # (never a forced default; B5-BLK-1 preserved). Unset SP2_GW_AUDIT_SINK_BASE_URL → None →
-    # build_gateway keeps the in-memory no-sink default (AD-1 Option A); a valid URL → the fail-closed
-    # durable policy. A malformed value raises ValueError here (before any socket bind).
-    audit = build_audit_emitter_from_env()
-    # W1a composed-core: the Gateway→Import transport port is wired at THIS composition call site (never a
-    # forced default). Unset SP2_GW_IMPORT_BASE_URL → None → the IMPORT_INITIATION accepted-initiation
-    # envelope default; a valid URL → the transport HttpImportInitiation client; malformed → ValueError here
-    # (before any socket bind).
-    import_initiation = build_import_initiation_from_env()
-    # D-42 CLM Stage B: the Gateway→Database-Router tenant Startup operations port is wired at THIS
-    # composition call site (never a forced default). Unset SP2_GW_TENANT_STARTUP_BASE_URL → None →
-    # every TENANT_OPERATION keeps the pre-CLM router handoff; a valid URL → the transport
-    # HttpTenantStartupOperations client; malformed → ValueError here (before any socket bind).
-    tenant_startup = build_tenant_startup_from_env()
     # Lazy relative import keeps api_gateway/main.py import-light and server-token-free (the
     # concrete serving edge and its socket live in the adapter, never in the composition root).
     from .adapters.providers.http_gateway_edge import build_gateway_edge_server
 
-    gateway = build_gateway(
-        authenticator=authenticator,
-        router=router,
-        control_read=control_read,
-        audit=audit,
-        import_initiation=import_initiation,
-        tenant_startup=tenant_startup,
-    )
     return build_gateway_edge_server(gateway, host=host, port=port, allowed_origins=allowed_origins)

@@ -149,6 +149,13 @@ Per **D-09 (ingress)** — this resolves the import-ingress slice; the **AI-egre
 - The tenant schema participates in expand/contract migrations with version-gated readiness (D-17).
 - Per-tenant independence (D-16) governs availability.
 
+## Composition Boundary (D-44 / IC-012)
+> **References-only cross-reference. No import semantic is altered by this section.**
+- The Import edge's two cross-package collaborator ports — `RoutedSessionProvider` and `LineageEmitPort` — are **supplied by the `deployment` cross-service composition root** (D-44; IC-012 §3/§5/§6/§7), not constructed by `import_service`. `import_service` imports **neither** `database_router` **nor** `lineage_service`; the service-independence DAG is unchanged and unweakened (IC-012 §4/§18).
+- Composition **selects no database**. The Database Router remains the sole database selector (D-07; IC-010 §H/§K/§O), and one routed tenant session still resolves to **exactly one** physical tenant database. A routed session is a live transactional handle: it is constructed and consumed **in-process** and never crosses HTTP or any other wire (IC-012 §8/§10).
+- **Unchanged by this section:** the *Execution Model* (D-19), idempotency and natural-key reconciliation (D-20, as amended in part by D-34-R2), *Re-Import Governance*, partial-failure and batching semantics (D-21), *Ingress Validation & PII Handling* (D-09 ingress), *Import Lineage Requirements*, the *API Contract*, the *DTO Contract*, the *Audit Requirements*, and *Failure Behavior*. The composed `ImportService`, its ports, its routes, and its durable Import-audit sink are the same ones the injected composition produced.
+- This section grants **no route, no DTO, no error code, no audit class, and no DDL**, and confers no import capability.
+
 ## Anti-Vendor-Lock-In Requirements
 - **No Supabase-specific** import/storage logic and no Supabase Auth (authentication is OIDC via IC-005).
 - **No Lovable-specific** runtime dependencies.

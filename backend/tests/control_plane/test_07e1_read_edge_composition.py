@@ -18,13 +18,13 @@ from __future__ import annotations
 
 import pathlib
 import sys
-from http.server import HTTPServer
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import _h  # noqa: E402
 
 from control_plane.adapters.providers import http_read_api  # noqa: E402
 from control_plane.main import create_app  # noqa: E402
+from shared.adapters.providers.asgi_runtime import AsgiEdgeServer  # noqa: E402
 
 
 def test_production_composition_seam_binds_and_closes_cleanly() -> None:
@@ -41,9 +41,10 @@ def test_production_composition_seam_binds_and_closes_cleanly() -> None:
         assert base_url == f"http://127.0.0.1:{bound_port}", (
             f"base_url {base_url!r} must carry the bound loopback host and port {bound_port}"
         )
-        # (2) single-threaded read-edge pin: a PLAIN http.server.HTTPServer, never a threading subclass.
-        assert type(server) is HTTPServer, (
-            f"the read edge must compose a single-threaded http.server.HTTPServer, not a subclass (got {type(server).__name__})"
+        # (2) read-edge runtime pin: the sanctioned shared AsgiEdgeServer exactly, never a subclass
+        # or a bespoke per-service server — every edge serves through the one containment-zone runtime.
+        assert type(server) is AsgiEdgeServer, (
+            f"the read edge must compose the shared AsgiEdgeServer, not a subclass (got {type(server).__name__})"
         )
     finally:
         # (3) CLEAN close: releases the ephemeral port and must not raise (guards a bind/socket leak).
