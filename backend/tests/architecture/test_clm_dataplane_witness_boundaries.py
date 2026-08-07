@@ -1402,22 +1402,47 @@ def test_no_governed_region_states_an_unconditional_two_leg_execution_count() ->
     # Non-vacuity, in-place. The census must SEE each phrasing this correction exists to bar —
     # including the three synonyms the retired five-literal deny-list let through. A census that
     # matched nothing would satisfy every assertion above by finding nothing to report.
-    for label, probe in (
+    #
+    # Each probe additionally names WHICH rule must report it. Without that, the two rules cover for
+    # each other: every synonym below happens to trip both, so either rule could be silently neutered
+    # and every probe would still pass on the strength of the other. Pinning the rule is what makes
+    # each one individually load-bearing.
+    for label, expected_rule, probe in (
         (
             "N-1 restored",
+            "UNQUALIFIED TWO-COUNT",
             "the two denial rows for the run's own correlation ids are the exception — the witness reads "
             "exactly those, by correlation id, as booleans (see §6.1).",
         ),
         (
             "N-2 restored",
+            "UNQUALIFIED TWO-COUNT",
             "its only business-data read is the correlation-filtered denial record for its own two isolation "
             "requests (plus pg_control_system() metadata).",
         ),
-        ("synonym: both execute every run", "both isolation requests execute on every run."),
-        ("synonym: two times per run", "the bounded Control audit read is issued two times per run."),
-        ("synonym: both legs read each run", "both denial legs are read each run."),
+        ("synonym: both execute every run", "PER-RUN COUNT", "both isolation requests execute on every run."),
+        (
+            "synonym: two times per run",
+            "PER-RUN COUNT",
+            "the bounded Control audit read is issued two times per run.",
+        ),
+        ("synonym: both legs read each run", "PER-RUN COUNT", "both denial legs are read each run."),
+        # Reaches the PER-RUN rule ALONE: "read" is not an isolation subject, so the unqualified-count
+        # rule cannot see this one. It is what keeps the per-run rule from being deletable.
+        ("per-run count with no isolation subject", "PER-RUN COUNT", "the bounded read fires twice per run."),
+        # And the mirror: a two-count with no per-run phrasing, which only the unqualified rule sees.
+        (
+            "two-count with no per-run phrasing",
+            "UNQUALIFIED TWO-COUNT",
+            "the witness reads the two denial rows and files them.",
+        ),
     ):
-        assert _contradiction_census(_prose(probe)), f"the census must report {label}, or it bars nothing"
+        hits = _contradiction_census(_prose(probe))
+        assert hits, f"the census must report {label}, or it bars nothing"
+        assert any(rule == expected_rule for rule, _unit in hits), (
+            f"{label} must be reported by the {expected_rule} rule specifically, got {hits}. Each rule has to be "
+            "individually non-vacuous, or one of them can be deleted without any probe noticing."
+        )
     # ...and must NOT report the requirement sentences it has to leave standing.
     for keeper in (
         "both legs remain mandatory for final acceptance.",
