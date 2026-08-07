@@ -19,6 +19,8 @@ COMMANDS (stdlib argparse; work happens ONLY after an explicit subcommand — im
             Tier-B environment preconditions, classifies MATCHING / MISSING / CONFLICTING, and
             exits non-zero on CONFLICTING. NEVER binds a credential, NEVER writes secret material,
             NEVER executes the payload. Safe to run before Gate B — that is its purpose (§9 O-2).
+            It evaluates V-12 through the SAME `v12_problems()` predicate `apply` uses, on the same
+            observation, so it cannot report green where `apply` would refuse on V-12 (RB-1).
     apply   GATE-B ONLY, and refuses to run without `--confirm-gate-b-m2`. Asserts the database
             identity pin, executes the frozen payload in ONE transaction, performs the §5.6
             statement-logging observation, then takes exactly one §5.5 credential-convergence
@@ -54,6 +56,7 @@ import argparse
 import hashlib
 import importlib
 import importlib.util
+import ipaddress
 import os
 import pathlib
 import secrets
@@ -143,6 +146,38 @@ EXPECTED_TRIGGERS = ("control_gateway_audit_no_mutation", "control_gateway_audit
 
 # V-17: no tenant-namespace database may live on the control cluster.
 TENANT_DB_PATTERNS = ("sp2_tenant_%", "snackportal2_tenant_%")
+
+# V-12 (RB-1). The client authentication methods under which a credential probe actually DECIDES
+# the credential AW-1 binds, i.e. the password stored by `ALTER ROLE ... PASSWORD`. Everything else
+# is non-discriminating for AW-1's purposes and therefore disqualifies BOTH the §5.5 branch-1
+# decision and the mandatory post-bind re-probe:
+#
+#   trust                     accepts unconditionally — the probe proves nothing;
+#   peer / ident / cert       authenticate the OS user or a client certificate, so the probe
+#                             succeeds no matter what password is bound;
+#   ldap / radius / pam / bsd verify a password held by an EXTERNAL directory, never the one this
+#                             tool just bound;
+#   gss / sspi                authenticate a Kerberos/Windows principal;
+#   reject                    refuses unconditionally — the probe proves nothing in the other
+#                             direction, and would make branch 1 permanently unreachable.
+#
+# An allow-list, not a deny-list: a method this tool has never heard of must block rather than pass,
+# because "unknown" is precisely the state in which the probe's meaning is unknown. The predecessor
+# checked only for the single string `trust` and did so across EVERY `type='host'` rule in the file,
+# which is neither this connection's rule nor the whole hazard.
+PASSWORD_DISCRIMINATING_AUTH_METHODS = frozenset({"scram-sha-256", "md5", "password"})
+
+# `pg_hba_file_rules` gained the globally-ordered `rule_number` in PostgreSQL 16. Below that,
+# `line_number` is the only ordering column available. Both are read ORDERED, because pg_hba is a
+# FIRST-MATCH table and an unordered scan would pick an arbitrary rule.
+_HBA_RULE_NUMBER_MIN_VERSION = 160000
+
+# Database-column tokens that resolve definitively WITHOUT further information for a normal
+# (non-replication) client connection such as this tool's.
+_HBA_REPLICATION_TOKEN = "replication"
+
+# Address tokens meaning "every client address" — matched without parsing.
+_HBA_ANY_ADDRESS = frozenset({"all", "0.0.0.0/0", "::/0"})
 
 # §5.6 statement-logging guard. A bind performed while any of these holds writes the full
 # `ALTER ROLE ... PASSWORD` text to the server log — PostgreSQL performs no password redaction.
@@ -478,6 +513,196 @@ def frozen_payload_sha256() -> str:
     return hashlib.sha256(FROZEN_ROLE_GRANT_SQL.replace("\r\n", "\n").encode("utf-8")).hexdigest()
 
 
+# --------------------------------------------------------------- V-12: the EFFECTIVE host auth ---
+# RB-1. `pg_hba.conf` is a FIRST-MATCH table: exactly one entry governs any given connection, and
+# which one it is depends on the connection type, the SSL/GSS state, the database, the role and the
+# client address. A census of every `type='host'` rule's method therefore answers a question nobody
+# asked — an unrelated `host all all 127.0.0.1/32 trust` line blocks a connection that arrives from a
+# container-network address and never touches that rule, while a permissive rule that DOES govern
+# this connection can hide behind a stricter one that does not.
+#
+# These functions are PURE (rules in, verdict out): they take the rule table and the observed
+# connection facts and return the entry PostgreSQL actually applied. Being pure is what lets the
+# static guard EXECUTE them against synthetic rule tables instead of pattern-matching their source,
+# and what lets `plan` and `apply` reach the identical verdict from the identical inputs.
+#
+# Three-valued throughout: True (matches), False (definitely does not), None (cannot be decided from
+# what is observable). A first-match table cannot be evaluated past an undecidable entry — the entry
+# might be the governing one — so the scan STOPS there and reports UNDETERMINABLE. Fail-closed: an
+# unknown effective method is treated exactly like a non-discriminating one.
+def _hba_type_matches(rule_type: Optional[str], *, local: bool, ssl: Optional[bool]) -> Optional[bool]:
+    """`local` / `host` / `hostssl` / `hostnossl` against this connection's transport."""
+    if rule_type == "local":
+        return local
+    if rule_type not in ("host", "hostssl", "hostnossl", "hostgssenc", "hostnogssenc"):
+        return None  # an unrecognised connection type is not guessed at
+    if local:
+        return False  # every host-family rule is a TCP rule
+    if rule_type == "host":
+        return True  # `host` matches TCP whether or not SSL is in use
+    if rule_type in ("hostssl", "hostnossl"):
+        if ssl is None:
+            return None
+        return ssl if rule_type == "hostssl" else not ssl
+    return None  # GSS-encryption rules: this tool does not observe the GSS state
+
+
+def _hba_tokens_match(tokens: Optional[Sequence[str]], value: Optional[str]) -> Optional[bool]:
+    """A `pg_hba_file_rules` database/user token array against one observed value.
+
+    `all` and an exact name decide TRUE. `replication` decides FALSE for the normal client
+    connection this tool makes — deciding it correctly matters, because the stock PostgreSQL
+    `pg_hba.conf` carries replication lines ABOVE the rule that governs an ordinary connection, and
+    treating them as undecidable would stall every scan on every default installation. `+group`,
+    `@file`, `sameuser` and `samerole` need catalog or filesystem state this tool does not read, so
+    they decide NOTHING.
+    """
+    if tokens is None or value is None:
+        return None
+    undecidable = False
+    for token in tokens:
+        if token == "all" or token == value:
+            return True
+        if token == _HBA_REPLICATION_TOKEN:
+            continue  # a replication-only entry cannot govern this ordinary connection
+        if token.startswith(("+", "@")) or token in ("sameuser", "samerole"):
+            undecidable = True
+    return None if undecidable else False
+
+
+def _hba_network(address: Optional[str], netmask: Optional[str]) -> Optional[Any]:
+    """The rule's address as an `ipaddress` network, or `None` when it is not an IP literal.
+
+    `pg_hba_file_rules` renders a CIDR entry as an address plus a separate `netmask`, and a
+    hostname entry as the hostname itself. A hostname would need resolution — an act with its own
+    failure modes and its own answer-changing-over-time problem — so it is left undecided.
+    """
+    if not address:
+        return None
+    for candidate in (f"{address}/{netmask}" if netmask else None, address):
+        if candidate is None:
+            continue
+        try:
+            return ipaddress.ip_network(candidate, strict=False)
+        except ValueError:
+            continue
+    return None
+
+
+def _hba_address_matches(address: Optional[str], netmask: Optional[str], client_address: Optional[str]) -> Optional[bool]:
+    if address is not None and address.strip() in _HBA_ANY_ADDRESS:
+        return True
+    if client_address is None:
+        return None
+    try:
+        client = ipaddress.ip_address(client_address.split("/")[0])
+    except ValueError:
+        return None
+    network = _hba_network(address, netmask)
+    if network is None:
+        return None
+    if client.version != network.version:
+        return False
+    return client in network
+
+
+def effective_host_auth(rules: Optional[Sequence[Dict[str, Any]]], connection: Dict[str, Any]) -> Dict[str, Any]:
+    """The ONE `pg_hba` entry that governs THIS connection — the V-12 subject.
+
+    Returns ``{"method", "order", "undeterminable"}``. `undeterminable` carries the reason when no
+    single entry could be identified; `method` is then `None` and V-12 blocks. Nothing here decides
+    whether the method is acceptable — that is `v12_problems()`, so the observation and the judgement
+    stay separable and separately testable.
+    """
+    if rules is None:
+        return {
+            "method": None,
+            "order": None,
+            "undeterminable": (
+                "pg_hba_file_rules is not readable by the executor identity (it needs superuser or pg_read_server_files "
+                "membership, and PostgreSQL 10+), so the effective client authentication method cannot be established"
+            ),
+        }
+    for rule in rules:
+        order = rule.get("order")
+        if rule.get("error"):
+            return {
+                "method": None,
+                "order": order,
+                "undeterminable": (
+                    f"the pg_hba entry at #{order} did not parse, so no entry at or after it can be evaluated and the "
+                    "governing rule is unknowable"
+                ),
+            }
+        rule_type = rule.get("type")
+        verdicts = [
+            _hba_type_matches(rule_type, local=bool(connection.get("local")), ssl=connection.get("ssl")),
+            _hba_tokens_match(rule.get("database"), connection.get("database")),
+            _hba_tokens_match(rule.get("user_name"), connection.get("user")),
+            (
+                True
+                if rule_type == "local"
+                else _hba_address_matches(rule.get("address"), rule.get("netmask"), connection.get("client_address"))
+            ),
+        ]
+        if any(verdict is False for verdict in verdicts):
+            continue  # a definite non-match on ANY field, whatever the other fields do
+        if any(verdict is None for verdict in verdicts):
+            return {
+                "method": None,
+                "order": order,
+                "undeterminable": (
+                    f"the pg_hba entry at #{order} can neither be matched nor excluded from what is observable "
+                    "(non-literal address, group/file token, or an unobserved transport state), and pg_hba is a "
+                    "first-match table — so no later entry can be assumed to govern instead"
+                ),
+            }
+        return {"method": rule.get("auth_method"), "order": order, "undeterminable": None}
+    return {
+        "method": None,
+        "order": None,
+        "undeterminable": (
+            "no pg_hba entry matches the observed connection facts, yet this connection was accepted — the observation "
+            "and the server disagree, so nothing may be concluded from it"
+        ),
+    }
+
+
+def v12_problems(environment: Dict[str, Any]) -> List[str]:
+    """V-12, evaluated ONCE and consumed by BOTH commands.
+
+    `classify()` (and therefore `plan`) and `_converge_credential` (and therefore `apply`) call THIS
+    function on the SAME observation, which is what makes "a green `plan` where `apply` would refuse
+    on V-12" structurally impossible rather than merely unlikely. The predecessor split the two:
+    `apply` tested `'trust' in <every host rule's method>` and `classify()` never read the key at
+    all, so `plan` exited 0 `MISSING` on a cluster where `apply` was guaranteed to refuse — a false
+    green on the §6.3 pre-grant condition.
+
+    Blocking here is not a bind-time nicety. §5.5 note 6 makes V-12 a HARD PRECONDITION of the whole
+    convergence: under a non-discriminating method the branch-1 "material already authenticates"
+    decision is meaningless AND the mandatory post-bind re-probe cannot confirm anything, so there is
+    no branch left that is safe to take.
+    """
+    effective = environment.get("effective_host_auth")
+    if not isinstance(effective, dict):
+        return [
+            "V-12: the effective client authentication method was not observed at all, so no credential probe "
+            "performed here can be given a meaning"
+        ]
+    reason = effective.get("undeterminable")
+    if reason:
+        return [f"V-12: the effective client authentication method for this connection is UNDETERMINABLE — {reason}"]
+    method = effective.get("method")
+    if method not in PASSWORD_DISCRIMINATING_AUTH_METHODS:
+        return [
+            f"V-12: the effective client authentication method for THIS connection is {method!r} (pg_hba entry "
+            f"#{effective.get('order')}), which does not decide the password bound by ALTER ROLE ... PASSWORD. "
+            f"Only {sorted(PASSWORD_DISCRIMINATING_AUTH_METHODS)} do, so neither the §5.5 branch-1 decision nor the "
+            "mandatory post-bind re-probe would be conclusive."
+        ]
+    return []
+
+
 # ------------------------------------------------------------------------- state observation -----
 def observe_role_state(conn: Any) -> Dict[str, Any]:
     """The complete V-6 role-state census. Read-only; no statement is executed as the writer."""
@@ -578,16 +803,81 @@ def observe_environment(conn: Any) -> Dict[str, Any]:
                 conn.rollback()
                 env["log_gucs"][guc] = "<unavailable>"
 
-        # V-12: the effective host auth method. Under `trust` the §5.5 branch-1 probe cannot
-        # discriminate credentials at all, so the convergence decision must NOT be taken on probe
-        # success alone. Requires PG 10+ and superuser; recorded as unavailable otherwise.
-        try:
-            cur.execute("SELECT DISTINCT auth_method FROM pg_hba_file_rules WHERE type = 'host' ORDER BY 1")
-            env["host_auth_methods"] = [row[0] for row in cur.fetchall()]
-        except Exception:  # noqa: BLE001
-            conn.rollback()
-            env["host_auth_methods"] = None
+        # V-12 (RB-1): the EFFECTIVE client authentication method for THIS connection. Under a
+        # non-discriminating method the §5.5 branch-1 probe cannot decide credentials at all, so the
+        # convergence decision must NOT be taken on probe success alone. Requires PG 10+ and
+        # superuser (or pg_read_server_files); recorded as undeterminable — and therefore BLOCKING —
+        # otherwise. The three observations below are the rule table, this connection's own facts,
+        # and the derived governing entry.
+        env["connection"] = _observe_connection_facts(conn, cur, env.get("database"), env.get("session_user"))
+        env["host_auth_rules"] = _observe_hba_rules(conn, cur, int(env.get("server_version_num") or 0))
+        env["effective_host_auth"] = effective_host_auth(env["host_auth_rules"], env["connection"])
+        # REPORTED ONLY, and deliberately named so: this census is the predecessor's whole-file
+        # membership test. It is useful context for an operator reading a CONFLICTING plan and it is
+        # NEVER a decision input — `v12_problems()` reads `effective_host_auth` and nothing else.
+        env["host_auth_method_census"] = (
+            sorted({str(rule.get("auth_method")) for rule in env["host_auth_rules"] if rule.get("auth_method")})
+            if env["host_auth_rules"] is not None
+            else None
+        )
     return env
+
+
+def _observe_connection_facts(conn: Any, cur: Any, database: Optional[str], user: Optional[str]) -> Dict[str, Any]:
+    """The four properties `pg_hba.conf` matches a connection against, for THIS connection.
+
+    `local` is decided by `inet_client_addr()` being NULL — a Unix-socket connection has no client
+    address. `ssl` decides `hostssl` / `hostnossl`; when it cannot be observed it stays `None`, and
+    the matcher then treats those rule types as undecidable rather than assuming either way. The
+    database and the role are the ones the connection was ESTABLISHED with, which is what pg_hba was
+    evaluated against — `session_user`, never `current_user` (a `SET ROLE` does not re-authenticate).
+    """
+    facts: Dict[str, Any] = {"database": database, "user": user, "client_address": None, "local": None, "ssl": None}
+    try:
+        cur.execute("SELECT inet_client_addr()::text")
+        address = cur.fetchone()[0]
+        facts["client_address"] = address
+        facts["local"] = address is None
+    except Exception:  # noqa: BLE001 — an unobservable client address leaves the transport undecided
+        conn.rollback()
+    try:
+        cur.execute("SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()")
+        row = cur.fetchone()
+        facts["ssl"] = None if row is None or row[0] is None else bool(row[0])
+    except Exception:  # noqa: BLE001 — pg_stat_ssl absent/unreadable: `hostssl`/`hostnossl` stay undecidable
+        conn.rollback()
+    return facts
+
+
+def _observe_hba_rules(conn: Any, cur: Any, server_version_num: int) -> Optional[List[Dict[str, Any]]]:
+    """The `pg_hba.conf` rule table IN FILE ORDER, or `None` when it cannot be read.
+
+    Order is load-bearing: pg_hba is a first-match table, so an unordered read would let the matcher
+    pick an arbitrary entry. PostgreSQL 16 added `rule_number`, which stays globally monotonic across
+    `include` directives; below 16 `line_number` is the only ordering column there is.
+    """
+    order_column = "rule_number" if server_version_num >= _HBA_RULE_NUMBER_MIN_VERSION else "line_number"
+    try:
+        cur.execute(
+            f"SELECT {order_column}, type, database, user_name, address, netmask, auth_method, error FROM pg_hba_file_rules ORDER BY 1"
+        )
+        rows = cur.fetchall()
+    except Exception:  # noqa: BLE001 — not readable is reported as such, and V-12 then blocks
+        conn.rollback()
+        return None
+    return [
+        {
+            "order": row[0],
+            "type": row[1],
+            "database": list(row[2]) if row[2] is not None else None,
+            "user_name": list(row[3]) if row[3] is not None else None,
+            "address": row[4],
+            "netmask": row[5],
+            "auth_method": row[6],
+            "error": row[7],
+        }
+        for row in rows
+    ]
 
 
 def observe_row_baseline(conn: Any) -> Dict[str, Any]:
@@ -614,10 +904,16 @@ def classify(state: Dict[str, Any], privileges: Dict[str, Any], environment: Dic
     pre-Gate-B classification. CONFLICTING means a pre-existing role deviates from the pinned target,
     and it BLOCKS Gate B: AW-1 does not authorize repairing a conflicting pre-existing role, because
     the unconditional ALTER ROLEs in the payload would silently "fix" it mid-apply.
+
+    RB-1: the V-12 host-authentication precondition is evaluated HERE, through the same
+    `v12_problems()` the `apply` convergence path calls. It is not a bind-time detail that `plan` may
+    skip — `apply` cannot converge a credential under a non-discriminating method, so a `plan` that
+    did not report it would exit 0 on a cluster where `apply` is guaranteed to refuse.
     """
     findings: List[str] = []
     present = [role for role in (WRITER_ROLE, INGEST_ROLE) if role in state["roles"]]
 
+    findings.extend(v12_problems(environment))
     if environment.get("database") != CONTROL_DATABASE:
         findings.append(f"connected to database {environment.get('database')!r}, expected {CONTROL_DATABASE!r}")
     if int(environment.get("server_version_num") or 0) < MIN_SERVER_VERSION_NUM:
@@ -716,8 +1012,18 @@ def _print_state(state: Dict[str, Any], privileges: Dict[str, Any], environment:
     print(f"  server_version_num  : {version} (standing major {STANDING_SERVER_MAJOR}, floor {MIN_SERVER_VERSION_NUM})")
     print(f"  013 triggers        : {environment.get('triggers')}")
     print(f"  tenant DBs on ctrl  : {environment.get('tenant_databases_on_control_cluster') or 'none (V-17 clean)'}")
-    auth_methods = environment.get("host_auth_methods")
-    print(f"  host auth methods   : {auth_methods if auth_methods is not None else '<unobservable>'}")
+    connection = environment.get("connection") or {}
+    print(
+        f"  connection facts    : local={connection.get('local')} ssl={connection.get('ssl')} "
+        f"client_address={connection.get('client_address') or '<none/unobservable>'}"
+    )
+    effective = environment.get("effective_host_auth") or {}
+    if effective.get("undeterminable"):
+        print(f"  effective host auth : UNDETERMINABLE (V-12 BLOCKS) — {effective['undeterminable']}")
+    else:
+        print(f"  effective host auth : {effective.get('method')!r} at pg_hba entry #{effective.get('order')} — THE V-12 SUBJECT")
+    census = environment.get("host_auth_method_census")
+    print(f"  host auth census    : {census if census is not None else '<unobservable>'} (reported only; NOT the V-12 decision)")
     print(f"  logging GUCs        : {environment.get('log_gucs')}")
     for role in (WRITER_ROLE, INGEST_ROLE):
         observed = state["roles"].get(role)
@@ -892,13 +1198,19 @@ def _converge_credential(conn: Any, psycopg: Any, environment: Dict[str, Any], *
     """
     material, form = _resolve_writer_material()
 
-    # V-12 is a HARD PRECONDITION of the decision, not context (§5.5 note 6). Under `trust` no
-    # credential probe can discriminate at all — which disqualifies the branch-1 decision AND the
-    # mandatory post-bind re-probe, so it blocks the whole convergence rather than one branch.
-    auth_methods = environment.get("host_auth_methods")
-    if auth_methods is not None and "trust" in auth_methods:
-        print("  V-12                : host auth includes `trust` — no credential probe can discriminate here,")
-        print("                        so neither the converged decision nor the required re-probe is decisive.")
+    # V-12 is a HARD PRECONDITION of the decision, not context (§5.5 note 6). Under a
+    # non-discriminating effective method no credential probe can decide anything — which
+    # disqualifies the branch-1 decision AND the mandatory post-bind re-probe, so it blocks the whole
+    # convergence rather than one branch. RB-1: this is the SAME `v12_problems()` `classify()` and
+    # therefore `plan` consume, on the same observation, so the two can never disagree. Reaching it
+    # via `apply` additionally requires the pre-apply `classify()` to have passed, which means this
+    # is now defence in depth rather than the first line of it.
+    v12 = v12_problems(environment)
+    if v12:
+        print("  V-12                : CONFLICTING — the effective host authentication method for this connection")
+        print("                        makes neither the converged decision nor the required re-probe decisive:")
+        for problem in v12:
+            print(f"      - {problem}")
         return CONFLICTING
 
     authenticates = False

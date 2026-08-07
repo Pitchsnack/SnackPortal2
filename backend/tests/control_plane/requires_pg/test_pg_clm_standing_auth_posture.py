@@ -130,7 +130,14 @@ def verify(conn: Any) -> None:
 
     # CSA-3 — the tenant registry, REPORTED not pinned. The predecessor pinned an exact roster and
     # died the day the roster changed.
-    tenants = _rows(conn, "SELECT tenant_id, lifecycle_state, database_association_ref FROM control_tenants ORDER BY tenant_id")
+    #
+    # The two GOVERNED reference columns are `assoc_store_ref` and `assoc_version`
+    # (infrastructure/db/control/004_control_tenants.sql:38-39): the Control-Plane adapter derives
+    # them from `TenantRecord.database_association_ref`, a SecretRef {store_ref, version}. There is
+    # no `database_association_ref` COLUMN — that name belongs to the application-layer record and to
+    # the served routing DTO, and selecting it aborts every run with `undefined_column`. This is the
+    # RB-2 correction; the static guard now checks every selected column against the governed DDL.
+    tenants = _rows(conn, "SELECT tenant_id, lifecycle_state, assoc_store_ref, assoc_version FROM control_tenants ORDER BY tenant_id")
     assert tenants, "CSA-3: the tenant registry is EMPTY — there is no standing authentication posture to verify"
     record(f"PASS: CSA-3 tenant registry census: {[(t[0], t[1]) for t in tenants]}")
 
@@ -139,14 +146,23 @@ def verify(conn: Any) -> None:
     record(f"PASS: CSA-3 at least one Ready tenant ({[t[0] for t in ready]})")
 
     # CSA-4 — every Ready tenant carries the CANONICAL reference, and it is a reference, not a value.
-    for tenant_id, _state, ref in ready:
+    # Both halves of the SecretRef are checked: a store_ref with no version names nothing resolvable,
+    # and both are contract-declared non-secret, so both are held to the reference-only rule.
+    for tenant_id, _state, store_ref, version in ready:
         expected = CANONICAL_REF_TEMPLATE.format(tenant_id=tenant_id)
-        assert ref, f"CSA-4: Ready tenant {tenant_id!r} carries no database_association_ref"
-        _assert_reference_only(f"CSA-4 {tenant_id}", str(ref))
-        assert str(ref).startswith("tenant/"), f"CSA-4: {tenant_id!r} ref {ref!r} is outside the tenant/ namespace"
-        if str(ref) != expected:
-            record(f"NOTE: CSA-4 {tenant_id} ref {ref!r} deviates from the canonical form {expected!r} — record and adjudicate")
-    record("PASS: CSA-4 every Ready tenant carries a tenant/-namespaced reference; no reference carries a credential shape")
+        assert store_ref, f"CSA-4: Ready tenant {tenant_id!r} carries no assoc_store_ref"
+        assert version, f"CSA-4: Ready tenant {tenant_id!r} carries no assoc_version — a store_ref alone resolves nothing"
+        _assert_reference_only(f"CSA-4 {tenant_id} assoc_store_ref", str(store_ref))
+        _assert_reference_only(f"CSA-4 {tenant_id} assoc_version", str(version))
+        assert str(store_ref).startswith("tenant/"), f"CSA-4: {tenant_id!r} assoc_store_ref {store_ref!r} is outside the tenant/ namespace"
+        if str(store_ref) != expected:
+            record(
+                f"NOTE: CSA-4 {tenant_id} assoc_store_ref {store_ref!r} deviates from the canonical form {expected!r} "
+                "— record and adjudicate"
+            )
+    record(
+        "PASS: CSA-4 every Ready tenant carries a tenant/-namespaced assoc_store_ref + assoc_version; neither carries a credential shape"
+    )
 
     # CSA-5 — referential coherence. There is no cross-row foreign key here (store parity), so
     # nothing else in the system checks that a membership names a tenant that exists.
