@@ -65,9 +65,14 @@ every database on a cluster shares it.
 
 ## 4. Routing view — **operator-collected; the witness observes none of this**
 
-> The witness never sees a routing answer and opens **no** Control-database connection. Every row
-> below is filled in by the operator from a separate read, and it is the **only** thing that
-> establishes the routing source was durable — D-2 is a declaration and does not.
+> The witness never sees a routing answer and never reads `control_tenants`. On a connection it
+> opens `read_only`, it issues exactly one **business-data** read — a correlation-filtered `SELECT`
+> from `control_gateway_audit` for the denial rows of its own two isolation requests (§7, runbook
+> §6.1) — plus two **metadata** statements, `pg_control_system()` and `current_database()`, which
+> read no table and exist so the no-leak census can bar the Control database's physical name. None of
+> it touches anything below. Every row below is filled in by the operator from a separate read, and
+> that read is the **only** thing that establishes the routing source was durable — D-2 is a
+> declaration and does not.
 
 | Field | Value |
 |---|---|
@@ -103,28 +108,83 @@ every database on a cluster shares it.
 | ZETA row byte-identical | ☐ |
 | Row-count delta on ACME / ZETA | 0 / 0 |
 
-## 7. Isolation evidence — **two stages, recorded separately**
+## 7. Isolation evidence — **two legs, recorded separately; BOTH are pre-routing**
 
-### 7a. Auth stage
+> **A `403` with an empty body names no reason.** **Four** outcomes render it identically —
+> `carrier_mismatch`, `tenant_context_required`, `tenant_access_denied` and `tenant_not_ready`. Each
+> leg therefore mints its own correlation id, sends it as `X-Correlation-Id`, and the witness reads
+> the **durable operational-audit record** for that request out of `control_gateway_audit`. Record
+> the reason the harness **observed** — never one inferred from the status code.
+
+### 7a. Auth stage — **E48 (currently UNPROVABLE; see GBR-4)**
 
 | Item | Observed |
 |---|---|
 | ACME-only principal presenting a ZETA claim | status `____`, body empty ☐ |
+| Correlation id used for this leg (a reference; safe to record) | `____________________` |
+| Durable denial reason reported by the harness | `____________________` |
+| **E48 verdict** — expected on this runtime: `E48 NOT AVAILABLE / UNPROVEN` (an `AMBIGUOUS PRE-AUTH DENIAL`). Record what the harness printed, verbatim | `____________________` |
 | ZETA table byte-identical afterwards | ☐ |
+
+> **E48 cannot be satisfied from this record today, and the leg is expected to FAIL.** A
+> `RouteDenied` row carrying **no** actor, tenant or carrier reference is emitted for
+> `tenant_access_denied` (a non-member of a Ready tenant — genuine authorization denial) **and** for
+> `tenant_not_ready` (a member of a known-but-dormant tenant — not an authorization denial at all).
+> The `403`, the public code and the audit row are byte-identical in both cases, so the record cannot
+> decide between them and the harness reports **`E48 NOT AVAILABLE / UNPROVEN`**. This is **GBR-4**,
+> and it is a Dan decision (narrow Gate B, or accept an explicitly labelled substitute), or a
+> governed production change — never a harness edit and never a re-pointed leg.
+>
+> **The other verdicts, and what each means.** `tenant_context_required` (a `RouteDenied` row that
+> *does* carry an actor reference) means the bearer simply had no tenant claim — nobody was denied
+> access to ZETA. `carrier_mismatch` means the request was refused for its carrier, not for the
+> principal's authorization. **`NOT AVAILABLE / UNPROVEN`** with zero durable rows means the record
+> could not be read at all — the sink was off, the row did not persist, or the local IdP cannot issue
+> the bearer. Record the verdict verbatim; **do not record E48 as satisfied on a `403` alone, and do
+> not record it as satisfied on an ambiguous pre-auth denial.**
 
 > **Scope caveat, mandatory in every completed record.** This denial fires in the **Auth Router**,
 > before any routing or tenant-DB contact. It proves **auth-stage** denial. It does **not** prove that
 > the Database Router would have refused.
 
-### 7b. Router stage
+### 7b. Unregistered-tenant carrier — **NOT a router-stage proof (GBR-1); NOT REACHED while GBR-4 is unresolved**
+
+> **Expect this table to be unfillable today.** This leg is sequenced after 7a's E48 assertion, which
+> fails by construction, so `cmd_run` aborts before issuing it. Record it as **not reached**, citing
+> GBR-4 — do **not** leave it blank as though it had been skipped by choice, do not mark it n/a, and
+> do not re-point the leg or the run to make it fill.
 
 | Item | Observed |
 |---|---|
-| Unregistered-tenant carrier → resolver `not_found` | status `____` (must be 401/403/404 — a `200` is a breach and a `503` is the upstream/audit collapse, not a denial), body empty ☐ |
+| Unregistered-tenant carrier denied | status `____` (must be 401/403/404 — a `200` is a breach and a `503` is the upstream/audit collapse, not a denial), body empty ☐ |
+| Correlation id used for this leg | `____________________` |
+| Durable denial reason **observed** (recorded, not asserted — any of the three is legitimate here) | `____________________` |
 | Existence leak check: unknown tenant and non-member deny **identically** | ☐ |
 
-> **Both stages are mandatory.** `SP2_CLM_WITNESS_ZETA_CLAIM_BEARER` is required by `run`; a record
-> carrying only one stage is not a complete isolation record.
+> **This leg is resolved pre-routing**, in the Auth Router path — the same stage as 7a. It was
+> formerly labelled "router stage"; that label is withdrawn. **Router-stage isolation — that the
+> Database Router itself would have refused — remains UNPROVEN, by this leg and by this harness.** Do
+> not write otherwise in a completed record.
+
+> **Both legs are mandatory.** `SP2_CLM_WITNESS_ZETA_CLAIM_BEARER` and
+> `SNACKPORTAL_SECRET_CONTROL_CONTROL_STORE_DSN_V1` are both required by `run`; a record carrying
+> only one leg, or one with no durable denial reason, is not a complete isolation record.
+>
+> **And with GBR-4 unresolved, the harness cannot currently produce a complete two-leg isolation
+> record.** 7a is executed first, and `cmd_run` asserts on E48 immediately afterwards. That assertion
+> fails by construction on this runtime, so the run aborts **before** 7b is issued — **the second
+> isolation leg is not reached while GBR-4 remains unresolved.** Read the two rules together and do
+> not resolve the tension by relaxing either one:
+>
+> * **both legs remain mandatory for final acceptance** — the requirement is unchanged, and neither
+>   leg may be dropped, waived, or marked n/a to close the record;
+> * a record carrying only 7a is **INCOMPLETE / NOT ACCEPTABLE AS FINAL ISOLATION EVIDENCE**;
+> * filing such a record **does not close GBR-4**, and must not be described as having done so;
+> * **E48 and full isolation evidence may not be marked PASS until GBR-4 is resolved and both legs
+>   execute.** Until then the honest entry is the observed abort, recorded as such.
+>
+> The correct outcome today is therefore an incomplete record that states plainly why it is
+> incomplete — not a completed one, and not a narrowed requirement.
 
 ## 8. Ambiguity disambiguation
 
@@ -141,17 +201,24 @@ every database on a cluster shares it.
 | `tenant_startup_read` | ☐ | ☐ |
 | `tenant_startup_update` | ☐ | ☐ |
 | `RouteDenied` | ☐ | ☐ |
-| `CarrierMismatch` (only if a carrier-mismatch leg was run) | ☐ | ☐ |
+| `CarrierMismatch` | ☐ | ☐ |
 
-Durable coverage is the **five** `_CLM_DURABLE_ACTIONS` classes only. `ISOLATION_ANOMALY` and its
-siblings stay in-memory **by design** — do not write "all Gateway audit is durable" anywhere.
+This is the harness's `EXPECTED_AUDIT_ACTIONS` inventory verbatim — the two agree, so a reconciliation
+against either finds no unaccounted row (GBR-2 closed). The two **denial** rows for the run's own
+correlation ids are the only ones the witness itself reads, and it reads them as `IS NOT NULL`
+booleans; the **success** rows and the value-absence column above are the operator's separate read.
+
+Durable coverage is the **five** `_CLM_DURABLE_ACTIONS` classes only — the fifth,
+`workspace_memberships_read`, belongs to a different journey and is correctly absent above.
+`ISOLATION_ANOMALY` and its siblings stay in-memory **by design** — do not write "all Gateway audit
+is durable" anywhere.
 
 ## 10. Secret & state guards
 
 | Item | Observed |
 |---|---|
-| Witness no-leak scan over its **four captured artifacts** (`served_get`, `served_patch`, `isolation_auth_stage`, `isolation_router_stage`) | ☐ PASS |
-| Scanned over the WHOLE artifact | both ACME/ZETA DSNs verbatim, **both** bearer tokens, either DSN's password substring, each physical database name |
+| Witness no-leak scan over its **four captured artifacts** (`served_get`, `served_patch`, `isolation_auth_stage`, `isolation_unregistered_carrier`) | ☐ PASS |
+| Scanned over the WHOLE artifact | the ACME, ZETA **and Control** DSNs verbatim, **both** bearer tokens, any of those DSNs' password substring, each physical database name (Control included) |
 | Shape census — reference / topology / status text | `://`, `eyJ`, `-----BEGIN`, `AKIA`, `ghp_`, `xox`, `password=`, `PGPASSWORD` |
 | Shape census — the bounded free-text `short_description` | the same set **minus `://`**, plus a credential-bearing-URI pattern. `://` is lawful in business free text (the serving edge says so: `_TEXT_SECRET_SHAPES`), so a URL-bearing fixture value does **not** fail the run; a token, PEM block or credential DSN still does |
 | **Operator** re-scan of THIS completed document for the same shapes — the witness does not read it | ☐ PASS |
@@ -177,3 +244,8 @@ VERDICT: ____________________
 State plainly what was proven, for which record, on which topology, at what time — and what remains
 unproven. If the membership was absent and the journey returned an empty set, that **is** the result;
 record it. Do not create the row and re-run.
+
+**While GBR-4 is unresolved this verdict cannot be a pass for isolation.** The run aborts at 7a's E48
+assertion and never issues 7b, so the isolation record is incomplete by construction: neither E48 nor
+full isolation evidence may be marked PASS here until GBR-4 is resolved **and both legs execute**.
+Record the abort, name GBR-4, and leave the isolation claim open.

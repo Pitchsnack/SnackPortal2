@@ -27,9 +27,42 @@ What is pinned, and the specific way each check fails if it is not:
   one was reached.
 * **Restore happens in `finally` and is proven by a before==after digest**, not by the UPDATE's
   return code.
-* **Auth-stage and router-stage isolation are recorded separately.** The ZETA-claim denial fires in
-  the Auth Router before any routing or tenant-DB contact; presenting it as router-stage isolation
-  claims something it does not prove.
+* **Both isolation legs are recorded separately, and NEITHER is labelled router-stage.** The
+  ZETA-claim denial fires in the Auth Router before any routing or tenant-DB contact, and so does the
+  unregistered-tenant carrier leg; presenting either as router-stage isolation claims something it
+  does not prove (GBR-1).
+* **A `403` with an empty body cannot establish E48 on its own — and on this runtime nothing can.**
+  FOUR reasons render it identically: `carrier_mismatch`, `tenant_context_required`,
+  `tenant_access_denied` and `tenant_not_ready`. The durable record separates the first two and
+  **cannot separate the last two** — `not_ready()` carries the same `403`, the Auth Router edge
+  collapses every non-carrier-mismatch `403` to `forbidden`, and the Gateway emits a `RouteDenied`
+  row with no references either way. So a no-reference row is an **ambiguous pre-auth denial** and
+  E48 resolves to `NOT AVAILABLE / UNPROVEN`, never to a pass. All of it is EXECUTED here against the
+  witness's own functions with synthetic durable rows, including that the `tenant_access_denied`
+  branch is reachable given a recognised authoritative signal — and that the shipped set of such
+  signals is empty, because this runtime emits none.
+* **The Control-database read stays as narrow as it is described — bounded by an ALLOW-LIST.** The
+  one permitted business statement is pinned verbatim; any statement touching any governed Control
+  table (including inside a CTE) other than that one fails; the only permitted write anywhere is the
+  tenant-DB restore; `cmd_run`'s `control.read_only = True` is pinned as an assignment; and the
+  physical-identity metadata reads are named as metadata rather than counted as business reads. The
+  first version of this rule forbade the read outright, which enshrined the claim-blind denial leg;
+  the second banned five table names, which a CTE and every unlisted Control table stepped around.
+* **The shipped prose matches `cmd_run`'s real control flow (F-6).** The E48 assertion is sequenced
+  BEFORE the second isolation leg, and — proven here by EXECUTING `e48_problems` against the ambiguous
+  durable row this runtime emits — it cannot pass, so leg 2 is unreachable. The ordering is read from
+  the AST as statement indices within one try-body, never from line numbers. The runbook and the
+  evidence template must state the consequence: no per-run leg count, leg 2 not reached while GBR-4
+  is open, the mandated two-leg record currently unproducible, and a one-leg record not acceptable as
+  final isolation evidence. Documenting a record the code cannot produce is the same defect class as
+  documenting a read the code no longer performs.
+* **The same claim is barred by CENSUS, not by a literal list (N-1/N-2).** The first correction
+  retired five exact strings; "both isolation requests execute on every run" and "two times per run"
+  restate the identical falsehood and walk past all five. So every sentence of the runbook's
+  "What `run` captures" section, and of the text `cmd_status` PRINTS, that couples a two-count with an
+  isolation/denial subject must carry a reachability qualifier — while requirement wording ("both legs
+  remain mandatory for final acceptance") is deliberately passed, because the two-leg mandate must
+  survive. Positive anchors close the other exit: deleting the disclosure fails too.
 * **A LAWFUL fixture value cannot abort a correct run.** Two of the witness's own checks used to do
   exactly what the drifted key-set literal did, one field along: the no-leak scan rejected `://`
   inside `short_description` — which the serving edge declares lawful in business free text — and the
@@ -46,6 +79,7 @@ Pure stdlib; runnable standalone:
 from __future__ import annotations
 
 import ast
+import contextlib
 import dataclasses
 import importlib.util
 import json
@@ -53,7 +87,7 @@ import pathlib
 import re
 import sys
 from types import ModuleType
-from typing import Any, List, Optional, Tuple
+from typing import Any, Callable, FrozenSet, Iterator, List, Optional, Sequence, Tuple
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import _scan  # noqa: E402
@@ -65,6 +99,24 @@ _WITNESS = _scan.BACKEND_ROOT / "tests" / "control_plane" / "requires_pg" / "tes
 _RUNBOOK = _scan.REPO_ROOT / "infrastructure" / "runbooks" / "clm_acme_dataplane_witness.md"
 _TEMPLATE = _scan.REPO_ROOT / "docs" / "infrastructure" / "clm_dataplane_evidence_template.md"
 _COMPLETENESS_GUARD = _scan.BACKEND_ROOT / "tests" / "architecture" / "test_live_pg_workflow_runset_completeness.py"
+_CONTROL_DDL_DIR = _scan.REPO_ROOT / "infrastructure" / "db" / "control"
+_CREATE_TABLE = re.compile(r"CREATE TABLE IF NOT EXISTS\s+(?P<table>\w+)", re.IGNORECASE)
+
+# ---- C2-4: the Control-DB read surface, allow-listed by SHAPE ---------------------------------
+# The ONE Control business-data statement the witness may execute, pinned verbatim (whitespace
+# normalized). An allow-list, because a deny-list of table names cannot bound a surface that grows —
+# and because a CTE, a join or a second statement steps around a name ban without touching it.
+_PERMITTED_CONTROL_READ = (
+    "SELECT action, outcome, actor_ref IS NOT NULL, tenant_ref IS NOT NULL, carrier_ref IS NOT NULL "
+    "FROM control_gateway_audit WHERE correlation_id = %s ORDER BY id"
+)
+# The ONE write the witness may execute at all: the tenant-DB restore, in `finally`.
+_PERMITTED_WRITE = "UPDATE startups SET short_description = %s WHERE global_startup_id = %s"
+# Cluster/session METADATA: no table, no business row. Explicitly permitted, and explicitly NOT
+# counted as Control business-table reads — the documentation that called the correlation read the
+# witness's "only" Control-database read was wrong precisely because these exist.
+_PERMITTED_METADATA = ("SELECT system_identifier FROM pg_control_system()", "SELECT current_database()")
+_WRITE_VERBS = ("INSERT", "UPDATE", "DELETE", "TRUNCATE", "MERGE", "CREATE", "ALTER", "DROP", "GRANT", "REVOKE", "COPY", "CALL", "DO ")
 
 
 def _text() -> str:
@@ -241,16 +293,58 @@ def test_restore_is_in_finally_and_proven_by_a_digest() -> None:
     assert "assert_no_leak" in finally_source, "every captured artifact must be scanned before anything is reported"
 
 
-def test_isolation_stages_are_distinguished() -> None:
+def test_isolation_legs_are_distinguished_and_neither_claims_router_stage() -> None:
+    """RB-3 wording correction. Two legs, distinct labels, and NEITHER labelled router-stage.
+
+    The second leg presents the ACME bearer with an unregistered-tenant carrier. That is resolved as
+    `carrier_mismatch` in the **Auth Router** path (`http_authenticator.py:122-123`,
+    `gateway.py:200`) — pre-routing, the same stage as the ZETA leg. The denial is real and is
+    correctly asserted; calling it "ROUTER STAGE" claimed a stage it never reached (GBR-1), and a
+    completed evidence record inherited that claim.
+    """
     run = _source("cmd_run")
-    assert "isolation_auth_stage" in run and "isolation_router_stage" in run, (
-        "auth-stage and router-stage isolation must be captured under distinct labels"
+    assert "isolation_auth_stage" in run and "isolation_unregistered_carrier" in run, (
+        "the two isolation legs must be captured under distinct, ACCURATE labels"
     )
-    assert "AUTH STAGE" in run and "ROUTER STAGE" in run, "the two legs must be reported distinctly"
+    assert "AUTH STAGE" in run and "UNREGISTERED-TENANT CARRIER" in run, "the two legs must be reported distinctly"
     assert "does NOT prove the Database Router would have refused" in run, (
         "the ZETA-claim denial fires in the Auth Router BEFORE any routing or tenant-DB contact. Presenting it as "
         "router-stage isolation claims something it does not prove, and the caveat must travel with the evidence."
     )
+    text = _text()
+    assert "isolation_router_stage" not in text and "ROUTER STAGE" not in text, (
+        "no leg may be labelled 'router stage'. Both legs are resolved pre-routing, so the label asserts a stage "
+        "neither reaches — and the label, not the assertion, is what travels into the evidence record."
+    )
+    assert "remains UNPROVEN by this harness" in run, (
+        "the harness must state, in its own run output, that router-stage isolation is unproven — the operator reads "
+        "the printout, not this guard"
+    )
+    for document, label in ((_RUNBOOK, "runbook"), (_TEMPLATE, "evidence template")):
+        body = document.read_text(encoding="utf-8")
+        assert "isolation_router_stage" not in body, f"the {label} must not name a retired artifact key"
+
+
+def test_the_expected_audit_inventory_includes_the_carrier_mismatch_class() -> None:
+    """GBR-2. `CarrierMismatch` is durably homed by D-43 and IS what the second leg emits.
+
+    Listing three of the four classes made the inventory read as exhaustive while under-counting by
+    one: an operator reconciling their separate Control-DB read against it would find a durable row
+    they had no entry for, and the natural resolution of that is to doubt the row.
+    """
+    witness = _witness_module()
+    assert "CarrierMismatch" in witness.EXPECTED_AUDIT_ACTIONS, (
+        "the expected durable audit inventory must include CarrierMismatch (D-43, "
+        "control_plane/adapters/providers/http_gateway_audit_api.py:117)"
+    )
+    for action in ("tenant_startup_read", "tenant_startup_update", "RouteDenied"):
+        assert action in witness.EXPECTED_AUDIT_ACTIONS, f"{action} must remain in the inventory"
+    # And the inventory must not silently widen: the fifth durable class belongs to another journey.
+    assert "workspace_memberships_read" not in witness.EXPECTED_AUDIT_ACTIONS, (
+        "workspace_memberships_read is durably homed but is NOT emitted by this journey; listing it would over-count"
+    )
+    template = _TEMPLATE.read_text(encoding="utf-8")
+    assert "`CarrierMismatch`" in template, "the evidence template's audit inventory must carry the CarrierMismatch row"
 
 
 def _asserted_conditions(function: str) -> str:
@@ -307,7 +401,15 @@ def test_the_auth_stage_isolation_leg_cannot_be_silently_skipped() -> None:
     )
     assert "SKIP: ISOLATION" not in _text(), "no isolation leg may report itself skipped and still be a complete run"
     conditions = _asserted_conditions("cmd_run")
-    assert "status == 403" in conditions, "the auth-stage denial must be asserted, not merely printed"
+    assert "not e48" in conditions, (
+        "the auth-stage denial must be asserted through the E48 predicate, not merely printed. Asserting `status == 403 "
+        "and not body` at the call site is exactly the claim-blind check RB-3 reports: all FOUR denial reasons render "
+        "that response, and two of them are indistinguishable even in the durable record."
+    )
+    assert "(CONTROL_DSN_ENV, control_dsn)" in run, (
+        "the Control reference must be in the MANDATORY value census. Without the durable denial record the E48 claim "
+        "is unfalsifiable, and an unfalsifiable claim that still exits 0 is the defect."
+    )
     assert "legs_ok" in run and "return 0 if verdict else 1" in run, (
         "the exit code must depend on whether the legs actually ran and passed — a restore-only exit code is green "
         "for a run that proved nothing"
@@ -378,14 +480,982 @@ def test_runtime_posture_is_declared_not_claimed_as_proof() -> None:
     )
     # And the withdrawn claim must not creep back (M-9).
     assert "cross-reads the routing row" not in text, (
-        "the witness performs NO Control-database read; CONTROL_DSN_ENV is presence-reported by `plan` only. Claiming "
-        "a cross-read that does not exist is how a checkbox with no implementation reaches an evidence template."
+        "the witness makes no claim about which store served the routing view. Claiming a cross-read that does not "
+        "exist is how a checkbox with no implementation reaches an evidence template."
     )
-    control_dsn_uses = [n for n in ast.walk(_tree()) if isinstance(n, ast.Name) and n.id == "CONTROL_DSN_ENV"]
-    assert len(control_dsn_uses) <= 2, (
-        "CONTROL_DSN_ENV may appear only as its definition and a presence-only report. A connection using it would be "
-        "a new Control-database read that neither the runbook nor the evidence template describes."
+
+
+def governed_control_tables() -> FrozenSet[str]:
+    """Every Control business table, DERIVED from the governed on-disk DDL.
+
+    Derived, not listed: the predecessor of this check banned five table names, so the Control
+    tables it had never heard of — `control_directory`, `control_distinctness_ledger`,
+    `control_import_audit` — were readable without limit. A deny-list of names cannot bound a surface
+    that grows.
+    """
+    tables: set = set()
+    for path in sorted(_CONTROL_DDL_DIR.glob("*.sql")):
+        tables |= {match.group("table") for match in _CREATE_TABLE.finditer(path.read_text(encoding="utf-8"))}
+    return frozenset(tables)
+
+
+def _normalized(statement: str) -> str:
+    return " ".join(statement.split())
+
+
+def _executed_statements() -> List[str]:
+    """Every SQL statement the witness actually EXECUTES, read from its `.execute(...)` call sites.
+
+    Call sites, not "string constants that look like SQL": a docstring legitimately NAMES
+    `control_tenants` when stating what the witness does *not* read, and a prose scan would flag the
+    disclaimer as the thing it disclaims. Fail-closed — a statement that is not a literal at its call
+    site cannot be read by this guard, so it is a FAILURE here rather than an unexamined pass.
+    """
+    statements: List[str] = []
+    for node in ast.walk(_tree()):
+        method = getattr(getattr(node, "func", None), "attr", "")
+        # Any OTHER way of handing SQL to the driver would route around the allow-list below, so the
+        # alternatives are refused outright rather than parsed.
+        assert method not in ("executemany", "copy", "copy_expert", "copy_from", "copy_to", "callproc"), (
+            f"the witness must reach the database only through `.execute(<literal>)`; `{method}()` would carry SQL past "
+            "the shape allow-list below"
+        )
+        if not isinstance(node, ast.Call) or method != "execute":
+            continue
+        assert node.args, f"an execute() call with no statement argument cannot be bounded (line {node.lineno})"
+        first = node.args[0]
+        assert isinstance(first, ast.Constant) and isinstance(first.value, str), (
+            f"every executed statement must be a string LITERAL at its call site (line {node.lineno}), so this guard "
+            "can read it. A statement assembled elsewhere is unreadable here, and an unreadable statement is not a "
+            "bounded one."
+        )
+        statements.append(first.value)
+    return statements
+
+
+def test_the_control_database_read_is_bounded_to_an_allow_listed_shape() -> None:
+    """RB-3 / C2-4. The Control read exists now — bounded by an ALLOW-LIST of the exact shape.
+
+    Before RB-3 this guard forbade any use of `CONTROL_DSN_ENV` beyond a presence report, which had
+    the effect of ENSHRINING the claim-blind ZETA leg: the only discriminator between the denial
+    reasons lives in the Control database. Its replacement banned five table names — which a CTE
+    stepped around, and which said nothing at all about the Control tables not on the list, or about
+    whether the connection was even read-only.
+
+    So the rule is stated the other way round: the permitted Control business statement is pinned
+    verbatim, every other Control-table access fails whatever its syntax, the only permitted write is
+    the tenant-DB restore, and the metadata reads are named as metadata rather than being invisible.
+    """
+    governed = governed_control_tables()
+    assert "control_gateway_audit" in governed and len(governed) >= 5, (
+        f"the governed Control DDL must be parseable for this check to bound anything; parsed tables: {sorted(governed)}"
     )
+    statements = _executed_statements()
+    assert statements, "the witness must execute at least one statement, or this guard is vacuous"
+
+    # (1) The Control connection is READ-ONLY at the connection level. Asserted as an assignment in
+    # the AST — `"read_only = True" in source` is satisfied by the ACME/ZETA connections and by any
+    # comment, and it was: only `cmd_plan`'s read_only was pinned, never `cmd_run`'s Control one.
+    run_node = _func("cmd_run")
+    read_only_assignments = [
+        node
+        for node in ast.walk(run_node)
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Attribute)
+        and node.targets[0].attr == "read_only"
+        and isinstance(node.targets[0].value, ast.Name)
+        and node.targets[0].value.id == "control"
+        and isinstance(node.value, ast.Constant)
+        and node.value.value is True
+    ]
+    assert read_only_assignments, (
+        "cmd_run's Control connection must be set `control.read_only = True`. Without it the harness holds a writable "
+        "handle on the Control database for the whole run, and 'it only ever SELECTs' is a property of today's code "
+        "rather than of the connection."
+    )
+    control_connects = [
+        node.value
+        for node in ast.walk(run_node)
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id == "control"
+        and isinstance(node.value, ast.Call)
+    ]
+    assert control_connects, "cmd_run must open the Control connection by an assignment this guard can find"
+    for call in control_connects:
+        assert not any(keyword.arg == "autocommit" for keyword in call.keywords), (
+            "the Control connection must not be opened autocommit — the ACME/ZETA connections are, and copying that "
+            "onto a read-only census connection is how a write surface appears by accident"
+        )
+
+    # (2) BUSINESS-DATA SQL: any statement touching any governed Control table, by any syntax. A CTE
+    # (`WITH t AS (SELECT ... FROM control_tenants) ...`) is caught here because the test is on the
+    # table NAME anywhere in the statement, not on the leading verb or the FROM clause.
+    business = {
+        _normalized(statement): {table for table in governed if re.search(rf"\b{table}\b", statement)}
+        for statement in statements
+        if any(re.search(rf"\b{table}\b", statement) for table in governed)
+    }
+    assert list(business) == [_PERMITTED_CONTROL_READ], (
+        "the witness's Control business-data SQL must be EXACTLY the one allow-listed statement.\n"
+        f"  permitted: {_PERMITTED_CONTROL_READ}\n"
+        f"  found    : {list(business)}\n"
+        "Its Control mandate is the denial record for its own correlation ids and nothing else; the durable routing "
+        "cross-read is a separate Gate-B operator step."
+    )
+    assert business[_PERMITTED_CONTROL_READ] == {"control_gateway_audit"}, (
+        f"the permitted statement must touch ONE Control table, found {sorted(business[_PERMITTED_CONTROL_READ])}"
+    )
+    # Stated as their own reasons, because the byte-pin above says WHAT but not WHY.
+    assert "WHERE correlation_id = %s" in _PERMITTED_CONTROL_READ, (
+        "the Control read is filtered to ONE correlation id — the one this witness minted for its own request. An "
+        "unfiltered read is a scan of an audit table this harness has no mandate over."
+    )
+    assert "IS NOT NULL" in _PERMITTED_CONTROL_READ and "actor_ref," not in _PERMITTED_CONTROL_READ, (
+        "the reference columns are read as IS NOT NULL BOOLEANS, never as values: presence is the whole discriminator, "
+        "and a value that never enters the process cannot leak from it"
+    )
+
+    # (3) WRITES, of any kind, anywhere in the witness. The only one permitted is the tenant-DB
+    # restore in `finally`; an INSERT/UPDATE/DELETE/TRUNCATE/DDL against anything else fails here
+    # whether or not it names a Control table.
+    writes = [_normalized(statement) for statement in statements if _normalized(statement).upper().startswith(_WRITE_VERBS)]
+    assert writes == [_PERMITTED_WRITE], (
+        f"the only write the witness may execute is the tenant-DB restore.\n  permitted: {_PERMITTED_WRITE}\n  found    : {writes}"
+    )
+
+    # (4) METADATA reads are ALLOWED, and are explicitly not business-table reads. Naming them is the
+    # point: the documentation used to say the correlation read was the ONLY Control-database read,
+    # which was false — `physical_identity` runs these two on the same connection.
+    for metadata in _PERMITTED_METADATA:
+        assert any(_normalized(statement) == metadata for statement in statements), (
+            f"the metadata read {metadata!r} must be present — the physical-identity pair and the no-leak census both depend on it"
+        )
+        assert not [table for table in governed if re.search(rf"\b{table}\b", metadata)], (
+            f"{metadata!r} must name no governed Control table; it is cluster/session metadata, not business data"
+        )
+
+    # (5) The bounded read lives in its own named function, and both legs read their own record.
+    assert "control_gateway_audit" in _source("read_denial_audit"), "the bounded read must live in its own named function"
+    run = _source("cmd_run")
+    assert "uuid.uuid4().hex" in run and "CORRELATION_HEADER" in run, (
+        "each denial leg must mint its own correlation id and hand it to the Gateway. Without one the Gateway mints an "
+        "id this process never sees, and an audit row nobody can find is not evidence."
+    )
+    assert run.count("read_denial_audit(control") == 2, "both denial legs must read their own durable record"
+
+
+# ---------------------------------------------------------------------------------------------
+# RB-3 — the five properties the corrected E48 claim must have. EXECUTED against the witness's own
+# functions with synthetic durable rows: no database, no service, no bearer.
+#
+# Row shape is `read_denial_audit`'s projection:
+#   (action, outcome, actor_ref IS NOT NULL, tenant_ref IS NOT NULL, carrier_ref IS NOT NULL)
+# ---------------------------------------------------------------------------------------------
+def _row(action: str, *, actor: bool = False, tenant: bool = False, carrier: bool = False) -> tuple:
+    return (action, "rejected", actor, tenant, carrier)
+
+
+def _denial_rows(witness: ModuleType) -> dict:
+    """The synthetic durable record each UPSTREAM denial reason produces, as the Gateway emits it.
+
+    Keyed by the reason the Auth Router raised, NOT by what the record proves — because two of the
+    four keys map to the SAME row, and that collision is the C2-3 finding.
+    """
+    return {
+        # tenant_context.py:45 -> forbidden -> gateway.py:199-211, the authenticator-rejection
+        # branch: it runs before any AuthContext exists, so no reference is carried.
+        "tenant_access_denied": [_row(witness.ROUTE_DENIED_ACTION)],
+        # tenant_context.py:47 -> not_ready -> models.py:96 gives it the SAME 403 ->
+        # http_authenticate_api.py:123 collapses it to `forbidden` -> the SAME durable row.
+        "tenant_not_ready": [_row(witness.ROUTE_DENIED_ACTION)],
+        # gateway.py:237 — the post-authentication dispatch branch: actor_ref=principal_ref.
+        "tenant_context_required": [_row(witness.ROUTE_DENIED_ACTION, actor=True)],
+        # gateway.py:200-207 — the D-43 durably homed carrier-mismatch record.
+        "carrier_mismatch": [_row(witness.CARRIER_MISMATCH_ACTION, carrier=True)],
+    }
+
+
+@contextlib.contextmanager
+def _a_recognised_signal(witness: ModuleType, name: str = "e48_probe_signal") -> Iterator[str]:
+    """Temporarily give the witness ONE recognised authoritative signal.
+
+    The shipped set is empty, so without this the `tenant_access_denied` branch is unreachable and
+    could be dead code that no test distinguishes from a hard-wired refusal. Patching it proves the
+    branch is live AND lets the wire-shape necessity checks run against a record that would satisfy
+    E48 — while the assertion that the SHIPPED set is empty keeps the honest verdict on the runtime.
+    """
+    original = witness.RECOGNISED_UNIQUE_DENIAL_SIGNALS
+    witness.RECOGNISED_UNIQUE_DENIAL_SIGNALS = frozenset({name})
+    try:
+        yield name
+    finally:
+        witness.RECOGNISED_UNIQUE_DENIAL_SIGNALS = original
+
+
+def test_a_no_actor_route_denied_is_ambiguous_and_yields_e48_unproven() -> None:
+    """RB-3 proof 1, corrected (C2-3). The row that used to BE E48 evidence cannot be.
+
+    `tenant_access_denied` (non-member of a Ready tenant, `tenant_context.py:45`) and
+    `tenant_not_ready` (member of a known-but-dormant tenant, `:47`) are different facts, and only
+    the first is authorization denial. They reach `control_gateway_audit` as the SAME row:
+    `models.py:96-97` gives `not_ready()` the same 403, `http_authenticate_api.py:123-124` collapses
+    every non-carrier-mismatch 403 to `forbidden`, `http_authenticator.py:119-124` repeats it, and
+    `gateway.py:199-211` emits `RouteDenied` with actor/tenant/carrier all NULL either way.
+
+    So the durable record cannot decide between them, and a witness that reads it as the first one
+    files a `tenant_not_ready` denial as genuine authorization denial. This environment provisions a
+    dormant tenant on purpose, so that is reachable, not theoretical.
+    """
+    witness = _witness_module()
+    rows = _denial_rows(witness)
+    assert rows["tenant_access_denied"] == rows["tenant_not_ready"], (
+        "the two upstream reasons must be represented by the SAME durable row here — if they were not, this test "
+        "would be checking a distinction the runtime does not actually make"
+    )
+    reason, detail = witness.classify_denial_reason(rows["tenant_access_denied"])
+    assert reason == witness.DENIAL_PRE_AUTH_AMBIGUOUS, (
+        f"a RouteDenied row with no actor, tenant or carrier reference must classify as an AMBIGUOUS pre-auth denial, "
+        f"got {reason!r}. Naming it tenant_access_denied asserts a fact the record does not carry."
+    )
+    assert detail and "tenant_not_ready" in detail, "the ambiguity must NAME the other reason the row could be"
+    problems = witness.e48_problems(403, b"", rows["tenant_access_denied"])
+    assert problems, "an ambiguous pre-auth denial must FAIL the E48 claim"
+    assert "E48 NOT AVAILABLE / UNPROVEN" in problems[0], (
+        f"the verdict must read as UNPROVEN, not as refuted — the evidence cannot decide, which is a different finding "
+        f"from deciding against. Got: {problems[0][:120]!r}"
+    )
+    assert witness.E48_REQUIRED_DENIAL_REASON == witness.DENIAL_TENANT_ACCESS_DENIED, (
+        "E48 itself is unchanged: the claim is still 'ZETA denial is genuine authorization denial'. What changed is "
+        "that the harness no longer asserts it from a record that cannot carry it."
+    )
+
+
+def test_tenant_not_ready_cannot_satisfy_e48() -> None:
+    """RB-3 proof 1b (C2-3). The fourth reason, stated as its own refusal.
+
+    A member of a known-but-dormant tenant is not denied ACCESS — the tenant is not serving. The
+    §28 Definition-of-Done line is about authorization, so this must never satisfy it, and it must
+    not do so through the back door of being indistinguishable from the one that would.
+    """
+    witness = _witness_module()
+    rows = _denial_rows(witness)["tenant_not_ready"]
+    reason, _detail = witness.classify_denial_reason(rows)
+    assert reason != witness.DENIAL_TENANT_ACCESS_DENIED, (
+        "a tenant_not_ready denial was classified as genuine authorization denial. It is not one: the principal holds "
+        "the membership and the tenant is simply not Ready (auth_router/tenant_context.py:47)."
+    )
+    assert witness.e48_problems(403, b"", rows), "tenant_not_ready must FAIL the E48 claim"
+    # And it must fail for EVERY signal an operator could supply, because none is recognised.
+    for supplied in (None, "", "not_ready", "tenant_access_denied", "trust me"):
+        assert witness.e48_problems(403, b"", rows, unique_signal=supplied), (
+            f"a caller-supplied {supplied!r} must not unlock E48 — only a signal in RECOGNISED_UNIQUE_DENIAL_SIGNALS "
+            "can, and that set is empty on this runtime"
+        )
+
+
+def test_only_a_unique_authoritative_signal_can_satisfy_e48() -> None:
+    """RB-3 proof 6 (C2-3). The gate is a recognised signal, and there is not one.
+
+    Two things must both be true, and each is worthless without the other: the `tenant_access_denied`
+    branch must be REACHABLE (otherwise this is a hard-wired refusal dressed up as a discriminator,
+    and it would keep passing if the row shapes changed), and the shipped recognised-signal set must
+    be EMPTY (otherwise E48 is being satisfied by something this runtime does not actually emit).
+    """
+    witness = _witness_module()
+    assert witness.RECOGNISED_UNIQUE_DENIAL_SIGNALS == frozenset(), (
+        f"the shipped set of authoritative signals that uniquely prove tenant_access_denied must be EMPTY on this "
+        f"runtime — nothing separates it from tenant_not_ready by the time the durable row is written. Found: "
+        f"{sorted(witness.RECOGNISED_UNIQUE_DENIAL_SIGNALS)}. Adding a name here is a claim that the runtime emits it."
+    )
+    rows = _denial_rows(witness)["tenant_access_denied"]
+    with _a_recognised_signal(witness) as signal:
+        reason, _detail = witness.classify_denial_reason(rows, unique_signal=signal)
+        assert reason == witness.DENIAL_TENANT_ACCESS_DENIED, (
+            "with a RECOGNISED authoritative signal the classifier must be able to reach tenant_access_denied. If it "
+            "cannot, the discriminator is a constant refusal and proves nothing about the row it was handed."
+        )
+        assert witness.e48_problems(403, b"", rows, unique_signal=signal) == [], (
+            "a 403, an empty body and a uniquely-proven genuine denial must satisfy E48"
+        )
+        # An UNRECOGNISED signal must not, even while a recognised one exists.
+        assert witness.e48_problems(403, b"", rows, unique_signal="something-else"), (
+            "an arbitrary caller-supplied string must not unlock E48; only a recognised signal may"
+        )
+        # The wire shape stays NECESSARY even when the record would otherwise satisfy the claim.
+        assert witness.e48_problems(200, b"", rows, unique_signal=signal), "a 200 is an isolation breach, not a denial"
+        assert witness.e48_problems(503, b"", rows, unique_signal=signal), "a 503 is the upstream/audit collapse"
+        assert witness.e48_problems(403, b'{"detail": "no"}', rows, unique_signal=signal), "a denial with a body disclosed something"
+        # And the other three reasons still fail, signal or not: the signal narrows an ambiguity, it
+        # does not override the record.
+        for label in ("tenant_context_required", "carrier_mismatch"):
+            assert witness.e48_problems(403, b"", _denial_rows(witness)[label], unique_signal=signal), (
+                f"{label} must fail E48 regardless of any supplied signal"
+            )
+    assert witness.RECOGNISED_UNIQUE_DENIAL_SIGNALS == frozenset(), "the probe must restore the shipped (empty) set"
+    assert witness.e48_problems(403, b"", rows, unique_signal="e48_probe_signal"), (
+        "with the shipped set restored, the same signal must stop working — E48 is UNPROVEN on this runtime"
+    )
+
+
+def test_tenant_context_required_cannot_satisfy_e48() -> None:
+    """RB-3 proof 2. The bearer authenticated and simply carried no tenant claim — nobody was denied
+    access to ZETA, and the wire response is byte-identical to the one that means they were."""
+    witness = _witness_module()
+    rows = _denial_rows(witness)[witness.DENIAL_TENANT_CONTEXT_REQUIRED]
+    reason, _detail = witness.classify_denial_reason(rows)
+    assert reason == witness.DENIAL_TENANT_CONTEXT_REQUIRED, (
+        f"a RouteDenied row carrying an actor reference is tenant_context_required, got {reason}"
+    )
+    problems = witness.e48_problems(403, b"", rows)
+    assert problems and "E48 NOT SATISFIED" in problems[0], f"tenant_context_required must FAIL the E48 claim, got {problems}"
+
+
+def test_carrier_mismatch_cannot_satisfy_e48() -> None:
+    """RB-3 proof 3. The request was refused for its CARRIER, not for the principal's authorization."""
+    witness = _witness_module()
+    rows = _denial_rows(witness)[witness.DENIAL_CARRIER_MISMATCH]
+    reason, _detail = witness.classify_denial_reason(rows)
+    assert reason == witness.DENIAL_CARRIER_MISMATCH, f"a CarrierMismatch row is carrier_mismatch, got {reason}"
+    problems = witness.e48_problems(403, b"", rows)
+    assert problems and "E48 NOT SATISFIED" in problems[0], f"carrier_mismatch must FAIL the E48 claim, got {problems}"
+
+
+def test_a_403_with_an_empty_body_alone_cannot_satisfy_e48() -> None:
+    """RB-3 proof 4. The whole defect, stated as a test.
+
+    All FOUR reasons render EXACTLY `403` + empty body. The predecessor asserted only that, so any of
+    the four passed — and the three wrong ones were filed as E48 evidence. After C2-3 the durable
+    record narrows four to three (`carrier_mismatch` and `tenant_context_required` are separable; the
+    other two are not), and **none** of them satisfies E48 on this runtime.
+    """
+    witness = _witness_module()
+    assert witness.e48_problems(403, b"", []) != [], (
+        "`403` with an empty body and NO authoritative denial evidence must not satisfy E48 — that is precisely the "
+        "assertion that could be silently falsified"
+    )
+    reasons = _denial_rows(witness)
+    assert len(reasons) == 4, f"all four identical-on-the-wire denial reasons must be represented, got {sorted(reasons)}"
+    satisfied = [reason for reason, rows in reasons.items() if witness.e48_problems(403, b"", rows) == []]
+    assert satisfied == [], (
+        f"no durable record shape this runtime produces may satisfy E48, got {satisfied}. Two of the four reasons are "
+        "byte-identical in the audit table, and only one of those two is authorization denial."
+    )
+    # The wire shape stays NECESSARY as well as insufficient — proven where a record COULD satisfy
+    # the claim, in test_only_a_unique_authoritative_signal_can_satisfy_e48. Here it is proven that
+    # the wire shape alone changes nothing: every non-denial status fails for every reason.
+    for reason, rows in reasons.items():
+        for status, body in ((200, b""), (503, b""), (403, b'{"detail": "no"}')):
+            assert witness.e48_problems(status, body, rows), f"{reason} at status={status} body={body!r} must fail E48"
+
+
+def test_missing_or_uninterpretable_denial_evidence_fails_closed() -> None:
+    """RB-3 proof 5. NOT AVAILABLE / UNPROVEN is a finding, never a pass.
+
+    With the durable sink unselected the Gateway emits to the in-memory no-sink emitter and nothing
+    is written at all — so the commonest way to reach this code path is also the one that proves
+    least. It must fail, and it must say why.
+    """
+    witness = _witness_module()
+    for label, rows in (
+        ("no rows at all (durable sink unselected, or the row did not persist)", []),
+        ("rows for the correlation, but none of them a denial", [("tenant_startup_read", "success", True, True, False)]),
+        ("a denial row whose outcome is not `rejected`", [(witness.ROUTE_DENIED_ACTION, "observed", False, False, False)]),
+    ):
+        reason, detail = witness.classify_denial_reason(rows)
+        assert reason == witness.DENIAL_EVIDENCE_ABSENT, f"{label}: must report NOT AVAILABLE / UNPROVEN, got {reason}"
+        assert detail, f"{label}: the absence must be explained, not merely flagged"
+        assert witness.e48_problems(403, b"", rows), f"{label}: missing authoritative evidence must FAIL the E48 claim"
+    assert "NOT AVAILABLE" in witness.DENIAL_EVIDENCE_ABSENT and "UNPROVEN" in witness.DENIAL_EVIDENCE_ABSENT, (
+        "the absent-evidence verdict must READ as unproven wherever it is printed or recorded — it goes into the "
+        "captured artifact and from there into the evidence record"
+    )
+    # Uninterpretable shapes are not guessed at either.
+    for label, rows in (
+        (
+            "two durable denial rows for one request",
+            [_row(witness.ROUTE_DENIED_ACTION), _row(witness.CARRIER_MISMATCH_ACTION, carrier=True)],
+        ),
+        ("a RouteDenied row carrying a tenant reference", [_row(witness.ROUTE_DENIED_ACTION, actor=True, tenant=True)]),
+    ):
+        reason, _detail = witness.classify_denial_reason(rows)
+        assert reason == witness.DENIAL_INDETERMINATE, f"{label}: must be INDETERMINATE, got {reason}"
+        assert witness.e48_problems(403, b"", rows), f"{label}: an uninterpretable record must FAIL the E48 claim"
+
+
+# A claim about the Control read that was true before `run` acquired one, and is false now. It
+# survived in three places: two prose sentences and one PRINTED line in `cmd_status` — and the
+# printed one is what an operator actually sees, from the command the launcher's start gate runs.
+_RETIRED_READ_CLAIMS = (
+    "performs no Control-database read",
+    "only Control-database read",
+    "only** Control-database read",
+    "ONLY Control-database read",
+    "ONLY Control-database read the witness performs",
+)
+
+
+def test_no_command_or_document_claims_a_control_read_the_witness_now_performs() -> None:
+    """C2-5. `run` performs bounded Control reads; nothing may still say it performs none.
+
+    The stale sentence is not a wording nit: it directly contradicts the same runbook's §2 (the
+    Control reference is "REQUIRED by `run`") and §6.1, and it is PRINTED by `cmd_status` — the one
+    subcommand the launcher's AW-1-adjacent start gate invokes. An operator reading it would conclude
+    the Control DSN is optional and configure a run that fails at its isolation legs.
+    """
+    for label, body in (
+        ("the witness", _text()),
+        ("the runbook", _RUNBOOK.read_text(encoding="utf-8")),
+        ("the evidence template", _TEMPLATE.read_text(encoding="utf-8")),
+    ):
+        normalized = " ".join(body.split())
+        for retired in _RETIRED_READ_CLAIMS:
+            assert retired not in normalized, (
+                f"{label} still carries the retired claim {retired!r}. `run` opens a read-only Control connection and "
+                "issues one bounded correlation-filtered business read PLUS two metadata statements; describing that "
+                "as no read, or as the only read, is false in opposite directions."
+            )
+        assert "pg_control_system" in normalized, (
+            f"{label} must distinguish the bounded business-data read of control_gateway_audit from the "
+            "physical-identity METADATA reads (pg_control_system() / current_database()) that run on the same "
+            "connection. Collapsing the two is what made the previous wording wrong."
+        )
+    # And `cmd_status` must positively describe what `run` does, not merely stop denying it.
+    status = _source("cmd_status")
+    assert "control_gateway_audit" in status or "correlation" in status.lower(), (
+        "cmd_status must state what Control read `run` performs; a removed sentence leaves an operator with nothing"
+    )
+
+
+# ---------------------------------------------------------------------------------------------
+# F-6: the shipped prose must match `cmd_run`'s ACTUAL control flow.
+#
+# `cmd_run` asserts on E48 BEFORE it issues the second isolation leg, and `e48_problems` cannot
+# return empty on this runtime. Those two facts together make leg 2 UNREACHABLE — so any document
+# describing a per-run Control-read count, or a complete two-leg record, as something a current run
+# produces is describing a run that cannot happen. That is the same C2-5 defect class the check
+# above bars, one document along, and it has to be checked by ORDERING rather than by substring
+# presence: the wording is wrong only BECAUSE of where the assert sits, so the guard must see where
+# it sits. A `"twice" not in text` check would pass the moment the sentence was reworded and would
+# never have noticed the ordering that made it false.
+# ---------------------------------------------------------------------------------------------
+
+# Per-`run` leg counts a reader takes as a description of a current run. The per-LEG rule is the true
+# one and stays; what is barred is restating it as a per-run total while the abort point precedes
+# leg 2.
+_RETIRED_PER_RUN_LEG_COUNTS = (
+    "twice per run",
+    "once per denial leg — twice",
+    "once per denial leg - twice",
+    "two control-database reads per run",
+    "two control reads per run",
+)
+
+
+def _prose(text: str) -> str:
+    """Markdown reduced to comparable prose: blockquote markers dropped, emphasis/code ticks removed.
+
+    Anchors are checked against THIS, not against the raw file. A `**` moved one word, a sentence
+    rewrapped across a line, or a paragraph re-indented inside a blockquote would each break a raw
+    substring match — and a guard that fails on reflow gets weakened rather than fixed. Markup is
+    replaced by a space, never elided, so removing it cannot glue two words into a third.
+    """
+    stripped = "\n".join(re.sub(r"^\s*>+\s?", "", line) for line in text.splitlines())
+    for markup in ("**", "`", "*", "#"):
+        stripped = stripped.replace(markup, " ")
+    return " ".join(stripped.split()).lower()
+
+
+def _isolation_body() -> List[ast.stmt]:
+    """The ONE statement list that carries both isolation legs — `cmd_run`'s try/finally body."""
+    tries = [n for n in ast.walk(_func("cmd_run")) if isinstance(n, ast.Try) and n.finalbody]
+    assert tries, "cmd_run must run its legs inside a try/finally"
+    return tries[0].body
+
+
+def _stmt_index(body: Sequence[ast.stmt], predicate: Callable[[ast.AST], bool], what: str) -> int:
+    """Index of the first TOP-LEVEL statement in `body` containing a node matching `predicate`.
+
+    Deliberately a statement index in one body, not a line number. Line numbers would also be
+    satisfied by a leg tucked inside a branch the assert does not dominate; equal membership of the
+    same unconditional statement list is what makes "the assert runs first" a fact about execution
+    rather than about layout.
+    """
+    for index, stmt in enumerate(body):
+        for node in ast.walk(stmt):
+            if predicate(node):
+                return index
+    raise AssertionError(f"cmd_run's try-body must contain {what}")
+
+
+def _e48_assert_in(source: str) -> Callable[[ast.AST], bool]:
+    """`assert not e48...` — matched on the TESTED expression, never on the message."""
+
+    def predicate(node: ast.AST) -> bool:
+        if not isinstance(node, ast.Assert):
+            return False
+        return re.search(r"\bnot\s+e48\b", ast.get_source_segment(source, node.test) or "") is not None
+
+    return predicate
+
+
+def _unregistered_carrier_request_in(source: str) -> Callable[[ast.AST], bool]:
+    """The second isolation leg's actual request — the `_http` call carrying the unregistered tenant."""
+
+    def predicate(node: ast.AST) -> bool:
+        if not isinstance(node, ast.Call) or getattr(node.func, "id", "") != "_http":
+            return False
+        return "tenant-that-does-not-exist" in (ast.get_source_segment(source, node) or "")
+
+    return predicate
+
+
+def _is_carrier_audit_read(node: ast.AST) -> bool:
+    """The second leg's durable audit read, identified structurally by its own correlation id.
+
+    No source segment needed, so no factory: the call target and the argument name are both AST
+    facts. Matching on the correlation-id argument is what separates this call from leg 1's.
+    """
+    if not isinstance(node, ast.Call) or getattr(node.func, "id", "") != "read_denial_audit":
+        return False
+    return any(getattr(argument, "id", "") == "carrier_correlation" for argument in node.args)
+
+
+def test_the_e48_abort_precedes_the_second_isolation_leg_and_every_document_says_so() -> None:
+    """F-6. The abort point sits BEFORE leg 2, so no document may present leg 2 as reachable today.
+
+    Three things are established here, in order, because each is worthless without the one before:
+
+    1. **Ordering, from the AST** — the E48 assertion, the unregistered-tenant carrier request and
+       that leg's audit read are all top-level statements of the SAME try-body, in that order, and
+       `legs_ok = True` comes after all of them. So failing the assertion cannot leave leg 2 partly
+       done or the run partly green.
+    2. **The assertion cannot pass, EXECUTED** — `e48_problems` is called with the ambiguous durable
+       row this runtime actually emits and must return a non-empty problem list, and the recognised
+       unique-signal set that could override it must be empty. Ordering alone would only make leg 2
+       *conditionally* unreachable; this is what makes it unreachable in fact.
+    3. **The documents say exactly that** — no per-run leg count, an explicit statement that the
+       second leg is not reached while GBR-4 is unresolved, an explicit statement that the two-leg
+       record is therefore unproducible and that a one-leg record is not acceptable as final
+       evidence, and the standing pins that GBR-4 is OPEN and router-stage isolation UNPROVEN.
+
+    **This test is MEANT to fail when GBR-4 is resolved.** At that point (2) stops holding, leg 2
+    becomes reachable, and every sentence pinned in (3) becomes false in the other direction. The fix
+    then is to revise the documents in the same edit — not to delete this guard. That coupling is the
+    point: the defect it exists to bar (F-6) was created by changing the code and leaving the prose.
+    """
+    text = _text()
+    body = _isolation_body()
+    e48_at = _stmt_index(body, _e48_assert_in(text), "the E48 assertion (`assert not e48, ...`)")
+    request_at = _stmt_index(body, _unregistered_carrier_request_in(text), "the unregistered-tenant carrier request")
+    audit_at = _stmt_index(body, _is_carrier_audit_read, "the carrier leg's durable audit read")
+    assert e48_at < request_at < audit_at, (
+        f"cmd_run's statement order is E48-assert={e48_at}, carrier-request={request_at}, carrier-audit-read={audit_at}. "
+        "This guard, and the shipped wording it pins, both describe the E48 assertion as the abort point that precedes "
+        "the second isolation leg. If the order changed, the documents are now wrong in the opposite direction and must "
+        "be revised with the code."
+    )
+    legs_ok_at = _stmt_index(
+        body,
+        lambda node: isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "legs_ok" for t in node.targets),
+        "the `legs_ok = True` success marker",
+    )
+    assert audit_at < legs_ok_at, (
+        "`legs_ok = True` must come after BOTH legs. Set earlier, a run that aborted at the E48 assertion would still "
+        "mark its legs good and exit 0 — which is the failure this whole family of checks exists to prevent."
+    )
+
+    # (2) EXECUTED: the assertion cannot pass on this runtime, so the ordering is a real abort.
+    witness = _witness_module()
+    assert not witness.RECOGNISED_UNIQUE_DENIAL_SIGNALS, (
+        "RECOGNISED_UNIQUE_DENIAL_SIGNALS must stay empty until a signal that uniquely separates tenant_access_denied "
+        "from tenant_not_ready genuinely exists. Non-empty, E48 could pass and leg 2 would become reachable — at which "
+        "point the wording pinned below is false and must be revised in the same edit."
+    )
+    ambiguous_rows = _denial_rows(witness)["tenant_access_denied"]
+    assert witness.e48_problems(403, b"", ambiguous_rows), (
+        "e48_problems returned NO problems for the ambiguous pre-auth denial this runtime emits. E48 would then be "
+        "provable, the run would not abort, and the documents' 'not reached' wording would be wrong."
+    )
+
+    # (3) The documents. Anchors are checked against reduced prose so a reflow cannot break them.
+    runbook = _prose(_RUNBOOK.read_text(encoding="utf-8"))
+    template = _prose(_TEMPLATE.read_text(encoding="utf-8"))
+    for label, prose in (("the runbook", runbook), ("the evidence template", template), ("the witness", _prose(text))):
+        for retired in _RETIRED_PER_RUN_LEG_COUNTS:
+            assert retired not in prose, (
+                f"{label} states a per-run leg count ({retired!r}) while the E48 assertion aborts before leg 2. The "
+                "bounded Control read runs once PER LEG, and a current run reaches ONE leg — so a per-run total "
+                "describes a run this runtime cannot execute."
+            )
+
+    for anchor, why in (
+        (
+            "cmd_run executes the auth-stage (e48) leg first",
+            "the runbook must name which leg runs first — the ordering is the whole reason the count is per-leg",
+        ),
+        ("e48 resolves to not available / unproven", "the runbook must state the verdict the current runtime produces"),
+        ("cmd_run fails at that assertion", "the runbook must state that the run ABORTS there, not merely that E48 is unproven"),
+        (
+            "the second isolation leg is not reached while gbr-4 remains unresolved",
+            "the runbook must state the downstream consequence: leg 2 is unreachable, not merely expected to fail",
+        ),
+        (
+            "once gbr-4 is resolved in a way that lets the auth-stage leg pass",
+            "the runbook must state that leg 2 becomes reachable — and its Control read issued — after GBR-4 is resolved",
+        ),
+        ("still leaves router-stage denial unproven", "router-stage isolation must remain UNPROVEN in the runbook"),
+    ):
+        assert anchor in runbook, f"the runbook must state {anchor!r}: {why}"
+
+    for anchor, why in (
+        (
+            "both legs remain mandatory for final acceptance",
+            "the two-leg requirement must NOT be weakened by disclosing that it cannot currently be met",
+        ),
+        (
+            "the harness cannot currently produce a complete two-leg isolation record",
+            "the template must state that the record it mandates is currently unproducible",
+        ),
+        (
+            "the second isolation leg is not reached while gbr-4 remains unresolved",
+            "the template must say WHY it is unproducible — the run aborts before leg 2",
+        ),
+        (
+            "incomplete / not acceptable as final isolation evidence",
+            "a one-leg record must be named unacceptable, or it becomes the de-facto complete one",
+        ),
+        ("does not close gbr-4", "filing an incomplete record must not be readable as closing GBR-4"),
+        (
+            "may not be marked pass until gbr-4 is resolved and both legs execute",
+            "the template must bar a PASS verdict for E48 and for full isolation evidence",
+        ),
+        (
+            "remains unproven, by this leg and by this harness",
+            "router-stage isolation must remain UNPROVEN in the template",
+        ),
+    ):
+        assert anchor in template, f"the evidence template must state {anchor!r}: {why}"
+
+    # GBR-4 is the gate every sentence above defers to. It must still be OPEN, and nowhere claimed closed.
+    assert re.search(r"gbr-4 —.{0,400}?\bopen\b", runbook), (
+        "GBR-4 must remain recorded OPEN in the runbook. Every disclosure above is conditioned on it; if it were closed "
+        "the conditions would be stale and the second leg would be reachable."
+    )
+    assert not re.search(r"gbr-4[^.]{0,200}\bclosed\b", runbook), "GBR-4 must not be recorded CLOSED anywhere in the runbook"
+
+    # Non-vacuity, in-place: the ordering detector must be able to SEE the reversed sequence. A helper
+    # that returned 0 for every probe would satisfy `e48_at < request_at` by accident, and the whole
+    # check above would be decoration.
+    probe_source = (
+        "def f():\n"
+        "    try:\n"
+        "        status, _h, body = _http('GET', url, headers={'X-Tenant-Id': 'tenant-that-does-not-exist'})\n"
+        "        carrier_rows = read_denial_audit(control, carrier_correlation)\n"
+        "        e48 = e48_problems(status, body, zeta_rows)\n"
+        "        assert not e48, 'reversed'\n"
+        "    finally:\n"
+        "        pass\n"
+    )
+    probe_body = next(n for n in ast.walk(ast.parse(probe_source)) if isinstance(n, ast.Try) and n.finalbody).body
+    assert _stmt_index(probe_body, _e48_assert_in(probe_source), "probe assert") > _stmt_index(
+        probe_body, _unregistered_carrier_request_in(probe_source), "probe leg 2"
+    ), "the ordering detector must report the LATER index for an assert that follows the leg, or it distinguishes nothing"
+
+
+# ---------------------------------------------------------------------------------------------
+# N-1 / N-2: the same F-6 defect class, in the two places that survived the first correction — the
+# runbook section titled "What `run` captures", and the text `cmd_status` PRINTS to an operator.
+#
+# The first correction retired FIVE EXACT STRINGS. That is the wrong shape of check for a prose
+# defect, and the independent re-review said so: "both isolation requests execute on every run",
+# "two times per run" and "both denial legs are read each run" each restate the false claim, and each
+# walks straight past a finite deny-list. What follows is a CENSUS instead — every sentence in the two
+# governed regions that couples a two-COUNT with an isolation/denial SUBJECT must also carry a
+# reachability qualifier — plus POSITIVE anchors requiring `cmd_status` to STATE the distinction
+# rather than merely stop contradicting it. A removed sentence fails the anchors; a reworded
+# contradiction fails the census. Neither exit is left open.
+#
+# The census deliberately PASSES the requirement sentences ("both legs remain mandatory for final
+# acceptance"), because the two-leg mandate must survive this correction untouched. What it bars is a
+# two-count presented as something a current run EXECUTES.
+# ---------------------------------------------------------------------------------------------
+
+# A count of two, in the spellings prose actually uses.
+_TWO_COUNT = r"(?:\btwo\b|\bboth\b|\btwice\b|\btwo-leg\b)"
+# What the count would be a count OF. Bare `leg` is included: "both legs are read each run" carries
+# the contradiction without ever saying "isolation".
+_ISOLATION_SUBJECT = (
+    r"(?:\blegs?\b|\bdenial rows?\b|\bdenial records?\b|\bdenial reads?\b|\bdenial legs?\b"
+    r"|\bisolation requests?\b|\bisolation legs?\b|\bisolation reads?\b|\bisolation records?\b"
+    r"|\brequests?\b|\bcorrelation ids?\b|\bcontrol[- ]database reads?\b|\bcontrol reads?\b"
+    r"|\bbusiness[- ]data reads?\b|\baudit reads?\b)"
+)
+# A per-RUN total is false on this runtime whatever noun it attaches to, so it needs no subject and
+# no qualifier can rescue it: `cmd_run` reaches one leg, not two, until GBR-4 is resolved.
+_PER_RUN_COUNT = re.compile(
+    rf"(?:{_TWO_COUNT}[^.;]{{0,80}}\b(?:per|each|every)\s+run\b"
+    rf"|\b(?:per|each|every)\s+run\b[^.;]{{0,80}}{_TWO_COUNT})"
+)
+# A sentence carrying any of these is stating an INTENT, a REQUIREMENT or an UNREACHABILITY — not
+# describing what a current run does. Chosen to be hard to satisfy by accident: no generic hedge
+# ("never", "would") is included, because the retired N-1 sentence contained one.
+_REACHABILITY_QUALIFIERS = (
+    "intended",
+    "mandat",
+    "requir",
+    "must",
+    "not reached",
+    "unreach",
+    "cannot",
+    "unproducible",
+    "gbr-4",
+    "incomplete",
+    "not acceptable",
+    "final acceptance",
+    "not both",
+    "only one",
+    "one leg only",
+    "exactly once",
+    "only the first",
+    "first leg only",
+)
+
+
+def _sentences(prose: str) -> List[str]:
+    """Reduced prose split into sentence-sized units on `.`/`;` FOLLOWED BY whitespace.
+
+    The trailing-whitespace requirement is load-bearing: `§6.1` and `pg_control_system()` would each
+    be torn in half by a bare `[.;]` split, and a fragment carries neither the count nor the
+    qualifier reliably. The semicolon is a boundary because the retired N-1 sentence used one to
+    separate its qualifier ("never inferred from the run") from its false clause.
+    """
+    return [unit.strip() for unit in re.split(r"(?<=[.;])\s+", prose) if unit.strip()]
+
+
+def _contradiction_census(prose: str) -> List[Tuple[str, str]]:
+    """Every sentence that states a two-count of isolation legs as something a current run performs."""
+    hits: List[Tuple[str, str]] = []
+    for unit in _sentences(prose):
+        if _PER_RUN_COUNT.search(unit):
+            hits.append(("PER-RUN COUNT", unit))
+        elif (
+            re.search(_TWO_COUNT, unit)
+            and re.search(_ISOLATION_SUBJECT, unit)
+            and not any(qualifier in unit for qualifier in _REACHABILITY_QUALIFIERS)
+        ):
+            hits.append(("UNQUALIFIED TWO-COUNT", unit))
+    return hits
+
+
+def _runbook_section(heading_fragment: str) -> str:
+    """The raw body of one `## ` section of the runbook, heading included.
+
+    Read from the RAW file rather than reduced prose, because `_prose` strips `#` and the section
+    boundaries would vanish with it.
+    """
+    lines = _RUNBOOK.read_text(encoding="utf-8").splitlines()
+    start = next(
+        (i for i, line in enumerate(lines) if line.startswith("## ") and heading_fragment in line),
+        None,
+    )
+    assert start is not None, f"the runbook must carry a `## ` section containing {heading_fragment!r}"
+    end = next((j for j in range(start + 1, len(lines)) if lines[j].startswith("## ")), len(lines))
+    return "\n".join(lines[start:end])
+
+
+def _printed_text(name: str) -> str:
+    """Everything a command PRINTS, joined — the operator-facing surface, not the source.
+
+    Reading the source instead would splice `print(` scaffolding into the middle of sentences and
+    move the boundaries the census depends on. This is also the honest scope: N-2 was a defect
+    because an operator SAW it.
+    """
+    parts: List[str] = []
+    for call in (n for n in ast.walk(_func(name)) if isinstance(n, ast.Call)):
+        if getattr(call.func, "id", "") != "print":
+            continue
+        parts.extend(n.value for n in ast.walk(call) if isinstance(n, ast.Constant) and isinstance(n.value, str))
+    assert parts, f"{name} must print something for its operator-facing text to be checkable"
+    return " ".join(parts)
+
+
+def test_no_governed_region_states_an_unconditional_two_leg_execution_count() -> None:
+    """N-1 + N-2. Neither the runbook's `run`-capture section nor `cmd_status` may present leg 2 as run.
+
+    Established here, and each part is required because the others do not cover it:
+
+    1. **Census, runbook §4** — the section titled "What `run` captures" contains no sentence
+       coupling a two-count with an isolation/denial subject that lacks a reachability qualifier.
+    2. **Census, `cmd_status`** — the same over the text an operator actually SEES.
+    3. **Census, per-run family, repo-wide over both files** — a per-run total ("twice per run",
+       "on every run") is false regardless of noun or region.
+    4. **Positive anchors in `cmd_status`** — two INTENDED legs, only the first reachable, the second
+       not reached while GBR-4 is unresolved, and the two-leg mandate intact. A census alone would be
+       satisfied by deleting the disclosure entirely.
+    5. **The runtime fact the wording rests on, re-proven** — ordering from the AST, and
+       `e48_problems` EXECUTED against the ambiguous durable row this runtime emits. Prose checks
+       pinned to a runtime fact are worthless if nothing checks the fact.
+    6. **GBR-4 still OPEN and E48 still UNPROVEN**, and the two-leg requirement NOT weakened.
+
+    **Like its F-6 sibling, this test is MEANT to fail when GBR-4 is resolved** — at which point leg 2
+    becomes reachable and every sentence pinned here becomes false in the other direction. Revise the
+    documents in that same edit; do not delete the guard.
+    """
+    # (1) + (2) The two governed regions carry no unqualified execution count.
+    for label, prose in (
+        ('the runbook section "What `run` captures"', _prose(_runbook_section("What `run` captures"))),
+        ("the text cmd_status prints", _prose(_printed_text("cmd_status"))),
+    ):
+        hits = _contradiction_census(prose)
+        assert not hits, (
+            f"{label} states a two-count of isolation legs as something a current run performs: {hits}. "
+            "`cmd_run` asserts on E48 before leg 2 is issued and that assertion cannot pass while GBR-4 is "
+            "unresolved, so a current run reaches ONE leg. State the count as INTENDED, or as MANDATORY and "
+            "NOT REACHED — never as executed."
+        )
+
+    # (3) A per-run total is false anywhere in either file, whatever noun carries it.
+    for label, body in (("the runbook", _RUNBOOK.read_text(encoding="utf-8")), ("the witness", _text())):
+        per_run = [unit for unit in _sentences(_prose(body)) if _PER_RUN_COUNT.search(unit)]
+        assert not per_run, f"{label} states a per-run leg count while leg 2 is unreachable: {per_run}"
+
+    # (4) `cmd_status` must STATE the distinction. Removing the sentence is not a fix.
+    status = _prose(_printed_text("cmd_status"))
+    for anchor, why in (
+        (
+            "two intended isolation legs",
+            "status must name the two legs as INTENDED — the design is unchanged; only what executes is",
+        ),
+        (
+            "only the first is currently reachable",
+            "status must say that a current run executes the first leg alone",
+        ),
+        (
+            "the second isolation leg is not reached while gbr-4 remains unresolved",
+            "status must name WHY, and name the gate it is conditioned on",
+        ),
+        (
+            "required-but-currently-unreachable",
+            "leg 2 must read as required-but-unreachable, never as already executed",
+        ),
+        (
+            "both legs remain mandatory for final acceptance",
+            "disclosing that the record cannot be completed must not weaken the requirement to complete it",
+        ),
+        (
+            "incomplete / not acceptable as final isolation evidence",
+            "a one-leg record must be named unacceptable in the operator-facing command too",
+        ),
+    ):
+        assert anchor in status, f"cmd_status must print {anchor!r}: {why}"
+
+    # And the runbook's own `run`-capture section must carry the same disclosure.
+    section = _prose(_runbook_section("What `run` captures"))
+    for anchor, why in (
+        (
+            "while gbr-4 is unresolved, cmd_run reaches the auth-stage (e48) leg only",
+            "the capture section must say which leg a current run reaches",
+        ),
+        (
+            "cannot produce the final two-leg evidence record at all",
+            "the capture section must say the mandated record is unproducible today",
+        ),
+        (
+            "remains mandatory for a complete gate-b isolation record",
+            "the two-leg requirement must survive the correction",
+        ),
+        (
+            "incomplete / not acceptable as final isolation evidence",
+            "a one-leg record must be named unacceptable where the capture is described",
+        ),
+    ):
+        assert anchor in section, f'the runbook section "What `run` captures" must state {anchor!r}: {why}'
+    assert "both legs remain required for final acceptance" in _prose(_RUNBOOK.read_text(encoding="utf-8")), (
+        "GBR-4's disclosure must keep the two-leg requirement for FINAL acceptance explicit"
+    )
+
+    # (5) The runtime fact underneath. Ordering from the AST, unreachability EXECUTED.
+    text = _text()
+    body = _isolation_body()
+    assert _stmt_index(body, _e48_assert_in(text), "the E48 assertion") < _stmt_index(
+        body, _unregistered_carrier_request_in(text), "the unregistered-tenant carrier request"
+    ), "the E48 assertion no longer precedes leg 2 — the wording pinned above is now wrong in the other direction"
+    witness = _witness_module()
+    assert not witness.RECOGNISED_UNIQUE_DENIAL_SIGNALS, (
+        "a recognised unique signal would let E48 pass and make leg 2 reachable; the wording above assumes neither"
+    )
+    assert witness.e48_problems(403, b"", _denial_rows(witness)["tenant_access_denied"]), (
+        "E48 must remain UNPROVEN on the ambiguous durable row this runtime emits, or leg 2 is reachable"
+    )
+    assert witness.classify_denial_reason(_denial_rows(witness)["tenant_access_denied"])[0] == witness.DENIAL_PRE_AUTH_AMBIGUOUS, (
+        "the no-reference denial must still classify as AMBIGUOUS, never as tenant_access_denied"
+    )
+
+    # (6) GBR-4 is the gate all of it defers to.
+    runbook = _prose(_RUNBOOK.read_text(encoding="utf-8"))
+    assert re.search(r"gbr-4 —.{0,400}?\bopen\b", runbook), "GBR-4 must remain recorded OPEN in the runbook"
+    assert not re.search(r"gbr-4[^.]{0,200}\bclosed\b", runbook), "GBR-4 must not be recorded CLOSED anywhere"
+
+    # Non-vacuity, in-place. The census must SEE each phrasing this correction exists to bar —
+    # including the three synonyms the retired five-literal deny-list let through. A census that
+    # matched nothing would satisfy every assertion above by finding nothing to report.
+    #
+    # Each probe additionally names WHICH rule must report it. Without that, the two rules cover for
+    # each other: every synonym below happens to trip both, so either rule could be silently neutered
+    # and every probe would still pass on the strength of the other. Pinning the rule is what makes
+    # each one individually load-bearing.
+    for label, expected_rule, probe in (
+        (
+            "N-1 restored",
+            "UNQUALIFIED TWO-COUNT",
+            "the two denial rows for the run's own correlation ids are the exception — the witness reads "
+            "exactly those, by correlation id, as booleans (see §6.1).",
+        ),
+        (
+            "N-2 restored",
+            "UNQUALIFIED TWO-COUNT",
+            "its only business-data read is the correlation-filtered denial record for its own two isolation "
+            "requests (plus pg_control_system() metadata).",
+        ),
+        ("synonym: both execute every run", "PER-RUN COUNT", "both isolation requests execute on every run."),
+        (
+            "synonym: two times per run",
+            "PER-RUN COUNT",
+            "the bounded Control audit read is issued two times per run.",
+        ),
+        ("synonym: both legs read each run", "PER-RUN COUNT", "both denial legs are read each run."),
+        # Reaches the PER-RUN rule ALONE: "read" is not an isolation subject, so the unqualified-count
+        # rule cannot see this one. It is what keeps the per-run rule from being deletable.
+        ("per-run count with no isolation subject", "PER-RUN COUNT", "the bounded read fires twice per run."),
+        # And the mirror: a two-count with no per-run phrasing, which only the unqualified rule sees.
+        (
+            "two-count with no per-run phrasing",
+            "UNQUALIFIED TWO-COUNT",
+            "the witness reads the two denial rows and files them.",
+        ),
+    ):
+        hits = _contradiction_census(_prose(probe))
+        assert hits, f"the census must report {label}, or it bars nothing"
+        assert any(rule == expected_rule for rule, _unit in hits), (
+            f"{label} must be reported by the {expected_rule} rule specifically, got {hits}. Each rule has to be "
+            "individually non-vacuous, or one of them can be deleted without any probe noticing."
+        )
+    # ...and must NOT report the requirement sentences it has to leave standing.
+    for keeper in (
+        "both legs remain mandatory for final acceptance.",
+        "both legs remain required for final acceptance, and a one-leg record is incomplete.",
+        "isolation — two intended legs, recorded separately.",
+    ):
+        assert not _contradiction_census(_prose(keeper)), (
+            f"the census reported {keeper!r} — it must pass intent/requirement wording, or the correction "
+            "for it would be to weaken the two-leg mandate"
+        )
+    # The region extractors must return the real regions, not empty strings that trivially pass.
+    assert "AUDIT" in _runbook_section("What `run` captures"), "the section extractor must return the section body"
+    assert "STATUS (read-only)" in _printed_text("cmd_status"), "the printed-text extractor must return what run prints"
 
 
 def test_zeta_is_proven_unchanged() -> None:
@@ -653,6 +1723,23 @@ def test_guard_is_non_vacuous() -> None:
     # And the fake connection must be able to express all three row states the positive control faces.
     assert _FakeConnection(row_present=True, value=None).execute("SELECT 1 x", None).fetchone() == (1,)
     assert _FakeConnection(row_present=False, value=None).execute("SELECT 1 x", None).fetchone() is None
+    # The denial classifier must DISCRIMINATE as far as the record allows, and no further. Four
+    # upstream reasons, THREE distinct verdicts: `carrier_mismatch` and `tenant_context_required`
+    # resolve to themselves, and the two that share a row resolve to one ambiguous verdict. A
+    # classifier returning a single constant would satisfy every individual E48 refusal above.
+    witness = _witness_module()
+    verdicts = {reason: witness.classify_denial_reason(rows)[0] for reason, rows in _denial_rows(witness).items()}
+    assert len(verdicts) == 4 and len(set(verdicts.values())) == 3, (
+        f"the classifier must separate what the durable record separates and merge what it merges, got {verdicts}"
+    )
+    assert verdicts["carrier_mismatch"] == witness.DENIAL_CARRIER_MISMATCH
+    assert verdicts["tenant_context_required"] == witness.DENIAL_TENANT_CONTEXT_REQUIRED
+    assert verdicts["tenant_access_denied"] == verdicts["tenant_not_ready"] == witness.DENIAL_PRE_AUTH_AMBIGUOUS
+    # The recognised-signal probe must actually change the answer, or the contextmanager is inert.
+    rows = _denial_rows(witness)["tenant_access_denied"]
+    with _a_recognised_signal(witness) as signal:
+        assert witness.classify_denial_reason(rows, unique_signal=signal)[0] == witness.DENIAL_TENANT_ACCESS_DENIED
+    assert witness.classify_denial_reason(rows, unique_signal="e48_probe_signal")[0] == witness.DENIAL_PRE_AUTH_AMBIGUOUS
 
 
 if __name__ == "__main__":
@@ -668,12 +1755,24 @@ if __name__ == "__main__":
             test_physical_identity_is_the_pair_not_the_system_identifier_alone,
             test_independent_verification_is_a_separate_connection,
             test_restore_is_in_finally_and_proven_by_a_digest,
-            test_isolation_stages_are_distinguished,
+            test_isolation_legs_are_distinguished_and_neither_claims_router_stage,
+            test_the_expected_audit_inventory_includes_the_carrier_mismatch_class,
             test_every_isolation_leg_asserts_and_a_200_breach_fails,
             test_the_auth_stage_isolation_leg_cannot_be_silently_skipped,
             test_finally_cannot_mask_the_real_failure,
             test_the_no_leak_scan_covers_both_bearers,
             test_runtime_posture_is_declared_not_claimed_as_proof,
+            test_the_control_database_read_is_bounded_to_an_allow_listed_shape,
+            test_a_no_actor_route_denied_is_ambiguous_and_yields_e48_unproven,
+            test_tenant_not_ready_cannot_satisfy_e48,
+            test_only_a_unique_authoritative_signal_can_satisfy_e48,
+            test_tenant_context_required_cannot_satisfy_e48,
+            test_carrier_mismatch_cannot_satisfy_e48,
+            test_a_403_with_an_empty_body_alone_cannot_satisfy_e48,
+            test_missing_or_uninterpretable_denial_evidence_fails_closed,
+            test_no_command_or_document_claims_a_control_read_the_witness_now_performs,
+            test_the_e48_abort_precedes_the_second_isolation_leg_and_every_document_says_so,
+            test_no_governed_region_states_an_unconditional_two_leg_execution_count,
             test_zeta_is_proven_unchanged,
             test_no_leak_scan_covers_every_shape,
             test_lawful_url_free_text_passes_the_no_leak_scan_but_credential_shapes_still_fail,

@@ -191,7 +191,7 @@ superuser `ALTER ROLE` outside this procedure — the class of act AW-1 exists t
 | `SNACKPORTAL_SECRET_CONTROL_GATEWAY_AUDIT_WRITER_DSN_V1` **set** in the `apply` shell | A child process cannot replace its parent shell's variable in place, which is what bounded recovery requires — and the env form **shadows** the file form in the resolver *even when blank*, so writing the file would leave the runtime reading the old value. Unset it in this shell, re-run, then reload the material from the governed file. |
 | The sink resolves **inside** a repository worktree | An operator-local credential written into a repository is one `git add -A` from a committed secret. |
 | The sink directory is not writable | Same reason as the first row. |
-| Host auth includes `trust` | No credential probe can discriminate, so neither the converged decision nor the required re-probe would be decisive. |
+| The **effective** client authentication method for the tool's own connection is not password-discriminating (V-12) | No credential probe can discriminate, so neither the converged decision nor the required re-probe would be decisive. See §5.1 — this is **not** a census of every `trust` line in the file. |
 
 **After a successful mutating run**, the operator loads the ingest process's env-var form from that
 file. The next `apply` then resolves the material — by either form — probes it, and reports
@@ -201,6 +201,59 @@ file. The next `apply` then resolves the material — by either form — probes 
 *ingest* process. The sink directory belongs to the *operator's* shell. If the file form is ever
 adopted for the ingest process itself, the launcher must first verify that the governed directory
 contains no file other than `control/gateway-audit-writer-dsn@1`.
+
+### 5.1 V-12 — the **effective** rule, not a `trust` census
+
+**What V-12 asks.** `pg_hba.conf` is a **first-match** table: for any given connection exactly **one**
+entry governs, chosen by connection type, SSL state, database, role and client address. V-12 asks
+which entry governs **this tool's own connection**, and whether that entry's method actually decides
+the password `ALTER ROLE … PASSWORD` binds. `plan` prints the answer on one line:
+
+```text
+  effective host auth : 'scram-sha-256' at pg_hba entry #6 — THE V-12 SUBJECT
+```
+
+or, when it cannot be established:
+
+```text
+  effective host auth : UNDETERMINABLE (V-12 BLOCKS) — <the reason>
+```
+
+**What V-12 does *not* ask.** It is **not** "does any `host` rule anywhere in the file say `trust`".
+That predecessor predicate answered a question nobody asked, in both directions: a loopback
+`host all all 127.0.0.1/32 trust` line blocked a connection arriving from a container-network address
+and never touching that rule, while a permissive rule that *did* govern could hide behind a stricter
+one that did not. `plan` still prints the whole-file census on the next line, explicitly labelled
+`(reported only; NOT the V-12 decision)` — it is context for a human reading a `CONFLICTING` plan,
+never an input to one.
+
+**The accepted methods are an allow-list:** `scram-sha-256`, `md5`, `password`. Everything else
+blocks and says why — `trust` accepts unconditionally; `peer` / `ident` / `cert` authenticate the OS
+user or a certificate; `ldap` / `radius` / `pam` / `bsd` verify a password held by an external
+directory, never the one this tool just bound; `gss` / `sspi` authenticate a Kerberos principal;
+`reject` refuses unconditionally. A method this tool has never heard of blocks too.
+
+**Fail-closed.** If `pg_hba_file_rules` is not readable by the executor identity (it needs superuser
+or `pg_read_server_files`, and PostgreSQL 10+), if an entry did not parse, or if an entry can be
+neither matched nor excluded from what is observable — a `+group` or `@file` token, a hostname
+address, an unobserved SSL state — the scan **stops there** and reports `UNDETERMINABLE`, and V-12
+blocks. It does **not** skip the entry and read the one below it: in a first-match table the
+undecidable entry might be the governing one.
+
+**`plan` and `apply` share this one verdict.** `classify()` — what `plan` reports — and the §5.5
+credential convergence both call the same predicate on the same observation, and a `CONFLICTING`
+`plan` **exits non-zero**. A green `plan` on a cluster where `apply` would refuse on V-12 is
+structurally impossible, which was not true before.
+
+> **Expected outcome on the standing cluster: UNPROVEN pending P-4.** Nobody has read the standing
+> Control cluster's live rule table, so this runbook states no prediction. Run the P-4 query
+> (`SELECT rule_number, type, database, user_name, address, netmask, auth_method, error FROM
+> pg_hba_file_rules ORDER BY 1`, plus `SELECT inet_client_addr(), current_database(), session_user`)
+> from the shell that will run `apply`, and compare it against the `effective host auth` line `plan`
+> prints. **Whether V-12 goes green or red there is not established by this arc**, and neither
+> outcome may be recorded as expected until that query has been executed. Note that the answer
+> depends on *where the tool is run from*: a connection arriving through the Docker userland port
+> proxy presents a container-network client address, so a `127.0.0.1/32` entry does not govern it.
 
 
 ## 6. Before any bind: the statement-logging observation

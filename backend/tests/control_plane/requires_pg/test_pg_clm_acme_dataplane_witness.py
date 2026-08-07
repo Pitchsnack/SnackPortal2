@@ -43,11 +43,30 @@ WHAT EACH CHECK ACTUALLY PROVES — stated exactly, because the difference decid
        same value. Different process, different connection, different code path — the one thing no
        composition can fake.
 
+  E48  AUTHORITATIVE, the one claim that cannot be made from the wire — and CURRENTLY UNPROVABLE.
+       The ZETA-claim denial is correlated with the DURABLE operational-audit record for the same
+       request, and only `tenant_access_denied` would satisfy it. FOUR reasons render an identical
+       `403` with an identical empty body: `carrier_mismatch`, `tenant_context_required`,
+       `tenant_access_denied` and `tenant_not_ready`. The durable record separates the first two. It
+       CANNOT separate the last two — `not_ready()` carries the same 403, the Auth Router edge
+       collapses every non-carrier-mismatch 403 to `forbidden`, and the Gateway writes a reference-
+       free `RouteDenied` row either way — so a no-reference row is classified as an AMBIGUOUS
+       PRE-AUTH DENIAL and E48 is reported `NOT AVAILABLE / UNPROVEN`. Missing audit evidence is
+       reported the same way. Neither is ever a pass; see runbook GBR-4 for what would close it.
+
+THE CONTROL-DATABASE READS, stated exactly. `run` opens a Control connection with
+`read_only = True` and executes two kinds of statement on it. (a) ONE bounded BUSINESS-DATA read —
+`read_denial_audit`, a `SELECT` from `control_gateway_audit` filtered to a correlation id **this
+witness minted for its own request**, reading the reference columns as `IS NOT NULL` booleans so no
+reference VALUE enters this process; it runs once per denial leg. (b) The physical-identity METADATA
+pair `pg_control_system()` / `current_database()`, which read no table and no business row and exist
+because the no-leak census must bar the Control database's physical name. That is the whole of it.
+
 UNIMPLEMENTED, and deliberately not claimed: this witness does **not** cross-read the Control
-routing row from the Control database. `SNACKPORTAL_SECRET_CONTROL_CONTROL_STORE_DSN_V1` is reported
-by `plan` for presence only. Proving that the served routing view came from the durable store rather
-than the in-memory one is a separate Gate-B read, and it is recorded as such in the evidence
-template. Do not write that this witness performed it.
+routing row. It does not read `control_tenants`, and it makes no claim about which store served the
+routing view. Proving that the served routing view came from the durable store rather than the
+in-memory one is a separate Gate-B read, and it is recorded as such in the evidence template. Do not
+write that this witness performed it.
 
 --------------------------------------------------------------------------------------------------
 AMBIGUITIES THAT MUST NOT BE RESOLVED BY GUESSING
@@ -60,11 +79,14 @@ AMBIGUITIES THAT MUST NOT BE RESOLVED BY GUESSING
 * **Audit-coupled fail-closed**: with a durable sink selected, a sink outage turns a legitimate `200`
   into a `503` and a legitimate `403` into a `503`. Evidence collected during a sink outage
   misrepresents the data plane as broken.
-* **Isolation has two stages and they prove different things.** The ZETA-claim denial fires in the
-  **Auth Router**, before any routing or tenant-DB contact. That is the correct fail-closed posture,
-  but it proves *auth-stage* denial — **not** that the Database Router would have refused. The
-  router-stage leg is captured separately, labelled separately, and ASSERTED separately: a `200` on
-  either leg is an isolation breach and fails the run.
+* **Both isolation legs are pre-routing, and neither proves router-stage denial (GBR-1).** The
+  ZETA-claim denial fires in the **Auth Router**, before any routing or tenant-DB contact; the
+  unregistered-tenant carrier leg is resolved as `carrier_mismatch` in the same Auth Router path. Both
+  denials are real, both are captured and ASSERTED separately, and a `200` on either is an isolation
+  breach that fails the run — but **whether the Database Router itself would refuse remains UNPROVEN
+  by this harness**, and neither leg may be labelled or recorded as router-stage evidence.
+* **A `403` with an empty body names no reason.** Three different denials render it identically, so
+  every denial leg records the reason OBSERVED in the durable audit rather than the one assumed.
 * **A missing VALUE is not a missing ROW.** `short_description` is nullable in the DDL and at the
   edge, so `read_short_description` returning `None` is two different facts. Row presence is asked
   separately (`startup_row_exists`); a present row holding a lawful NULL must never be reported as
@@ -100,6 +122,7 @@ import re
 import sys
 import urllib.error
 import urllib.request
+import uuid
 from typing import Any, Dict, FrozenSet, List, Optional, Sequence, Tuple
 from urllib.parse import urlsplit
 
@@ -120,8 +143,10 @@ ZETA_TENANT_ID = "zeta"
 # printed; only the NAMES appear here and in the runbook.
 ACME_DSN_ENV = "SNACKPORTAL_TENANT_SECRET_TENANT_ACME_DSN_V1"
 ZETA_DSN_ENV = "SNACKPORTAL_TENANT_SECRET_TENANT_ZETA_DSN_V1"
-# Reported for PRESENCE ONLY by `plan`. This witness performs NO Control-database read; the durable
-# routing cross-read is a separate Gate-B verification step (see the module docstring).
+# Reported for PRESENCE ONLY by `plan`; REQUIRED by `run`. `run` opens ONE bounded, read-only
+# Control connection for ONE purpose: reading the durable Gateway operational-audit rows that carry
+# the denial REASON for the correlation ids this witness itself minted (RB-3 / E48). It still
+# performs NO routing cross-read — see the module docstring and runbook §6.1.
 CONTROL_DSN_ENV = "SNACKPORTAL_SECRET_CONTROL_CONTROL_STORE_DSN_V1"
 
 # Operator-local, never committed, never printed. Both are REQUIRED for the `run` leg: the ZETA
@@ -140,7 +165,85 @@ PATCH_FIELD_MAX_CHARS = 500
 DENIAL_STATUSES = (401, 403, 404)
 
 # The durably-homed action classes this journey should produce when Gate B enables the sink.
-EXPECTED_AUDIT_ACTIONS = ("tenant_startup_read", "tenant_startup_update", "RouteDenied")
+# GBR-2: `CarrierMismatch` is the FOURTH class this journey actually emits — D-43 durably homes it
+# (`control_plane/adapters/providers/http_gateway_audit_api.py:117`) and the unregistered-tenant
+# carrier leg produces it. Omitting it made this list read as exhaustive when it under-counted by
+# one, so an operator reconciling the Control-DB read against it would have found a row they had no
+# entry for. Durable coverage is the FIVE `_CLM_DURABLE_ACTIONS` classes; the fifth,
+# `workspace_memberships_read`, belongs to a different journey and is deliberately not listed here.
+EXPECTED_AUDIT_ACTIONS = ("tenant_startup_read", "tenant_startup_update", "RouteDenied", "CarrierMismatch")
+
+# ------------------------------------------------------ RB-3: the denial-reason discriminator ----
+# The header the Gateway honours when correlating a request with its audit record
+# (`api_gateway/gateway.py:53`, lower-cased on read). Without one the Gateway mints its own, which
+# this process never sees — and an audit row nobody can find is not evidence.
+CORRELATION_HEADER = "X-Correlation-Id"
+
+# The two durably homed DENIAL actions of the Gateway edge (D-42 CLM Stage B + D-43). Both are in
+# `_CLM_DURABLE_ACTIONS`, so with the durable sink selected both reach `control_gateway_audit`, and
+# both are written BEFORE the denial is handed back (deny-with-evidence: a durable denial record that
+# cannot persist collapses the response to 503 instead).
+ROUTE_DENIED_ACTION = "RouteDenied"
+CARRIER_MISMATCH_ACTION = "CarrierMismatch"
+DENIAL_OUTCOME = "rejected"
+
+# The FOUR denial reasons a `403` with an empty body can carry on this route, and how far the
+# durable record can separate them. All four are indistinguishable at the wire, which is RB-3.
+#
+#   carrier_mismatch          the Auth Router rejected because the recognised carrier disagrees with
+#                             the signed tenant claim. The Gateway emits action `CarrierMismatch`
+#                             with an opaque carrier reference (`gateway.py:200-207`).
+#   tenant_context_required   the bearer authenticated but carries no tenant claim, so dispatch
+#                             refuses (`dispatch.py:65`). The Gateway emits `RouteDenied` from the
+#                             POST-authentication branch, which passes `actor_ref=principal_ref`
+#                             (`gateway.py:237`) — so the row DOES carry an actor reference.
+#   tenant_access_denied      the token's signed claim IS the target tenant and the principal holds
+#                             no membership for it (`auth_router/tenant_context.py:45`). The Gateway
+#                             emits `RouteDenied` from the authenticator-rejection branch, which runs
+#                             BEFORE any AuthContext exists — so the row carries NO actor, tenant or
+#                             carrier reference (`gateway.py:199-211`). This is the ONLY reason that
+#                             is genuine authorization denial, i.e. E48.
+#   tenant_not_ready          the principal IS a member, but the tenant is known-but-not-Ready
+#                             (`auth_router/tenant_context.py:47` raises `not_ready`). It is NOT an
+#                             authorization denial at all.
+#
+# >>> WHY tenant_access_denied AND tenant_not_ready CANNOT BE TOLD APART HERE (the C2-3 finding) <<<
+#
+# `auth_router/models.py:96-97` gives `not_ready()` the SAME `403` status as `forbidden()`;
+# `auth_router/adapters/providers/http_authenticate_api.py:123-124` then collapses every
+# non-`carrier_mismatch` 403 to the single public code `forbidden` — its own docstring says the
+# granular reasons "never leak past the status bucket" — and
+# `api_gateway/adapters/providers/http_authenticator.py:119-124` repeats the collapse Gateway-side.
+# By the time `gateway.py:199-211` emits the audit event, both reasons produce a BYTE-IDENTICAL
+# durable row: action `RouteDenied`, outcome `rejected`, actor/tenant/carrier all NULL.
+#
+# So a no-reference `RouteDenied` row is an AMBIGUOUS PRE-AUTH DENIAL. It is not evidence of genuine
+# authorization denial, and this witness must not file it as such — the standing local fixture
+# deliberately provisions a dormant tenant, so `tenant_not_ready` is reachable here, not theoretical.
+# Narrowing the ambiguity is a PRODUCTION change (a distinct status, public code, or audit action)
+# and is explicitly out of scope; the honest reading is UNPROVEN, and that is what is reported.
+DENIAL_TENANT_ACCESS_DENIED = "tenant_access_denied"
+DENIAL_TENANT_CONTEXT_REQUIRED = "tenant_context_required"
+DENIAL_CARRIER_MISMATCH = "carrier_mismatch"
+DENIAL_TENANT_NOT_READY = "tenant_not_ready"
+DENIAL_PRE_AUTH_AMBIGUOUS = "AMBIGUOUS PRE-AUTH DENIAL (tenant_access_denied OR tenant_not_ready)"
+DENIAL_EVIDENCE_ABSENT = "NOT AVAILABLE / UNPROVEN"
+DENIAL_INDETERMINATE = "INDETERMINATE"
+
+# The authoritative signals that would UNIQUELY prove `tenant_access_denied` rather than
+# `tenant_not_ready` for a no-reference `RouteDenied` row.
+#
+# It is EMPTY, and the emptiness is a fact about the runtime, not a gap in this harness: the chain
+# above erases the distinction before anything durable is written, and manufacturing a substitute
+# (a fabricated bearer, a new Keycloak scope, a changed public code) is exactly what this arc
+# forbids. While it is empty, E48 is UNPROVABLE from the durable record and every no-reference
+# `RouteDenied` row classifies as AMBIGUOUS. If the runtime later emits a genuinely distinguishing
+# signal, adding its name here — and passing it to `classify_denial_reason` — is the whole change.
+RECOGNISED_UNIQUE_DENIAL_SIGNALS: FrozenSet[str] = frozenset()
+
+# E48 — the §28 Definition-of-Done line "ZETA denial is genuine authorization denial". Exactly one
+# of the reasons above satisfies it, and reaching that reason requires a recognised signal above.
+E48_REQUIRED_DENIAL_REASON = DENIAL_TENANT_ACCESS_DENIED
 
 # Shapes that must never appear in the REFERENCE / topology / status text of any captured artifact.
 LEAK_SHAPES = ("://", "eyJ", "-----BEGIN", "AKIA", "ghp_", "xox", "password=", "PGPASSWORD")
@@ -335,6 +438,131 @@ def read_short_description(conn: Any, startup_ref: str) -> Optional[str]:
     return None if row is None else row[0]
 
 
+def read_denial_audit(conn: Any, correlation_id: str) -> List[Tuple[Any, ...]]:
+    """The durable Gateway-edge audit rows for ONE correlation id, in store order.
+
+    STRICTLY READ-ONLY and STRICTLY BOUNDED: one `SELECT`, one correlation id — the one this witness
+    minted for its own request — and only what the denial-reason derivation needs. It reads the
+    reference columns as `IS NOT NULL` BOOLEANS, never as values, so no actor, tenant or carrier
+    reference can enter this process at all, let alone an artifact.
+
+    This is the witness's ONE bounded read of Control BUSINESS DATA — the single statement that reads
+    a row of a Control table. It is not the only statement executed on that connection, and saying so
+    would be false: `physical_identity` issues `pg_control_system()` and `current_database()`, which
+    are cluster/session METADATA (no table, no business row) and are required by the no-leak census,
+    and this function itself runs once per denial leg. It does not read `control_tenants`, it does
+    not read a routing row, and it does not scan the audit table. The durable routing cross-read
+    remains a separate Gate-B operator step (module docstring; runbook §6.1).
+    """
+    return list(
+        conn.execute(
+            "SELECT action, outcome, actor_ref IS NOT NULL, tenant_ref IS NOT NULL, carrier_ref IS NOT NULL "
+            "FROM control_gateway_audit WHERE correlation_id = %s ORDER BY id",
+            (correlation_id,),
+        ).fetchall()
+    )
+
+
+def classify_denial_reason(rows: Sequence[Sequence[Any]], *, unique_signal: Optional[str] = None) -> Tuple[str, str]:
+    """`(reason, detail)` — which denial the Gateway actually made, from the durable record alone.
+
+    Pure: rows in, verdict out. That is what lets the static guard EXECUTE every branch without a
+    database, and what keeps the derivation reviewable next to the emitter it mirrors.
+
+    Fail-closed in every direction. No durable denial row => `NOT AVAILABLE / UNPROVEN` (the sink is
+    off, the row did not persist, or the correlation never reached the Gateway) — never a pass. A row
+    shape the derivation above does not cover => `INDETERMINATE` — never a guess. A row shape TWO
+    different upstream reasons produce identically => `AMBIGUOUS PRE-AUTH DENIAL` — never the more
+    convenient of the two.
+
+    `unique_signal` is the only route to `tenant_access_denied`, and it is honoured only when it is
+    one of `RECOGNISED_UNIQUE_DENIAL_SIGNALS` — which is EMPTY on this runtime. It exists so that the
+    ambiguity is a *stated dependency on evidence that does not exist yet* rather than a hard-wired
+    refusal, and so that adding a real signal later is a one-line change with a test already written.
+    """
+    denials = [row for row in rows if str(row[0]) in (CARRIER_MISMATCH_ACTION, ROUTE_DENIED_ACTION) and str(row[1]) == DENIAL_OUTCOME]
+    if not denials:
+        return DENIAL_EVIDENCE_ABSENT, (
+            f"no durably homed denial row ({CARRIER_MISMATCH_ACTION}/{ROUTE_DENIED_ACTION}, outcome {DENIAL_OUTCOME!r}) exists "
+            f"for this correlation id among the {len(rows)} row(s) found. With the durable sink unselected the Gateway "
+            "emits to the in-memory no-sink emitter and NOTHING is written, so the denial reason is unobservable here"
+        )
+    actions = {str(row[0]) for row in denials}
+    if actions == {CARRIER_MISMATCH_ACTION}:
+        return DENIAL_CARRIER_MISMATCH, (
+            "the durable record is a CarrierMismatch denial: the recognised carrier disagreed with the signed tenant "
+            "claim, so the request was refused for its CARRIER, not for the principal's authorization"
+        )
+    if actions != {ROUTE_DENIED_ACTION} or len(denials) != 1:
+        return DENIAL_INDETERMINATE, (
+            f"the correlation carries {len(denials)} durable denial row(s) with action(s) {sorted(actions)}; one request "
+            "produces exactly one durably homed denial record, so this shape is not interpretable"
+        )
+    _action, _outcome, has_actor, has_tenant, _has_carrier = denials[0]
+    if not has_actor and not has_tenant:
+        if unique_signal is not None and unique_signal in RECOGNISED_UNIQUE_DENIAL_SIGNALS:
+            return DENIAL_TENANT_ACCESS_DENIED, (
+                "the durable record is a RouteDenied denial carrying NO actor reference — emitted only from the "
+                "authenticator-rejection branch, before any AuthContext exists — AND the authoritative signal "
+                f"{unique_signal!r} uniquely separates it from {DENIAL_TENANT_NOT_READY!r}. That is genuine "
+                "authorization denial"
+            )
+        return DENIAL_PRE_AUTH_AMBIGUOUS, (
+            "the durable record is a RouteDenied denial carrying NO actor, tenant or carrier reference. The Gateway "
+            f"emits EXACTLY this row for BOTH {DENIAL_TENANT_ACCESS_DENIED!r} (non-member of a Ready tenant, "
+            f"auth_router/tenant_context.py:45) and {DENIAL_TENANT_NOT_READY!r} (member of a known-but-dormant tenant, "
+            "tenant_context.py:47): models.py:96-97 gives not_ready() the same 403, http_authenticate_api.py:123-124 "
+            "collapses every non-carrier-mismatch 403 to `forbidden`, and http_authenticator.py:119-124 repeats the "
+            "collapse. No signal in this record separates them, and only one of the two is authorization denial — so "
+            "this row cannot establish E48. Narrowing it is a production change and is out of scope here"
+        )
+    if has_actor and not has_tenant:
+        return DENIAL_TENANT_CONTEXT_REQUIRED, (
+            "the durable record is a RouteDenied denial carrying an ACTOR reference, which the Gateway emits only from "
+            "the post-authentication dispatch branch: the bearer authenticated and simply carried no tenant claim. The "
+            "principal was never refused access to the tenant"
+        )
+    return DENIAL_INDETERMINATE, (
+        f"the durable RouteDenied row carries actor_ref present={bool(has_actor)} tenant_ref present={bool(has_tenant)}, "
+        "a combination the Gateway's denial branches do not produce on this route"
+    )
+
+
+def e48_problems(status: int, body: bytes, rows: Sequence[Sequence[Any]], *, unique_signal: Optional[str] = None) -> List[str]:
+    """Everything stopping the ZETA leg from being E48 evidence. An EMPTY list means E48 is satisfied.
+
+    E48 is the Definition-of-Done line *"ZETA denial is genuine authorization denial"*. The
+    predecessor asserted `status == 403 and not body` and nothing else — but ALL FOUR of
+    `tenant_access_denied`, `tenant_not_ready`, `tenant_context_required` and `carrier_mismatch`
+    render EXACTLY `403` with an empty body. A bearer that exercised the wrong one filed a non-ZETA
+    denial **as** E48 evidence, and no part of the run could tell. The wire shape is necessary and it
+    is not sufficient; the discriminator is the durable operational-audit record for the SAME
+    request — as far as that record can go.
+
+    It does not go all the way. `tenant_access_denied` and `tenant_not_ready` produce a
+    BYTE-IDENTICAL durable row (see the derivation above), so on this runtime E48 resolves to
+    `NOT AVAILABLE / UNPROVEN` rather than to a pass. That is a finding about the evidence available,
+    not a redefinition of E48: the claim is unchanged, and what changed is that the harness no longer
+    asserts it from a record that cannot carry it.
+    """
+    problems: List[str] = []
+    if status != 403:
+        problems.append(f"the ZETA-claim leg returned {status}, not 403 — an authorization denial on this route is a 403")
+    if body:
+        problems.append("the ZETA-claim denial carried a body; a fail-closed denial discloses nothing and its body is empty")
+    reason, detail = classify_denial_reason(rows, unique_signal=unique_signal)
+    if reason != E48_REQUIRED_DENIAL_REASON:
+        # An UNPROVEN verdict and a REFUTED one are different findings and must read differently in
+        # the artifact: the first says the evidence cannot decide, the second says it decided against.
+        unproven = reason in (DENIAL_PRE_AUTH_AMBIGUOUS, DENIAL_EVIDENCE_ABSENT, DENIAL_INDETERMINATE)
+        problems.append(
+            f"{'E48 NOT AVAILABLE / UNPROVEN' if unproven else 'E48 NOT SATISFIED'} — the authoritative denial reason "
+            f"for this request is {reason!r}, not {E48_REQUIRED_DENIAL_REASON!r}: {detail}. A 403 with an empty body is "
+            "produced by all four denial reasons, so the wire response alone can never establish this claim"
+        )
+    return problems
+
+
 # ----------------------------------------------------------------------------- precondition gate --
 def evaluate_preconditions(gateway_base_url: str, tenant_startup_base_url: str) -> Tuple[bool, List[str], Dict[str, Any]]:
     """D-1 / D-2 declarations plus the P-2 upstream-liveness census. Read-only; no auth, no writes.
@@ -433,7 +661,24 @@ def cmd_status(args: argparse.Namespace) -> int:
     print("  database -> Startup GET/PATCH. Only a `run` under an explicit START-GATE establishes that, and")
     print("  running it is a Gate-B class-M14 act.")
     print("  ALSO UNPROVEN BY ANY COMMAND HERE: that the RUNNING Control Plane served routing from the durable")
-    print("  store. This witness performs no Control-database read; that cross-check is a separate Gate-B step.")
+    print("  store. `run` DOES open a read-only Control connection, but its only business-data read is the")
+    print("  correlation-filtered denial record for a denial leg it actually reaches (plus pg_control_system()/")
+    print("  current_database() metadata). It never reads control_tenants or a routing row; that cross-check is a")
+    print("  separate Gate-B operator step. `status` itself opens no Control connection at all.")
+    # N-2. This block states LEG REACHABILITY, and it is the operator-facing half of the same fact the
+    # runbook states in prose: the harness DEFINES two isolation legs, and a current `run` executes the
+    # first only. Saying "its own two isolation requests" here described a run this runtime cannot
+    # perform — and `status` is the command an operator runs freely, and the one a bare invocation
+    # resolves to, so it is where a wrong count does the most damage.
+    print("  THE HARNESS DEFINES TWO INTENDED ISOLATION LEGS, AND ONLY THE FIRST IS CURRENTLY REACHABLE: cmd_run")
+    print("  asserts on E48 before it issues the second (unregistered-tenant carrier) leg, and while GBR-4 is")
+    print("  unresolved that assertion cannot pass — so THE SECOND ISOLATION LEG IS NOT REACHED WHILE GBR-4")
+    print("  REMAINS UNRESOLVED. It is required-but-currently-unreachable, never already executed.")
+    print("  BOTH LEGS REMAIN MANDATORY FOR FINAL ACCEPTANCE, so a complete two-leg isolation record is")
+    print("  currently unproducible and a one-leg record is INCOMPLETE / NOT ACCEPTABLE AS FINAL ISOLATION")
+    print("  EVIDENCE.")
+    print("  E48 IS CURRENTLY UNPROVABLE FROM THE DURABLE RECORD: tenant_access_denied and tenant_not_ready emit a")
+    print("  byte-identical RouteDenied row, so a no-reference denial is reported AMBIGUOUS, never as E48 satisfied.")
     return 0 if ok else 1
 
 
@@ -456,14 +701,18 @@ def cmd_run(args: argparse.Namespace) -> int:
     zeta_bearer = _env(ZETA_BEARER_ENV)
     acme_dsn = _env(ACME_DSN_ENV)
     zeta_dsn = _env(ZETA_DSN_ENV)
+    control_dsn = _env(CONTROL_DSN_ENV)
     # ZETA_BEARER_ENV is MANDATORY, not optional. Instruction §11 requires the witness to separately
-    # distinguish auth-stage denial from router-stage isolation; a run that skipped the auth-stage
-    # leg and still exited 0 would file an incomplete record as a complete one.
+    # distinguish auth-stage denial from the unregistered-carrier leg; a run that skipped the
+    # auth-stage leg and still exited 0 would file an incomplete record as a complete one.
+    # CONTROL_DSN_ENV is MANDATORY for the same reason (RB-3): without the durable denial record the
+    # E48 claim is unfalsifiable, and an unfalsifiable claim that still exits 0 is the defect.
     for name, value in (
         (BEARER_ENV, bearer),
         (ZETA_BEARER_ENV, zeta_bearer),
         (ACME_DSN_ENV, acme_dsn),
         (ZETA_DSN_ENV, zeta_dsn),
+        (CONTROL_DSN_ENV, control_dsn),
     ):
         if not value:
             print(f"REFUSED: {name} is unset or blank.")
@@ -477,6 +726,11 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     acme = psycopg.connect(acme_dsn, autocommit=True)
     zeta = psycopg.connect(zeta_dsn, autocommit=True)
+    # The Control connection is READ-ONLY at the connection level and is used for exactly one
+    # statement family: `read_denial_audit`. It is opened here, with the others, so a bad reference
+    # fails attributably up front rather than in the middle of the isolation legs.
+    control = psycopg.connect(control_dsn)
+    control.read_only = True
     # Bound BEFORE the try so the `finally` block can never raise NameError over the real failure.
     # This is the one harness whose premise is that failures must be attributable; masking the
     # original exception with a bookkeeping error defeats exactly that.
@@ -484,6 +738,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     before_digest: Optional[str] = None
     acme_identity: Tuple[str, str] = ("", "")
     zeta_identity: Tuple[str, str] = ("", "")
+    control_identity: Tuple[str, str] = ("", "")
     legs_ok = False
     restored_ok = False
     no_leak_ok = False
@@ -493,6 +748,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     try:
         acme_identity = physical_identity(acme)
         zeta_identity = physical_identity(zeta)
+        control_identity = physical_identity(control)
         assert acme_identity != zeta_identity, (
             "ACME and ZETA resolve to the SAME (system_identifier, current_database()) pair — this is not a "
             "physically separated topology and no isolation claim may be made from it"
@@ -574,27 +830,73 @@ def cmd_run(args: argparse.Namespace) -> int:
         assert startups_digest(zeta) == zeta_before_digest, "ZETA changed during an ACME write — isolation is broken"
         print("PASS: WRITE — served PATCH 200; independent ACME read confirms; ZETA byte-identical")
 
-        # ---- ISOLATION: two stages, recorded and ASSERTED separately -------------------------
-        status, _headers, body = _http("GET", url, bearer=zeta_bearer, body=None, headers={"X-Tenant-Id": ZETA_TENANT_ID})
-        artifacts["isolation_auth_stage"] = f"status={status} body={body.decode('utf-8', 'replace')}"
-        assert status == 403 and not body, "an ACME-only principal claiming ZETA must get 403 with an EMPTY body"
-        print("PASS: ISOLATION (AUTH STAGE) — 403, empty body, ZETA unchanged")
+        # ---- ISOLATION: two legs, recorded and ASSERTED separately ---------------------------
+        # Each leg mints its OWN correlation id and hands it to the Gateway, so the durable
+        # operational-audit row for that exact request can be found afterwards. Without one the
+        # Gateway mints an id this process never sees, and an audit row nobody can find is not
+        # evidence (RB-3).
+        zeta_correlation = uuid.uuid4().hex
+        status, _headers, body = _http(
+            "GET",
+            url,
+            bearer=zeta_bearer,
+            body=None,
+            headers={"X-Tenant-Id": ZETA_TENANT_ID, CORRELATION_HEADER: zeta_correlation},
+        )
+        # The audit read happens AFTER the response, and the denial record is written BEFORE the
+        # denial is handed back (deny-with-evidence: a durable denial record that cannot persist
+        # collapses the response to 503), so the row is committed by the time this runs.
+        zeta_rows = read_denial_audit(control, zeta_correlation)
+        zeta_reason, zeta_detail = classify_denial_reason(zeta_rows)
+        artifacts["isolation_auth_stage"] = (
+            f"status={status} durable_denial_reason={zeta_reason} durable_rows={len(zeta_rows)} body={body.decode('utf-8', 'replace')}"
+        )
+        e48 = e48_problems(status, body, zeta_rows)
+        assert not e48, (
+            "E48 NOT ESTABLISHED — the ZETA denial has not been shown to be genuine authorization denial:\n      "
+            + "\n      ".join(e48)
+            + "\n      A no-reference RouteDenied row is emitted identically for tenant_access_denied and for "
+            "tenant_not_ready, so on this runtime E48 is UNPROVABLE from the durable record and this leg fails by "
+            "construction. That is the honest outcome, not a harness defect: closing it needs either a production "
+            "change that distinguishes the two reasons, or Dan's written decision to narrow Gate B / accept a "
+            "labelled substitute artifact. Do NOT record E48 as satisfied from this run."
+        )
+        print(f"PASS: ISOLATION (AUTH STAGE) — 403, empty body, ZETA unchanged; durable denial reason {zeta_reason!r}")
+        print(f"      E48 SATISFIED: {zeta_detail}")
         print("      SCOPE CAVEAT: this denial fires in the Auth Router, BEFORE any routing or tenant-DB contact.")
         print("      It proves AUTH-STAGE denial. It does NOT prove the Database Router would have refused.")
 
-        status, _headers, body = _http("GET", url, bearer=bearer, body=None, headers={"X-Tenant-Id": "tenant-that-does-not-exist"})
-        artifacts["isolation_router_stage"] = f"status={status} body={body.decode('utf-8', 'replace')}"
+        # The second leg is NOT a router-stage proof and is no longer labelled as one (GBR-1): an
+        # unregistered-tenant carrier presented with the ACME bearer is resolved as `carrier_mismatch`
+        # in the Auth Router path — pre-routing, the same stage as the leg above. The denial is real
+        # and is asserted; the STAGE is now OBSERVED from the durable record rather than claimed.
+        carrier_correlation = uuid.uuid4().hex
+        status, _headers, body = _http(
+            "GET",
+            url,
+            bearer=bearer,
+            body=None,
+            headers={"X-Tenant-Id": "tenant-that-does-not-exist", CORRELATION_HEADER: carrier_correlation},
+        )
+        carrier_rows = read_denial_audit(control, carrier_correlation)
+        carrier_reason, _carrier_detail = classify_denial_reason(carrier_rows)
+        artifacts["isolation_unregistered_carrier"] = (
+            f"status={status} durable_denial_reason={carrier_reason} durable_rows={len(carrier_rows)} "
+            f"body={body.decode('utf-8', 'replace')}"
+        )
         assert status != 200, (
-            "ISOLATION BREACH (ROUTER STAGE): an unregistered-tenant carrier was answered 200. The record was served "
-            "to a request carrying a tenant this topology does not know."
+            "ISOLATION BREACH: an unregistered-tenant carrier was answered 200. The record was served to a request "
+            "carrying a tenant this topology does not know."
         )
         assert status in DENIAL_STATUSES and not body, (
-            f"the router-stage isolation leg returned {status} with body-present={bool(body)}; a real denial must be "
-            f"one of {DENIAL_STATUSES} with an EMPTY body. A 503 here is the upstream/audit collapse — it is NOT a "
+            f"the unregistered-tenant carrier leg returned {status} with body-present={bool(body)}; a real denial must "
+            f"be one of {DENIAL_STATUSES} with an EMPTY body. A 503 here is the upstream/audit collapse — it is NOT a "
             "denial and must not be recorded as isolation evidence."
         )
-        print(f"PASS: ISOLATION (ROUTER STAGE) — unregistered-tenant carrier denied with {status}, empty body")
-        print("      Recorded SEPARATELY from the auth-stage leg: they prove different things.")
+        print(f"PASS: ISOLATION (UNREGISTERED-TENANT CARRIER) — denied with {status}, empty body")
+        print(f"      Durable denial reason OBSERVED: {carrier_reason!r} — recorded, not assumed.")
+        print("      NOT a router-stage proof (GBR-1): this leg is resolved pre-routing, in the Auth Router path.")
+        print("      Whether the Database Router itself would refuse remains UNPROVEN by this harness.")
 
         assert startups_digest(zeta) == zeta_before_digest, "ZETA changed during the isolation legs"
         legs_ok = True
@@ -628,8 +930,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         try:
             assert_no_leak(
                 artifacts,
-                [acme_dsn or "", zeta_dsn or "", bearer or "", zeta_bearer or ""],
-                [acme_identity[1], zeta_identity[1]],
+                [acme_dsn or "", zeta_dsn or "", bearer or "", zeta_bearer or "", control_dsn or ""],
+                [acme_identity[1], zeta_identity[1], control_identity[1]],
             )
             no_leak_ok = True
             print("PASS: NO-LEAK SCAN — no DSN, password, bearer token, or physical database name in any artifact")
@@ -637,6 +939,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             print(f"FAIL: {exc}")
         acme.close()
         zeta.close()
+        control.close()
 
     print("\n  AUDIT: with the durable sink enabled, this journey should produce the durably-homed classes")
     print(f"  {EXPECTED_AUDIT_ACTIONS} in control_gateway_audit, with the {PATCH_FIELD} VALUE absent from every cell.")

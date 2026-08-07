@@ -50,6 +50,7 @@ Pure stdlib; runnable standalone:
 
 from __future__ import annotations
 
+import argparse
 import ast
 import hashlib
 import importlib.util
@@ -59,6 +60,7 @@ import re
 import sys
 import tempfile
 from types import ModuleType
+from typing import List
 from urllib.parse import urlsplit
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -599,6 +601,505 @@ def test_this_guard_is_not_registered_in_the_role_security_meta_guard() -> None:
         )
 
 
+# ---------------------------------------------------------------------------------------------
+# RB-1 — V-12 must be ONE predicate, evaluated on the EFFECTIVE rule for the tool's own connection.
+#
+# The defect: `apply` tested `'trust' in <the auth_method of EVERY type='host' rule>` while
+# `classify()` — what `plan` reports — never read the key at all. On the standing control cluster
+# that made `plan` exit 0 `MISSING` while `apply` was guaranteed to refuse before minting: a false
+# green on the §6.3 pre-grant condition, produced by a predicate that answered a question nobody
+# asked (a `host all all 127.0.0.1/32 trust` line does not govern a connection arriving from a
+# container-network address).
+#
+# These checks EXECUTE the tool's own functions. A structural check cannot establish either half:
+# the matcher's correctness is a property of its arithmetic, and "plan and apply agree" is a
+# property of them consuming one value.
+# ---------------------------------------------------------------------------------------------
+def _hba(order: int, rule_type: str, address: object, netmask: object, method: str, **overrides: object) -> dict:
+    rule = {
+        "order": order,
+        "type": rule_type,
+        "database": ["all"],
+        "user_name": ["all"],
+        "address": address,
+        "netmask": netmask,
+        "auth_method": method,
+        "error": None,
+    }
+    rule.update(overrides)
+    return rule
+
+
+# The stock PostgreSQL rule table, in file order: a loopback `trust` line ABOVE the catch-all that
+# actually governs a connection arriving from anywhere else. This exact shape is what the whole-file
+# membership test got wrong.
+def _stock_rules() -> list:
+    return [
+        _hba(1, "local", None, None, "trust"),
+        _hba(2, "host", "127.0.0.1", "255.255.255.255", "trust"),
+        _hba(3, "host", "::1", "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", "trust"),
+        _hba(4, "local", None, None, "trust", database=["replication"]),
+        _hba(5, "host", "127.0.0.1", "255.255.255.255", "trust", database=["replication"]),
+        _hba(6, "host", "all", None, "scram-sha-256"),
+    ]
+
+
+# The fall-through hazard, as a MULTI-RULE table. Entry #1 cannot be decided from what this tool
+# observes (a `+group` token needs catalog state) and its declared method is `trust`; entry #2 is a
+# permissive, password-discriminating catch-all that WOULD match. In a first-match table the scan
+# must stop at #1 and report UNDETERMINABLE. A scan that skipped #1 would report `scram-sha-256` and
+# let `apply` proceed on a cluster whose governing rule may accept unconditionally — the RB-1
+# false-green class, re-entered through the matcher instead of through `classify()`.
+def _fall_through_rules() -> list:
+    return [
+        _hba(1, "host", "all", None, "trust", user_name=["+operators"]),
+        _hba(2, "host", "all", None, "scram-sha-256"),
+    ]
+
+
+# The MX8 hazard, as a multi-rule table. Entry #1 is password-discriminating but names a DIFFERENT
+# role, so it is a DEFINITE non-match and the governing entry is the `trust` catch-all below it. A
+# token matcher that answered "match" (or "undecidable") for a token set it never matched would pick
+# entry #1 and report a clean `plan` on a cluster whose real rule is `trust`.
+def _non_matching_user_rules() -> list:
+    return [
+        _hba(1, "host", "all", None, "scram-sha-256", user_name=["postgres"]),
+        _hba(2, "host", "all", None, "trust"),
+    ]
+
+
+def _connection(tool: ModuleType, client_address: object) -> dict:
+    return {
+        "local": client_address is None,
+        "ssl": False,
+        "client_address": client_address,
+        "database": tool.CONTROL_DATABASE,
+        "user": "sp2_local",
+    }
+
+
+def _environment(tool: ModuleType, effective: dict) -> dict:
+    """A Tier-B environment in which EVERYTHING except V-12 is clean, so a CONFLICTING verdict can
+    only have come from V-12."""
+    return {
+        "database": tool.CONTROL_DATABASE,
+        "server_version_num": tool.MIN_SERVER_VERSION_NUM,
+        "triggers": dict.fromkeys(tool.EXPECTED_TRIGGERS, "O"),
+        "tenant_databases_on_control_cluster": [],
+        "log_gucs": {},
+        "effective_host_auth": effective,
+    }
+
+
+_EMPTY_STATE = {"roles": {}, "memberships": [], "comments": {}, "owned_objects": {}}
+_EMPTY_PRIVILEGES: dict = {"positive": {}, "negative": {}, "unrelated": {}}
+
+
+def test_an_unrelated_trust_rule_does_not_create_a_false_v12_conflict() -> None:
+    """RB-1 proof 1. EXECUTED.
+
+    A `trust` line the executor connection never reaches must not block. This is the case the
+    predecessor got wrong in the blocking direction, and it is the standing cluster's actual shape:
+    the Docker userland port proxy presents a container-network client address, so the loopback
+    `trust` entry is not the governing rule.
+    """
+    tool = _load_tool()
+    rules = _stock_rules()
+    assert "trust" in [rule["auth_method"] for rule in rules], "the fixture must contain the trust rules that misled the predecessor"
+
+    effective = tool.effective_host_auth(rules, _connection(tool, "172.17.0.1"))
+    assert effective["undeterminable"] is None, f"the governing entry must be determinable: {effective}"
+    assert effective["method"] == "scram-sha-256", f"the catch-all entry governs this connection, not a loopback trust line: {effective}"
+    assert effective["order"] == 6, "the FIRST matching entry is the governing one"
+    assert tool.v12_problems(_environment(tool, effective)) == [], "an unreached trust rule must not block V-12"
+    verdict, findings = tool.classify(_EMPTY_STATE, _EMPTY_PRIVILEGES, _environment(tool, effective))
+    assert (verdict, findings) == (tool.MISSING, []), f"plan must stay MISSING when V-12 is satisfied, got {verdict} {findings}"
+
+
+def test_an_effective_trust_rule_for_this_connection_yields_conflicting() -> None:
+    """RB-1 proof 2. EXECUTED. The same table, a loopback client — now the trust line DOES govern."""
+    tool = _load_tool()
+    effective = tool.effective_host_auth(_stock_rules(), _connection(tool, "127.0.0.1"))
+    assert effective["undeterminable"] is None and effective["method"] == "trust", f"the loopback entry must govern: {effective}"
+    assert effective["order"] == 2, "the first matching entry — not the catch-all below it — is the governing one"
+    problems = tool.v12_problems(_environment(tool, effective))
+    assert problems and "trust" in problems[0], f"an effective trust rule must block V-12, got {problems}"
+    verdict, findings = tool.classify(_EMPTY_STATE, _EMPTY_PRIVILEGES, _environment(tool, effective))
+    assert verdict == tool.CONFLICTING, "plan must report CONFLICTING when the effective method is non-discriminating"
+    assert any("V-12" in finding for finding in findings), f"the finding must name V-12: {findings}"
+
+
+def test_v12_fails_closed_when_the_governing_rule_cannot_be_determined() -> None:
+    """An unreadable rule table, an unparsed entry, and an undecidable entry all BLOCK.
+
+    pg_hba is a first-match table: an entry that can be neither matched nor excluded might be the
+    governing one, so no later entry may be assumed to govern instead. Fail-closed is the only
+    honest reading — V-12 exists to establish that a credential probe MEANS something.
+    """
+    tool = _load_tool()
+    for label, effective in (
+        ("unreadable rule table", tool.effective_host_auth(None, _connection(tool, "127.0.0.1"))),
+        (
+            "an entry that did not parse",
+            tool.effective_host_auth(
+                [_hba(1, "host", "all", None, "scram-sha-256", error="invalid connection type")], _connection(tool, "10.0.0.5")
+            ),
+        ),
+        (
+            "a hostname address that is not an IP literal",
+            tool.effective_host_auth([_hba(1, "host", "some-host.internal", None, "scram-sha-256")], _connection(tool, "10.0.0.5")),
+        ),
+        (
+            "a group token needing catalog state",
+            tool.effective_host_auth(
+                [_hba(1, "host", "all", None, "scram-sha-256", user_name=["+operators"])], _connection(tool, "10.0.0.5")
+            ),
+        ),
+        (
+            "an unobserved SSL state against a hostssl entry",
+            tool.effective_host_auth([_hba(1, "hostssl", "all", None, "scram-sha-256")], {**_connection(tool, "10.0.0.5"), "ssl": None}),
+        ),
+        (
+            # MULTI-RULE. Every fixture above is a single-entry table, in which "stop at the
+            # undecidable entry" and "run off the end of the table" reach the same blocking answer —
+            # so none of them can tell the two apart. This one can: there IS a later entry, and it is
+            # both safe and password-discriminating.
+            "an undecidable entry ABOVE a permissive catch-all (the fall-through hazard)",
+            tool.effective_host_auth(_fall_through_rules(), _connection(tool, "10.0.0.5")),
+        ),
+    ):
+        assert effective["undeterminable"], f"{label}: must be reported UNDETERMINABLE, got {effective}"
+        assert effective["method"] is None, f"{label}: no method may be claimed when the governing entry is unknown"
+        assert tool.v12_problems(_environment(tool, effective)), f"{label}: an undeterminable effective method must BLOCK"
+        verdict, _findings = tool.classify(_EMPTY_STATE, _EMPTY_PRIVILEGES, _environment(tool, effective))
+        assert verdict == tool.CONFLICTING, f"{label}: plan must report CONFLICTING"
+    # And a missing observation entirely — the key absent from the environment — must also block.
+    assert tool.v12_problems({}), "an environment carrying no effective-host-auth observation must block"
+
+
+def test_an_undecidable_rule_above_a_permissive_catch_all_stops_the_scan() -> None:
+    """The fall-through mutation, stated as its own proof — MULTI-RULE, because it has to be.
+
+    The fixtures in the test above are single-entry tables. In a single-entry table "stop at the
+    undecidable entry" and "run off the end of the table" produce the SAME blocking answer, so a
+    matcher that skipped undecidable entries would still pass every one of them. That is not a
+    hypothetical: with `effective_host_auth`'s undecidable branch changed from `return` to
+    `continue`, the whole architecture suite stayed green while V-12 had become fail-OPEN.
+
+    Here there is a later entry, and it is safe and password-discriminating. Only a scan that
+    genuinely stops can produce UNDETERMINABLE.
+    """
+    tool = _load_tool()
+    rules = _fall_through_rules()
+    assert len(rules) >= 2, "the fixture must have a LATER entry, or it cannot exercise fall-through at all"
+    # The later entry must be one V-12 would accept, so the mutant's answer is a GREEN one.
+    assert rules[-1]["auth_method"] in tool.PASSWORD_DISCRIMINATING_AUTH_METHODS, (
+        "the later entry must be a method V-12 accepts; otherwise a fall-through would block anyway and this fixture would prove nothing"
+    )
+    connection = _connection(tool, "10.0.0.5")
+
+    # The later entry DOES match this connection — established independently, so the assertions below
+    # are about the scan stopping, not about the fixture failing to match.
+    assert tool.effective_host_auth([rules[-1]], connection) == {"method": "scram-sha-256", "order": 2, "undeterminable": None}, (
+        "the catch-all must match this connection on its own; otherwise the fall-through case is unreachable"
+    )
+
+    effective = tool.effective_host_auth(rules, connection)
+    assert effective["method"] is None, (
+        f"the scan reached the LATER entry and reported {effective['method']!r}. pg_hba is a FIRST-MATCH table: an entry "
+        "that can be neither matched nor excluded might be the governing one, and here its declared method is `trust` — "
+        "so assuming the entry below it governs converts a fail-closed V-12 into a fail-OPEN one."
+    )
+    assert effective["order"] == rules[0]["order"], (
+        f"the scan must stop AT the undecidable entry (#{rules[0]['order']}), got #{effective['order']}"
+    )
+    assert effective["undeterminable"], "the reason the governing entry is unknowable must be reported, not implied"
+    assert tool.v12_problems(_environment(tool, effective)), "an undeterminable governing entry must BLOCK V-12"
+    verdict, findings = tool.classify(_EMPTY_STATE, _EMPTY_PRIVILEGES, _environment(tool, effective))
+    assert verdict == tool.CONFLICTING and any("V-12" in finding for finding in findings), (
+        f"plan must report CONFLICTING naming V-12, got {verdict} {findings}"
+    )
+
+
+def test_hba_token_matching_decides_in_both_directions() -> None:
+    """`_hba_tokens_match` is pinned in BOTH directions — match and definite non-match.
+
+    A three-valued matcher has two ways to be wrong, and only one of them is visible from the tests
+    that exercise matching. If a token set that matched NOTHING returned `True` (or `None`), a rule
+    naming a different database or a different role would be treated as governing — so a stricter,
+    password-discriminating entry above a permissive `trust` catch-all would be reported as the
+    governing rule and `plan` would go green on a cluster that accepts unconditionally. That is the
+    RB-1 false green re-entered one function lower down, and only the negative direction catches it.
+    """
+    tool = _load_tool()
+    # MATCH.
+    assert tool._hba_tokens_match(["all"], "sp2_local") is True, "`all` matches every value"
+    assert tool._hba_tokens_match(["sp2_local"], "sp2_local") is True, "an exact name matches"
+    assert tool._hba_tokens_match(["postgres", "sp2_local"], "sp2_local") is True, "any token in the array may match"
+    # DEFINITE NON-MATCH — the direction MX8 inverts.
+    assert tool._hba_tokens_match(["postgres"], "sp2_local") is False, (
+        "a token set naming only OTHER values is a DEFINITE non-match. Returning True or None here makes a rule that "
+        "does not apply look like the governing one."
+    )
+    assert tool._hba_tokens_match(["replication"], "sp2_local") is False, (
+        "a replication-only entry cannot govern this ordinary connection — and it must decide FALSE rather than stall "
+        "the scan, because the stock pg_hba.conf puts replication lines above the catch-all"
+    )
+    assert tool._hba_tokens_match(["postgres", "replication"], "sp2_local") is False, "still a definite non-match"
+    # UNDECIDABLE — needs catalog or filesystem state this tool does not read.
+    for undecidable in (["+operators"], ["@dbs.conf"], ["sameuser"], ["samerole"], ["postgres", "+operators"]):
+        assert tool._hba_tokens_match(undecidable, "sp2_local") is None, f"{undecidable} must decide NOTHING"
+    assert tool._hba_tokens_match(None, "sp2_local") is None, "an unobserved token array decides nothing"
+    assert tool._hba_tokens_match(["all"], None) is None, "an unobserved connection value decides nothing"
+
+    # The address matcher is pinned in both directions for the same reason.
+    assert tool._hba_address_matches("all", None, "10.0.0.5") is True
+    assert tool._hba_address_matches("127.0.0.1", "255.255.255.255", "172.17.0.1") is False, (
+        "a loopback CIDR is a DEFINITE non-match for a container-network client — this is the RB-1 case itself"
+    )
+    assert tool._hba_address_matches("some-host.internal", None, "10.0.0.5") is None, "a hostname is not resolved here"
+
+    # END TO END: the definite non-match must actually move the governing entry.
+    effective = tool.effective_host_auth(_non_matching_user_rules(), _connection(tool, "10.0.0.5"))
+    assert (effective["method"], effective["order"]) == ("trust", 2), (
+        f"the entry naming a different role must be SKIPPED and the trust catch-all below it must govern, got {effective}"
+    )
+    assert tool.v12_problems(_environment(tool, effective)), "the effective trust rule must block V-12"
+
+
+def test_only_password_discriminating_methods_satisfy_v12() -> None:
+    """The allow-list is the point: `peer`, `cert`, `ldap` and friends all authenticate SOMETHING
+    other than the password `ALTER ROLE ... PASSWORD` binds, so the probe decides nothing."""
+    tool = _load_tool()
+    for method in ("scram-sha-256", "md5", "password"):
+        assert tool.v12_problems(_environment(tool, {"method": method, "order": 1, "undeterminable": None})) == [], (
+            f"{method} verifies the bound password and must satisfy V-12"
+        )
+    for method in ("trust", "peer", "ident", "cert", "gss", "sspi", "ldap", "radius", "pam", "bsd", "reject", "some-future-method"):
+        assert tool.v12_problems(_environment(tool, {"method": method, "order": 1, "undeterminable": None})), (
+            f"{method} does not decide the bound password and must BLOCK — an allow-list, so an unknown method blocks too"
+        )
+
+
+def _calls(function: str, callee: str) -> int:
+    """How many times `function` CALLS `callee` — read from the AST, never from the text.
+
+    A substring scan is satisfied by the identifier appearing in a comment or docstring, and both of
+    these functions legitimately NAME the predicate while explaining why they share it. That is not a
+    hypothetical: the first version of this guard used `"v12_problems(" in <source>` and a mutation
+    that replaced the real call with `v12 = []` sailed through, because the explanatory comment two
+    lines above still carried the token.
+    """
+    return sum(
+        1 for node in ast.walk(_func(function)) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == callee
+    )
+
+
+def test_plan_and_apply_share_one_v12_classification() -> None:
+    """RB-1 proof 3. Structural AND executed.
+
+    Both paths must consume the SAME function. A second copy of the logic is how the two drifted
+    apart in the first place, so the check is that exactly one predicate exists and both callers CALL
+    it — and that `classify()` moves to CONFLICTING for precisely the inputs it rejects.
+    """
+    text = _tool_text()
+    assert _calls("classify", "v12_problems") == 1, (
+        "classify() — what `plan` reports — must CALL the V-12 predicate exactly once. Without the call, `plan` exits 0 "
+        "MISSING on a cluster where `apply` refuses before minting: a false green on the §6.3 pre-grant condition."
+    )
+    assert _calls("_converge_credential", "v12_problems") == 1, (
+        "the apply convergence path must CALL the SAME predicate. It is defence in depth now that the pre-apply "
+        "classify() blocks first, but a guard that claims to check it must actually check it."
+    )
+    assert _func("v12_problems") is not None, "there must be exactly one V-12 predicate"
+    # The predecessor's whole-file membership test must not survive anywhere in a DECISION path.
+    for name in ("classify", "v12_problems", "_converge_credential"):
+        source = ast.get_source_segment(text, _func(name)) or ""
+        assert "host_auth_method_census" not in source, (
+            f"{name}() reads the reported-only whole-file census. That census is the PREDECESSOR's predicate: it "
+            "answers 'does any host rule anywhere say trust', which is neither this connection's rule nor the hazard."
+        )
+    # Executed: the two verdicts agree on every input, in both directions.
+    tool = _load_tool()
+    for effective in (
+        tool.effective_host_auth(_stock_rules(), _connection(tool, "172.17.0.1")),
+        tool.effective_host_auth(_stock_rules(), _connection(tool, "127.0.0.1")),
+        tool.effective_host_auth(None, _connection(tool, "127.0.0.1")),
+        {"method": "md5", "order": 1, "undeterminable": None},
+        {"method": "cert", "order": 1, "undeterminable": None},
+    ):
+        environment = _environment(tool, effective)
+        apply_blocks = bool(tool.v12_problems(environment))
+        plan_verdict, _findings = tool.classify(_EMPTY_STATE, _EMPTY_PRIVILEGES, environment)
+        assert apply_blocks == (plan_verdict == tool.CONFLICTING), (
+            f"plan and apply disagree on {effective}: apply blocks={apply_blocks}, plan verdict={plan_verdict}. It must "
+            "be IMPOSSIBLE for plan to report green where apply would refuse solely on V-12."
+        )
+
+
+def test_a_plan_that_ignored_v12_could_not_pass_this_guard() -> None:
+    """RB-1 proof 4. The mutation this guard exists to catch, exercised as a mutation.
+
+    `classify()` is re-run with the V-12 predicate STUBBED OUT — which is exactly what "plan ignores
+    V-12" means — and the guard's own assertion is shown to fail on the mutant. Without this, a
+    reviewer has to take on faith that the executed checks above are load-bearing.
+    """
+    tool = _load_tool()
+    effective = tool.effective_host_auth(_stock_rules(), _connection(tool, "127.0.0.1"))
+    environment = _environment(tool, effective)
+    assert tool.classify(_EMPTY_STATE, _EMPTY_PRIVILEGES, environment)[0] == tool.CONFLICTING, "the unmutated tool must block"
+
+    original = tool.v12_problems
+    try:
+        tool.v12_problems = lambda _environment: []  # the mutation: plan stops consulting V-12
+        mutant_verdict, _findings = tool.classify(_EMPTY_STATE, _EMPTY_PRIVILEGES, environment)
+    finally:
+        tool.v12_problems = original
+    assert mutant_verdict == tool.MISSING, (
+        "the mutation probe did not change the verdict, so the CONFLICTING above did not come from V-12 and these "
+        "checks would pass against a plan that ignores it"
+    )
+    assert tool.classify(_EMPTY_STATE, _EMPTY_PRIVILEGES, environment)[0] == tool.CONFLICTING, "the mutation must be reverted"
+
+
+def _conflict_exit_codes() -> List[int]:
+    """Every constant `return` reachable inside an `if verdict == CONFLICTING:` branch of `cmd_plan`.
+
+    Read from the AST, never from the text. The predecessor of this check asserted
+    `"if verdict == CONFLICTING:" in plan_source and "return 2" in plan_source` against
+    `ast.get_source_segment`, which INCLUDES interior comments — so deleting the real gate outright
+    while leaving those two token sequences in the surrounding commentary passed the guard with
+    `cmd_plan` returning 0 on CONFLICTING. A comment cannot be an `ast.If` and cannot contain an
+    `ast.Return`, so this form is not satisfiable by prose.
+    """
+    codes: List[int] = []
+    for node in ast.walk(_func("cmd_plan")):
+        if not isinstance(node, ast.If):
+            continue
+        test = node.test
+        if not (
+            isinstance(test, ast.Compare)
+            and isinstance(test.left, ast.Name)
+            and test.left.id == "verdict"
+            and len(test.ops) == 1
+            and isinstance(test.ops[0], ast.Eq)
+            and len(test.comparators) == 1
+            and isinstance(test.comparators[0], ast.Name)
+            and test.comparators[0].id == "CONFLICTING"
+        ):
+            continue
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.Return) and isinstance(inner.value, ast.Constant) and isinstance(inner.value.value, int):
+                codes.append(int(inner.value.value))
+    return codes
+
+
+class _NoDatabaseConnection:
+    """A `psycopg` connection stand-in for an EXECUTED `cmd_plan`: no driver, no socket, no cluster.
+
+    `cmd_plan` uses it only as a context manager and as the argument of the observation functions,
+    every one of which is replaced below. Nothing here can reach a database.
+    """
+
+    def __init__(self) -> None:
+        self.read_only = False
+
+    def __enter__(self) -> "_NoDatabaseConnection":
+        return self
+
+    def __exit__(self, *_exc: object) -> bool:
+        return False
+
+
+class _NoDatabaseDriver:
+    def __init__(self, connection: _NoDatabaseConnection) -> None:
+        self._connection = connection
+
+    def connect(self, _dsn: str) -> _NoDatabaseConnection:
+        return self._connection
+
+
+def _execute_plan(tool: ModuleType, effective: dict) -> int:
+    """Run the REAL `cmd_plan` end to end over a synthetic observation and return its EXIT CODE.
+
+    Every function `cmd_plan` calls to reach the outside world is replaced: the driver, the executor
+    DSN, all four observation functions, the material resolver and the sink probe. `classify()` and
+    the exit-code logic — the two things under test — are the tool's own.
+    """
+    connection = _NoDatabaseConnection()
+    environment = _environment(tool, effective)
+    replacements: dict = {
+        "_psycopg": lambda: _NoDatabaseDriver(connection),
+        "_executor_dsn": lambda: "postgresql://executor@127.0.0.1:1/snackportal2_control_local",
+        "observe_environment": lambda _conn: environment,
+        "observe_role_state": lambda _conn: dict(_EMPTY_STATE),
+        "observe_privileges": lambda _conn: dict(_EMPTY_PRIVILEGES),
+        "observe_row_baseline": lambda _conn: None,
+        "_resolve_writer_material": lambda: (None, None),
+        "material_sink_blockers": lambda: [],
+    }
+    originals = {name: getattr(tool, name) for name in replacements}
+    try:
+        for name, replacement in replacements.items():
+            setattr(tool, name, replacement)
+        return int(tool.cmd_plan(argparse.Namespace()))
+    finally:
+        for name, original in originals.items():
+            setattr(tool, name, original)
+
+
+def test_a_conflicting_plan_exits_non_zero() -> None:
+    """RB-1 proof 5. `plan`'s EXIT CODE, established structurally AND by execution.
+
+    A verdict printed on stdout that leaves the process exiting 0 is not a gate — the false green
+    simply moves from the verdict line to the shell. Both halves are here because each catches what
+    the other cannot: the AST form pins that the gate exists as control flow (so deleting it and
+    leaving explanatory comments behind fails), and the executed form pins the observable behaviour
+    (so re-shaping the control flow into something the AST check does not recognise still fails).
+    """
+    codes = _conflict_exit_codes()
+    assert codes, (
+        "cmd_plan has no `if verdict == CONFLICTING:` branch containing a constant `return`. plan must EXIT non-zero "
+        "on CONFLICTING; a comment mentioning the condition is not a gate."
+    )
+    assert all(code != 0 for code in codes), f"every CONFLICTING exit from cmd_plan must be non-zero, found {codes}"
+
+    tool = _load_tool()
+    conflicting = tool.effective_host_auth(_stock_rules(), _connection(tool, "127.0.0.1"))
+    clean = tool.effective_host_auth(_stock_rules(), _connection(tool, "172.17.0.1"))
+    assert tool.classify(_EMPTY_STATE, _EMPTY_PRIVILEGES, _environment(tool, conflicting))[0] == tool.CONFLICTING
+    assert tool.classify(_EMPTY_STATE, _EMPTY_PRIVILEGES, _environment(tool, clean))[0] == tool.MISSING
+
+    assert _execute_plan(tool, conflicting) != 0, (
+        "an EXECUTED `plan` over an effective-`trust` cluster exited 0. The operator's shell — and the start gate that "
+        "reads it — sees the exit code, not the printed verdict."
+    )
+    assert _execute_plan(tool, clean) == 0, (
+        "an EXECUTED `plan` over an effective-`scram-sha-256` cluster must exit 0, or the gate blocks the state it exists to permit"
+    )
+
+
+def test_the_operator_runbook_describes_the_effective_rule_predicate() -> None:
+    """The operator reads the runbook, not this guard — and it documented the RETIRED predicate.
+
+    V-12's refusal row said "Host auth includes `trust`", which is the whole-file membership test
+    RB-1 replaced. An operator following it would look for the wrong thing: they would go hunting for
+    any `trust` line in `pg_hba.conf` (and find one on a stock installation) instead of for the entry
+    that governs the tool's own connection.
+    """
+    runbook = _RUNBOOK.read_text(encoding="utf-8")
+    assert "Host auth includes `trust`" not in runbook, (
+        "the runbook still states V-12 as a whole-file `trust` census. That is the PREDECESSOR's predicate — it answers "
+        "'does any host rule anywhere say trust', which is neither this connection's rule nor the hazard."
+    )
+    for required in ("effective", "first-match", "pg_hba"):
+        assert required in runbook.lower(), f"the runbook must describe V-12 as the {required!r} rule for this connection"
+    assert "UNPROVEN" in runbook and "P-4" in runbook, (
+        "the runbook must state the expected live outcome as UNPROVEN pending the P-4 query. Nobody has read the "
+        "standing cluster's rule table, so neither a predicted green nor a predicted red may be presented as a fact."
+    )
+
+
 def test_guard_is_non_vacuous() -> None:
     payload = _module_constant("FROZEN_ROLE_GRANT_SQL")
     assert payload.strip(), "the payload constant must be readable by this guard"
@@ -607,6 +1108,28 @@ def test_guard_is_non_vacuous() -> None:
     assert hashlib.sha256(mutated.encode("utf-8")).hexdigest() != _FROZEN_PAYLOAD_SHA256, "a widened grant must move the pin"
     assert _func("cmd_plan") is not None and _func("cmd_apply") is not None and _func("cmd_status") is not None
     assert len(_REQUIRED_STATEMENTS) == 11, "the frozen payload is eleven statements"
+    # The CONFLICTING-exit reader must find control flow, and must NOT be satisfiable by prose. Both
+    # halves are probed: the shape it accepts, and the comment-only shape it must reject.
+    real = ast.parse("def cmd_plan(a):\n    if verdict == CONFLICTING:\n        return 2\n    return 0\n")
+    prose = ast.parse("def cmd_plan(a):\n    # if verdict == CONFLICTING: return 2\n    return 0\n")
+    for tree, expected, label in ((real, [2], "a real gate"), (prose, [], "a commented-out gate")):
+        function = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef))
+        found = [
+            int(inner.value.value)
+            for node in ast.walk(function)
+            if isinstance(node, ast.If)
+            and isinstance(node.test, ast.Compare)
+            and isinstance(node.test.left, ast.Name)
+            and node.test.left.id == "verdict"
+            for inner in ast.walk(node)
+            if isinstance(inner, ast.Return) and isinstance(inner.value, ast.Constant) and isinstance(inner.value.value, int)
+        ]
+        assert found == expected, f"the CONFLICTING-exit reader must see {label} as {expected}, got {found}"
+    # The fall-through fixture must actually BE multi-rule, or the mutation it exists for is unreachable.
+    assert len(_fall_through_rules()) >= 2 and len(_non_matching_user_rules()) >= 2, (
+        "both hazard fixtures must carry a LATER entry; a single-rule table cannot distinguish 'stopped' from "
+        "'ran off the end', which is exactly how the fall-through mutation survived"
+    )
 
 
 if __name__ == "__main__":
@@ -633,6 +1156,16 @@ if __name__ == "__main__":
             test_tool_is_glob_invisible_to_the_harness_census,
             test_the_hosted_loop_lockstep_is_deliberately_untouched,
             test_this_guard_is_not_registered_in_the_role_security_meta_guard,
+            test_an_unrelated_trust_rule_does_not_create_a_false_v12_conflict,
+            test_an_effective_trust_rule_for_this_connection_yields_conflicting,
+            test_v12_fails_closed_when_the_governing_rule_cannot_be_determined,
+            test_an_undecidable_rule_above_a_permissive_catch_all_stops_the_scan,
+            test_hba_token_matching_decides_in_both_directions,
+            test_only_password_discriminating_methods_satisfy_v12,
+            test_plan_and_apply_share_one_v12_classification,
+            test_a_plan_that_ignored_v12_could_not_pass_this_guard,
+            test_a_conflicting_plan_exits_non_zero,
+            test_the_operator_runbook_describes_the_effective_rule_predicate,
             test_guard_is_non_vacuous,
         ]
     )
