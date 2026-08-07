@@ -56,6 +56,13 @@ What is pinned, and the specific way each check fails if it is not:
   is open, the mandated two-leg record currently unproducible, and a one-leg record not acceptable as
   final isolation evidence. Documenting a record the code cannot produce is the same defect class as
   documenting a read the code no longer performs.
+* **The same claim is barred by CENSUS, not by a literal list (N-1/N-2).** The first correction
+  retired five exact strings; "both isolation requests execute on every run" and "two times per run"
+  restate the identical falsehood and walk past all five. So every sentence of the runbook's
+  "What `run` captures" section, and of the text `cmd_status` PRINTS, that couples a two-count with an
+  isolation/denial subject must carry a reachability qualifier — while requirement wording ("both legs
+  remain mandatory for final acceptance") is deliberately passed, because the two-leg mandate must
+  survive. Positive anchors close the other exit: deleting the disclosure fails too.
 * **A LAWFUL fixture value cannot abort a correct run.** Two of the witness's own checks used to do
   exactly what the drifted key-set literal did, one field along: the no-leak scan rejected `://`
   inside `short_description` — which the serving edge declares lawful in business free text — and the
@@ -1158,6 +1165,274 @@ def test_the_e48_abort_precedes_the_second_isolation_leg_and_every_document_says
     ), "the ordering detector must report the LATER index for an assert that follows the leg, or it distinguishes nothing"
 
 
+# ---------------------------------------------------------------------------------------------
+# N-1 / N-2: the same F-6 defect class, in the two places that survived the first correction — the
+# runbook section titled "What `run` captures", and the text `cmd_status` PRINTS to an operator.
+#
+# The first correction retired FIVE EXACT STRINGS. That is the wrong shape of check for a prose
+# defect, and the independent re-review said so: "both isolation requests execute on every run",
+# "two times per run" and "both denial legs are read each run" each restate the false claim, and each
+# walks straight past a finite deny-list. What follows is a CENSUS instead — every sentence in the two
+# governed regions that couples a two-COUNT with an isolation/denial SUBJECT must also carry a
+# reachability qualifier — plus POSITIVE anchors requiring `cmd_status` to STATE the distinction
+# rather than merely stop contradicting it. A removed sentence fails the anchors; a reworded
+# contradiction fails the census. Neither exit is left open.
+#
+# The census deliberately PASSES the requirement sentences ("both legs remain mandatory for final
+# acceptance"), because the two-leg mandate must survive this correction untouched. What it bars is a
+# two-count presented as something a current run EXECUTES.
+# ---------------------------------------------------------------------------------------------
+
+# A count of two, in the spellings prose actually uses.
+_TWO_COUNT = r"(?:\btwo\b|\bboth\b|\btwice\b|\btwo-leg\b)"
+# What the count would be a count OF. Bare `leg` is included: "both legs are read each run" carries
+# the contradiction without ever saying "isolation".
+_ISOLATION_SUBJECT = (
+    r"(?:\blegs?\b|\bdenial rows?\b|\bdenial records?\b|\bdenial reads?\b|\bdenial legs?\b"
+    r"|\bisolation requests?\b|\bisolation legs?\b|\bisolation reads?\b|\bisolation records?\b"
+    r"|\brequests?\b|\bcorrelation ids?\b|\bcontrol[- ]database reads?\b|\bcontrol reads?\b"
+    r"|\bbusiness[- ]data reads?\b|\baudit reads?\b)"
+)
+# A per-RUN total is false on this runtime whatever noun it attaches to, so it needs no subject and
+# no qualifier can rescue it: `cmd_run` reaches one leg, not two, until GBR-4 is resolved.
+_PER_RUN_COUNT = re.compile(
+    rf"(?:{_TWO_COUNT}[^.;]{{0,80}}\b(?:per|each|every)\s+run\b"
+    rf"|\b(?:per|each|every)\s+run\b[^.;]{{0,80}}{_TWO_COUNT})"
+)
+# A sentence carrying any of these is stating an INTENT, a REQUIREMENT or an UNREACHABILITY — not
+# describing what a current run does. Chosen to be hard to satisfy by accident: no generic hedge
+# ("never", "would") is included, because the retired N-1 sentence contained one.
+_REACHABILITY_QUALIFIERS = (
+    "intended",
+    "mandat",
+    "requir",
+    "must",
+    "not reached",
+    "unreach",
+    "cannot",
+    "unproducible",
+    "gbr-4",
+    "incomplete",
+    "not acceptable",
+    "final acceptance",
+    "not both",
+    "only one",
+    "one leg only",
+    "exactly once",
+    "only the first",
+    "first leg only",
+)
+
+
+def _sentences(prose: str) -> List[str]:
+    """Reduced prose split into sentence-sized units on `.`/`;` FOLLOWED BY whitespace.
+
+    The trailing-whitespace requirement is load-bearing: `§6.1` and `pg_control_system()` would each
+    be torn in half by a bare `[.;]` split, and a fragment carries neither the count nor the
+    qualifier reliably. The semicolon is a boundary because the retired N-1 sentence used one to
+    separate its qualifier ("never inferred from the run") from its false clause.
+    """
+    return [unit.strip() for unit in re.split(r"(?<=[.;])\s+", prose) if unit.strip()]
+
+
+def _contradiction_census(prose: str) -> List[Tuple[str, str]]:
+    """Every sentence that states a two-count of isolation legs as something a current run performs."""
+    hits: List[Tuple[str, str]] = []
+    for unit in _sentences(prose):
+        if _PER_RUN_COUNT.search(unit):
+            hits.append(("PER-RUN COUNT", unit))
+        elif (
+            re.search(_TWO_COUNT, unit)
+            and re.search(_ISOLATION_SUBJECT, unit)
+            and not any(qualifier in unit for qualifier in _REACHABILITY_QUALIFIERS)
+        ):
+            hits.append(("UNQUALIFIED TWO-COUNT", unit))
+    return hits
+
+
+def _runbook_section(heading_fragment: str) -> str:
+    """The raw body of one `## ` section of the runbook, heading included.
+
+    Read from the RAW file rather than reduced prose, because `_prose` strips `#` and the section
+    boundaries would vanish with it.
+    """
+    lines = _RUNBOOK.read_text(encoding="utf-8").splitlines()
+    start = next(
+        (i for i, line in enumerate(lines) if line.startswith("## ") and heading_fragment in line),
+        None,
+    )
+    assert start is not None, f"the runbook must carry a `## ` section containing {heading_fragment!r}"
+    end = next((j for j in range(start + 1, len(lines)) if lines[j].startswith("## ")), len(lines))
+    return "\n".join(lines[start:end])
+
+
+def _printed_text(name: str) -> str:
+    """Everything a command PRINTS, joined — the operator-facing surface, not the source.
+
+    Reading the source instead would splice `print(` scaffolding into the middle of sentences and
+    move the boundaries the census depends on. This is also the honest scope: N-2 was a defect
+    because an operator SAW it.
+    """
+    parts: List[str] = []
+    for call in (n for n in ast.walk(_func(name)) if isinstance(n, ast.Call)):
+        if getattr(call.func, "id", "") != "print":
+            continue
+        parts.extend(n.value for n in ast.walk(call) if isinstance(n, ast.Constant) and isinstance(n.value, str))
+    assert parts, f"{name} must print something for its operator-facing text to be checkable"
+    return " ".join(parts)
+
+
+def test_no_governed_region_states_an_unconditional_two_leg_execution_count() -> None:
+    """N-1 + N-2. Neither the runbook's `run`-capture section nor `cmd_status` may present leg 2 as run.
+
+    Established here, and each part is required because the others do not cover it:
+
+    1. **Census, runbook §4** — the section titled "What `run` captures" contains no sentence
+       coupling a two-count with an isolation/denial subject that lacks a reachability qualifier.
+    2. **Census, `cmd_status`** — the same over the text an operator actually SEES.
+    3. **Census, per-run family, repo-wide over both files** — a per-run total ("twice per run",
+       "on every run") is false regardless of noun or region.
+    4. **Positive anchors in `cmd_status`** — two INTENDED legs, only the first reachable, the second
+       not reached while GBR-4 is unresolved, and the two-leg mandate intact. A census alone would be
+       satisfied by deleting the disclosure entirely.
+    5. **The runtime fact the wording rests on, re-proven** — ordering from the AST, and
+       `e48_problems` EXECUTED against the ambiguous durable row this runtime emits. Prose checks
+       pinned to a runtime fact are worthless if nothing checks the fact.
+    6. **GBR-4 still OPEN and E48 still UNPROVEN**, and the two-leg requirement NOT weakened.
+
+    **Like its F-6 sibling, this test is MEANT to fail when GBR-4 is resolved** — at which point leg 2
+    becomes reachable and every sentence pinned here becomes false in the other direction. Revise the
+    documents in that same edit; do not delete the guard.
+    """
+    # (1) + (2) The two governed regions carry no unqualified execution count.
+    for label, prose in (
+        ('the runbook section "What `run` captures"', _prose(_runbook_section("What `run` captures"))),
+        ("the text cmd_status prints", _prose(_printed_text("cmd_status"))),
+    ):
+        hits = _contradiction_census(prose)
+        assert not hits, (
+            f"{label} states a two-count of isolation legs as something a current run performs: {hits}. "
+            "`cmd_run` asserts on E48 before leg 2 is issued and that assertion cannot pass while GBR-4 is "
+            "unresolved, so a current run reaches ONE leg. State the count as INTENDED, or as MANDATORY and "
+            "NOT REACHED — never as executed."
+        )
+
+    # (3) A per-run total is false anywhere in either file, whatever noun carries it.
+    for label, body in (("the runbook", _RUNBOOK.read_text(encoding="utf-8")), ("the witness", _text())):
+        per_run = [unit for unit in _sentences(_prose(body)) if _PER_RUN_COUNT.search(unit)]
+        assert not per_run, f"{label} states a per-run leg count while leg 2 is unreachable: {per_run}"
+
+    # (4) `cmd_status` must STATE the distinction. Removing the sentence is not a fix.
+    status = _prose(_printed_text("cmd_status"))
+    for anchor, why in (
+        (
+            "two intended isolation legs",
+            "status must name the two legs as INTENDED — the design is unchanged; only what executes is",
+        ),
+        (
+            "only the first is currently reachable",
+            "status must say that a current run executes the first leg alone",
+        ),
+        (
+            "the second isolation leg is not reached while gbr-4 remains unresolved",
+            "status must name WHY, and name the gate it is conditioned on",
+        ),
+        (
+            "required-but-currently-unreachable",
+            "leg 2 must read as required-but-unreachable, never as already executed",
+        ),
+        (
+            "both legs remain mandatory for final acceptance",
+            "disclosing that the record cannot be completed must not weaken the requirement to complete it",
+        ),
+        (
+            "incomplete / not acceptable as final isolation evidence",
+            "a one-leg record must be named unacceptable in the operator-facing command too",
+        ),
+    ):
+        assert anchor in status, f"cmd_status must print {anchor!r}: {why}"
+
+    # And the runbook's own `run`-capture section must carry the same disclosure.
+    section = _prose(_runbook_section("What `run` captures"))
+    for anchor, why in (
+        (
+            "while gbr-4 is unresolved, cmd_run reaches the auth-stage (e48) leg only",
+            "the capture section must say which leg a current run reaches",
+        ),
+        (
+            "cannot produce the final two-leg evidence record at all",
+            "the capture section must say the mandated record is unproducible today",
+        ),
+        (
+            "remains mandatory for a complete gate-b isolation record",
+            "the two-leg requirement must survive the correction",
+        ),
+        (
+            "incomplete / not acceptable as final isolation evidence",
+            "a one-leg record must be named unacceptable where the capture is described",
+        ),
+    ):
+        assert anchor in section, f'the runbook section "What `run` captures" must state {anchor!r}: {why}'
+    assert "both legs remain required for final acceptance" in _prose(_RUNBOOK.read_text(encoding="utf-8")), (
+        "GBR-4's disclosure must keep the two-leg requirement for FINAL acceptance explicit"
+    )
+
+    # (5) The runtime fact underneath. Ordering from the AST, unreachability EXECUTED.
+    text = _text()
+    body = _isolation_body()
+    assert _stmt_index(body, _e48_assert_in(text), "the E48 assertion") < _stmt_index(
+        body, _unregistered_carrier_request_in(text), "the unregistered-tenant carrier request"
+    ), "the E48 assertion no longer precedes leg 2 — the wording pinned above is now wrong in the other direction"
+    witness = _witness_module()
+    assert not witness.RECOGNISED_UNIQUE_DENIAL_SIGNALS, (
+        "a recognised unique signal would let E48 pass and make leg 2 reachable; the wording above assumes neither"
+    )
+    assert witness.e48_problems(403, b"", _denial_rows(witness)["tenant_access_denied"]), (
+        "E48 must remain UNPROVEN on the ambiguous durable row this runtime emits, or leg 2 is reachable"
+    )
+    assert witness.classify_denial_reason(_denial_rows(witness)["tenant_access_denied"])[0] == witness.DENIAL_PRE_AUTH_AMBIGUOUS, (
+        "the no-reference denial must still classify as AMBIGUOUS, never as tenant_access_denied"
+    )
+
+    # (6) GBR-4 is the gate all of it defers to.
+    runbook = _prose(_RUNBOOK.read_text(encoding="utf-8"))
+    assert re.search(r"gbr-4 —.{0,400}?\bopen\b", runbook), "GBR-4 must remain recorded OPEN in the runbook"
+    assert not re.search(r"gbr-4[^.]{0,200}\bclosed\b", runbook), "GBR-4 must not be recorded CLOSED anywhere"
+
+    # Non-vacuity, in-place. The census must SEE each phrasing this correction exists to bar —
+    # including the three synonyms the retired five-literal deny-list let through. A census that
+    # matched nothing would satisfy every assertion above by finding nothing to report.
+    for label, probe in (
+        (
+            "N-1 restored",
+            "the two denial rows for the run's own correlation ids are the exception — the witness reads "
+            "exactly those, by correlation id, as booleans (see §6.1).",
+        ),
+        (
+            "N-2 restored",
+            "its only business-data read is the correlation-filtered denial record for its own two isolation "
+            "requests (plus pg_control_system() metadata).",
+        ),
+        ("synonym: both execute every run", "both isolation requests execute on every run."),
+        ("synonym: two times per run", "the bounded Control audit read is issued two times per run."),
+        ("synonym: both legs read each run", "both denial legs are read each run."),
+    ):
+        assert _contradiction_census(_prose(probe)), f"the census must report {label}, or it bars nothing"
+    # ...and must NOT report the requirement sentences it has to leave standing.
+    for keeper in (
+        "both legs remain mandatory for final acceptance.",
+        "both legs remain required for final acceptance, and a one-leg record is incomplete.",
+        "isolation — two intended legs, recorded separately.",
+    ):
+        assert not _contradiction_census(_prose(keeper)), (
+            f"the census reported {keeper!r} — it must pass intent/requirement wording, or the correction "
+            "for it would be to weaken the two-leg mandate"
+        )
+    # The region extractors must return the real regions, not empty strings that trivially pass.
+    assert "AUDIT" in _runbook_section("What `run` captures"), "the section extractor must return the section body"
+    assert "STATUS (read-only)" in _printed_text("cmd_status"), "the printed-text extractor must return what run prints"
+
+
 def test_zeta_is_proven_unchanged() -> None:
     run = _source("cmd_run")
     assert run.count("zeta_before_digest") >= 3, "ZETA must be proven byte-identical after the write AND after isolation"
@@ -1472,6 +1747,7 @@ if __name__ == "__main__":
             test_missing_or_uninterpretable_denial_evidence_fails_closed,
             test_no_command_or_document_claims_a_control_read_the_witness_now_performs,
             test_the_e48_abort_precedes_the_second_isolation_leg_and_every_document_says_so,
+            test_no_governed_region_states_an_unconditional_two_leg_execution_count,
             test_zeta_is_proven_unchanged,
             test_no_leak_scan_covers_every_shape,
             test_lawful_url_free_text_passes_the_no_leak_scan_but_credential_shapes_still_fail,

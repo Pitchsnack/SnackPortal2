@@ -662,9 +662,21 @@ def cmd_status(args: argparse.Namespace) -> int:
     print("  running it is a Gate-B class-M14 act.")
     print("  ALSO UNPROVEN BY ANY COMMAND HERE: that the RUNNING Control Plane served routing from the durable")
     print("  store. `run` DOES open a read-only Control connection, but its only business-data read is the")
-    print("  correlation-filtered denial record for its own two isolation requests (plus pg_control_system()/")
+    print("  correlation-filtered denial record for a denial leg it actually reaches (plus pg_control_system()/")
     print("  current_database() metadata). It never reads control_tenants or a routing row; that cross-check is a")
     print("  separate Gate-B operator step. `status` itself opens no Control connection at all.")
+    # N-2. This block states LEG REACHABILITY, and it is the operator-facing half of the same fact the
+    # runbook states in prose: the harness DEFINES two isolation legs, and a current `run` executes the
+    # first only. Saying "its own two isolation requests" here described a run this runtime cannot
+    # perform — and `status` is the command an operator runs freely, and the one a bare invocation
+    # resolves to, so it is where a wrong count does the most damage.
+    print("  THE HARNESS DEFINES TWO INTENDED ISOLATION LEGS, AND ONLY THE FIRST IS CURRENTLY REACHABLE: cmd_run")
+    print("  asserts on E48 before it issues the second (unregistered-tenant carrier) leg, and while GBR-4 is")
+    print("  unresolved that assertion cannot pass — so THE SECOND ISOLATION LEG IS NOT REACHED WHILE GBR-4")
+    print("  REMAINS UNRESOLVED. It is required-but-currently-unreachable, never already executed.")
+    print("  BOTH LEGS REMAIN MANDATORY FOR FINAL ACCEPTANCE, so a complete two-leg isolation record is")
+    print("  currently unproducible and a one-leg record is INCOMPLETE / NOT ACCEPTABLE AS FINAL ISOLATION")
+    print("  EVIDENCE.")
     print("  E48 IS CURRENTLY UNPROVABLE FROM THE DURABLE RECORD: tenant_access_denied and tenant_not_ready emit a")
     print("  byte-identical RouteDenied row, so a no-reference denial is reported AMBIGUOUS, never as E48 satisfied.")
     return 0 if ok else 1

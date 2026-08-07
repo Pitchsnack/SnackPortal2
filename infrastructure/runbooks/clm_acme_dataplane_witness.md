@@ -107,7 +107,8 @@ the same row, **plus** `current_database()` and `system_identifier` of the conne
 `SELECT` confirming it; **plus** the ZETA table byte-identical and a row-count delta of **zero** on
 both. Exactly one allow-listed content field is written: `short_description`, UTF-8, ≤ 500 chars.
 
-**ISOLATION — two legs, recorded separately. Both are pre-routing; neither is a router-stage proof.**
+**ISOLATION — two intended legs, recorded separately. Both are pre-routing; neither is a router-stage
+proof.**
 
 A `403` with an empty body **names no reason**. **Four** different upstream outcomes render exactly
 that — `carrier_mismatch`, `tenant_context_required`, `tenant_access_denied` and `tenant_not_ready` —
@@ -152,9 +153,14 @@ is **observed**, never assumed.
 **AUDIT** — with the durable sink enabled, the durably-homed rows `tenant_startup_read`,
 `tenant_startup_update`, `RouteDenied` and `CarrierMismatch` in `control_gateway_audit`, with the
 `short_description` **value absent from every cell**. Verifying the SUCCESS rows and the value-absence
-is a separate operator read of the Control database and is never inferred from the run; the two
-**denial** rows for the run's own correlation ids are the exception — the witness reads exactly those,
-by correlation id, as booleans (see §6.1).
+is a separate operator read of the Control database and is never inferred from the run. The **denial**
+rows are the exception, and only for a denial leg the run actually reaches: for such a leg the witness
+reads exactly that leg's row, by that leg's own correlation id, as booleans (see §6.1).
+**While GBR-4 is unresolved, `cmd_run` reaches the auth-stage (E48) leg only**, so current execution
+produces the first-leg denial read and no other. The second leg is not dropped — it **remains
+mandatory** for a complete Gate-B isolation record — but it is **not reached**, so current execution
+**cannot produce the final two-leg evidence record at all**, and a one-leg record is
+**INCOMPLETE / NOT ACCEPTABLE AS FINAL ISOLATION EVIDENCE**.
 
 **RESTORE** — a before==after digest of the ACME `startups` table, computed in `finally`. The digest
 is the proof, not the `UPDATE`'s return code: an `UPDATE` that matched zero rows also returns without
