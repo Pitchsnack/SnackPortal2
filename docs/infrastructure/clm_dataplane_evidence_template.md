@@ -147,7 +147,12 @@ every database on a cluster shares it.
 > before any routing or tenant-DB contact. It proves **auth-stage** denial. It does **not** prove that
 > the Database Router would have refused.
 
-### 7b. Unregistered-tenant carrier — **NOT a router-stage proof (GBR-1)**
+### 7b. Unregistered-tenant carrier — **NOT a router-stage proof (GBR-1); NOT REACHED while GBR-4 is unresolved**
+
+> **Expect this table to be unfillable today.** This leg is sequenced after 7a's E48 assertion, which
+> fails by construction, so `cmd_run` aborts before issuing it. Record it as **not reached**, citing
+> GBR-4 — do **not** leave it blank as though it had been skipped by choice, do not mark it n/a, and
+> do not re-point the leg or the run to make it fill.
 
 | Item | Observed |
 |---|---|
@@ -164,6 +169,22 @@ every database on a cluster shares it.
 > **Both legs are mandatory.** `SP2_CLM_WITNESS_ZETA_CLAIM_BEARER` and
 > `SNACKPORTAL_SECRET_CONTROL_CONTROL_STORE_DSN_V1` are both required by `run`; a record carrying
 > only one leg, or one with no durable denial reason, is not a complete isolation record.
+>
+> **And with GBR-4 unresolved, the harness cannot currently produce a complete two-leg isolation
+> record.** 7a is executed first, and `cmd_run` asserts on E48 immediately afterwards. That assertion
+> fails by construction on this runtime, so the run aborts **before** 7b is issued — **the second
+> isolation leg is not reached while GBR-4 remains unresolved.** Read the two rules together and do
+> not resolve the tension by relaxing either one:
+>
+> * **both legs remain mandatory for final acceptance** — the requirement is unchanged, and neither
+>   leg may be dropped, waived, or marked n/a to close the record;
+> * a record carrying only 7a is **INCOMPLETE / NOT ACCEPTABLE AS FINAL ISOLATION EVIDENCE**;
+> * filing such a record **does not close GBR-4**, and must not be described as having done so;
+> * **E48 and full isolation evidence may not be marked PASS until GBR-4 is resolved and both legs
+>   execute.** Until then the honest entry is the observed abort, recorded as such.
+>
+> The correct outcome today is therefore an incomplete record that states plainly why it is
+> incomplete — not a completed one, and not a narrowed requirement.
 
 ## 8. Ambiguity disambiguation
 
@@ -223,3 +244,8 @@ VERDICT: ____________________
 State plainly what was proven, for which record, on which topology, at what time — and what remains
 unproven. If the membership was absent and the journey returned an empty set, that **is** the result;
 record it. Do not create the row and re-run.
+
+**While GBR-4 is unresolved this verdict cannot be a pass for isolation.** The run aborts at 7a's E48
+assertion and never issues 7b, so the isolation record is incomplete by construction: neither E48 nor
+full isolation evidence may be marked PASS here until GBR-4 is resolved **and both legs execute**.
+Record the abort, name GBR-4, and leave the isolation claim open.

@@ -48,6 +48,14 @@ What is pinned, and the specific way each check fails if it is not:
   physical-identity metadata reads are named as metadata rather than counted as business reads. The
   first version of this rule forbade the read outright, which enshrined the claim-blind denial leg;
   the second banned five table names, which a CTE and every unlisted Control table stepped around.
+* **The shipped prose matches `cmd_run`'s real control flow (F-6).** The E48 assertion is sequenced
+  BEFORE the second isolation leg, and — proven here by EXECUTING `e48_problems` against the ambiguous
+  durable row this runtime emits — it cannot pass, so leg 2 is unreachable. The ordering is read from
+  the AST as statement indices within one try-body, never from line numbers. The runbook and the
+  evidence template must state the consequence: no per-run leg count, leg 2 not reached while GBR-4
+  is open, the mandated two-leg record currently unproducible, and a one-leg record not acceptable as
+  final isolation evidence. Documenting a record the code cannot produce is the same defect class as
+  documenting a read the code no longer performs.
 * **A LAWFUL fixture value cannot abort a correct run.** Two of the witness's own checks used to do
   exactly what the drifted key-set literal did, one field along: the no-leak scan rejected `://`
   inside `short_description` — which the serving edge declares lawful in business free text — and the
@@ -72,7 +80,7 @@ import pathlib
 import re
 import sys
 from types import ModuleType
-from typing import Any, FrozenSet, Iterator, List, Optional, Tuple
+from typing import Any, Callable, FrozenSet, Iterator, List, Optional, Sequence, Tuple
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import _scan  # noqa: E402
@@ -914,6 +922,242 @@ def test_no_command_or_document_claims_a_control_read_the_witness_now_performs()
     )
 
 
+# ---------------------------------------------------------------------------------------------
+# F-6: the shipped prose must match `cmd_run`'s ACTUAL control flow.
+#
+# `cmd_run` asserts on E48 BEFORE it issues the second isolation leg, and `e48_problems` cannot
+# return empty on this runtime. Those two facts together make leg 2 UNREACHABLE — so any document
+# describing a per-run Control-read count, or a complete two-leg record, as something a current run
+# produces is describing a run that cannot happen. That is the same C2-5 defect class the check
+# above bars, one document along, and it has to be checked by ORDERING rather than by substring
+# presence: the wording is wrong only BECAUSE of where the assert sits, so the guard must see where
+# it sits. A `"twice" not in text` check would pass the moment the sentence was reworded and would
+# never have noticed the ordering that made it false.
+# ---------------------------------------------------------------------------------------------
+
+# Per-`run` leg counts a reader takes as a description of a current run. The per-LEG rule is the true
+# one and stays; what is barred is restating it as a per-run total while the abort point precedes
+# leg 2.
+_RETIRED_PER_RUN_LEG_COUNTS = (
+    "twice per run",
+    "once per denial leg — twice",
+    "once per denial leg - twice",
+    "two control-database reads per run",
+    "two control reads per run",
+)
+
+
+def _prose(text: str) -> str:
+    """Markdown reduced to comparable prose: blockquote markers dropped, emphasis/code ticks removed.
+
+    Anchors are checked against THIS, not against the raw file. A `**` moved one word, a sentence
+    rewrapped across a line, or a paragraph re-indented inside a blockquote would each break a raw
+    substring match — and a guard that fails on reflow gets weakened rather than fixed. Markup is
+    replaced by a space, never elided, so removing it cannot glue two words into a third.
+    """
+    stripped = "\n".join(re.sub(r"^\s*>+\s?", "", line) for line in text.splitlines())
+    for markup in ("**", "`", "*", "#"):
+        stripped = stripped.replace(markup, " ")
+    return " ".join(stripped.split()).lower()
+
+
+def _isolation_body() -> List[ast.stmt]:
+    """The ONE statement list that carries both isolation legs — `cmd_run`'s try/finally body."""
+    tries = [n for n in ast.walk(_func("cmd_run")) if isinstance(n, ast.Try) and n.finalbody]
+    assert tries, "cmd_run must run its legs inside a try/finally"
+    return tries[0].body
+
+
+def _stmt_index(body: Sequence[ast.stmt], predicate: Callable[[ast.AST], bool], what: str) -> int:
+    """Index of the first TOP-LEVEL statement in `body` containing a node matching `predicate`.
+
+    Deliberately a statement index in one body, not a line number. Line numbers would also be
+    satisfied by a leg tucked inside a branch the assert does not dominate; equal membership of the
+    same unconditional statement list is what makes "the assert runs first" a fact about execution
+    rather than about layout.
+    """
+    for index, stmt in enumerate(body):
+        for node in ast.walk(stmt):
+            if predicate(node):
+                return index
+    raise AssertionError(f"cmd_run's try-body must contain {what}")
+
+
+def _e48_assert_in(source: str) -> Callable[[ast.AST], bool]:
+    """`assert not e48...` — matched on the TESTED expression, never on the message."""
+
+    def predicate(node: ast.AST) -> bool:
+        if not isinstance(node, ast.Assert):
+            return False
+        return re.search(r"\bnot\s+e48\b", ast.get_source_segment(source, node.test) or "") is not None
+
+    return predicate
+
+
+def _unregistered_carrier_request_in(source: str) -> Callable[[ast.AST], bool]:
+    """The second isolation leg's actual request — the `_http` call carrying the unregistered tenant."""
+
+    def predicate(node: ast.AST) -> bool:
+        if not isinstance(node, ast.Call) or getattr(node.func, "id", "") != "_http":
+            return False
+        return "tenant-that-does-not-exist" in (ast.get_source_segment(source, node) or "")
+
+    return predicate
+
+
+def _is_carrier_audit_read(node: ast.AST) -> bool:
+    """The second leg's durable audit read, identified structurally by its own correlation id.
+
+    No source segment needed, so no factory: the call target and the argument name are both AST
+    facts. Matching on the correlation-id argument is what separates this call from leg 1's.
+    """
+    if not isinstance(node, ast.Call) or getattr(node.func, "id", "") != "read_denial_audit":
+        return False
+    return any(getattr(argument, "id", "") == "carrier_correlation" for argument in node.args)
+
+
+def test_the_e48_abort_precedes_the_second_isolation_leg_and_every_document_says_so() -> None:
+    """F-6. The abort point sits BEFORE leg 2, so no document may present leg 2 as reachable today.
+
+    Three things are established here, in order, because each is worthless without the one before:
+
+    1. **Ordering, from the AST** — the E48 assertion, the unregistered-tenant carrier request and
+       that leg's audit read are all top-level statements of the SAME try-body, in that order, and
+       `legs_ok = True` comes after all of them. So failing the assertion cannot leave leg 2 partly
+       done or the run partly green.
+    2. **The assertion cannot pass, EXECUTED** — `e48_problems` is called with the ambiguous durable
+       row this runtime actually emits and must return a non-empty problem list, and the recognised
+       unique-signal set that could override it must be empty. Ordering alone would only make leg 2
+       *conditionally* unreachable; this is what makes it unreachable in fact.
+    3. **The documents say exactly that** — no per-run leg count, an explicit statement that the
+       second leg is not reached while GBR-4 is unresolved, an explicit statement that the two-leg
+       record is therefore unproducible and that a one-leg record is not acceptable as final
+       evidence, and the standing pins that GBR-4 is OPEN and router-stage isolation UNPROVEN.
+
+    **This test is MEANT to fail when GBR-4 is resolved.** At that point (2) stops holding, leg 2
+    becomes reachable, and every sentence pinned in (3) becomes false in the other direction. The fix
+    then is to revise the documents in the same edit — not to delete this guard. That coupling is the
+    point: the defect it exists to bar (F-6) was created by changing the code and leaving the prose.
+    """
+    text = _text()
+    body = _isolation_body()
+    e48_at = _stmt_index(body, _e48_assert_in(text), "the E48 assertion (`assert not e48, ...`)")
+    request_at = _stmt_index(body, _unregistered_carrier_request_in(text), "the unregistered-tenant carrier request")
+    audit_at = _stmt_index(body, _is_carrier_audit_read, "the carrier leg's durable audit read")
+    assert e48_at < request_at < audit_at, (
+        f"cmd_run's statement order is E48-assert={e48_at}, carrier-request={request_at}, carrier-audit-read={audit_at}. "
+        "This guard, and the shipped wording it pins, both describe the E48 assertion as the abort point that precedes "
+        "the second isolation leg. If the order changed, the documents are now wrong in the opposite direction and must "
+        "be revised with the code."
+    )
+    legs_ok_at = _stmt_index(
+        body,
+        lambda node: isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "legs_ok" for t in node.targets),
+        "the `legs_ok = True` success marker",
+    )
+    assert audit_at < legs_ok_at, (
+        "`legs_ok = True` must come after BOTH legs. Set earlier, a run that aborted at the E48 assertion would still "
+        "mark its legs good and exit 0 — which is the failure this whole family of checks exists to prevent."
+    )
+
+    # (2) EXECUTED: the assertion cannot pass on this runtime, so the ordering is a real abort.
+    witness = _witness_module()
+    assert not witness.RECOGNISED_UNIQUE_DENIAL_SIGNALS, (
+        "RECOGNISED_UNIQUE_DENIAL_SIGNALS must stay empty until a signal that uniquely separates tenant_access_denied "
+        "from tenant_not_ready genuinely exists. Non-empty, E48 could pass and leg 2 would become reachable — at which "
+        "point the wording pinned below is false and must be revised in the same edit."
+    )
+    ambiguous_rows = _denial_rows(witness)["tenant_access_denied"]
+    assert witness.e48_problems(403, b"", ambiguous_rows), (
+        "e48_problems returned NO problems for the ambiguous pre-auth denial this runtime emits. E48 would then be "
+        "provable, the run would not abort, and the documents' 'not reached' wording would be wrong."
+    )
+
+    # (3) The documents. Anchors are checked against reduced prose so a reflow cannot break them.
+    runbook = _prose(_RUNBOOK.read_text(encoding="utf-8"))
+    template = _prose(_TEMPLATE.read_text(encoding="utf-8"))
+    for label, prose in (("the runbook", runbook), ("the evidence template", template), ("the witness", _prose(text))):
+        for retired in _RETIRED_PER_RUN_LEG_COUNTS:
+            assert retired not in prose, (
+                f"{label} states a per-run leg count ({retired!r}) while the E48 assertion aborts before leg 2. The "
+                "bounded Control read runs once PER LEG, and a current run reaches ONE leg — so a per-run total "
+                "describes a run this runtime cannot execute."
+            )
+
+    for anchor, why in (
+        (
+            "cmd_run executes the auth-stage (e48) leg first",
+            "the runbook must name which leg runs first — the ordering is the whole reason the count is per-leg",
+        ),
+        ("e48 resolves to not available / unproven", "the runbook must state the verdict the current runtime produces"),
+        ("cmd_run fails at that assertion", "the runbook must state that the run ABORTS there, not merely that E48 is unproven"),
+        (
+            "the second isolation leg is not reached while gbr-4 remains unresolved",
+            "the runbook must state the downstream consequence: leg 2 is unreachable, not merely expected to fail",
+        ),
+        (
+            "once gbr-4 is resolved in a way that lets the auth-stage leg pass",
+            "the runbook must state that leg 2 becomes reachable — and its Control read issued — after GBR-4 is resolved",
+        ),
+        ("still leaves router-stage denial unproven", "router-stage isolation must remain UNPROVEN in the runbook"),
+    ):
+        assert anchor in runbook, f"the runbook must state {anchor!r}: {why}"
+
+    for anchor, why in (
+        (
+            "both legs remain mandatory for final acceptance",
+            "the two-leg requirement must NOT be weakened by disclosing that it cannot currently be met",
+        ),
+        (
+            "the harness cannot currently produce a complete two-leg isolation record",
+            "the template must state that the record it mandates is currently unproducible",
+        ),
+        (
+            "the second isolation leg is not reached while gbr-4 remains unresolved",
+            "the template must say WHY it is unproducible — the run aborts before leg 2",
+        ),
+        (
+            "incomplete / not acceptable as final isolation evidence",
+            "a one-leg record must be named unacceptable, or it becomes the de-facto complete one",
+        ),
+        ("does not close gbr-4", "filing an incomplete record must not be readable as closing GBR-4"),
+        (
+            "may not be marked pass until gbr-4 is resolved and both legs execute",
+            "the template must bar a PASS verdict for E48 and for full isolation evidence",
+        ),
+        (
+            "remains unproven, by this leg and by this harness",
+            "router-stage isolation must remain UNPROVEN in the template",
+        ),
+    ):
+        assert anchor in template, f"the evidence template must state {anchor!r}: {why}"
+
+    # GBR-4 is the gate every sentence above defers to. It must still be OPEN, and nowhere claimed closed.
+    assert re.search(r"gbr-4 —.{0,400}?\bopen\b", runbook), (
+        "GBR-4 must remain recorded OPEN in the runbook. Every disclosure above is conditioned on it; if it were closed "
+        "the conditions would be stale and the second leg would be reachable."
+    )
+    assert not re.search(r"gbr-4[^.]{0,200}\bclosed\b", runbook), "GBR-4 must not be recorded CLOSED anywhere in the runbook"
+
+    # Non-vacuity, in-place: the ordering detector must be able to SEE the reversed sequence. A helper
+    # that returned 0 for every probe would satisfy `e48_at < request_at` by accident, and the whole
+    # check above would be decoration.
+    probe_source = (
+        "def f():\n"
+        "    try:\n"
+        "        status, _h, body = _http('GET', url, headers={'X-Tenant-Id': 'tenant-that-does-not-exist'})\n"
+        "        carrier_rows = read_denial_audit(control, carrier_correlation)\n"
+        "        e48 = e48_problems(status, body, zeta_rows)\n"
+        "        assert not e48, 'reversed'\n"
+        "    finally:\n"
+        "        pass\n"
+    )
+    probe_body = next(n for n in ast.walk(ast.parse(probe_source)) if isinstance(n, ast.Try) and n.finalbody).body
+    assert _stmt_index(probe_body, _e48_assert_in(probe_source), "probe assert") > _stmt_index(
+        probe_body, _unregistered_carrier_request_in(probe_source), "probe leg 2"
+    ), "the ordering detector must report the LATER index for an assert that follows the leg, or it distinguishes nothing"
+
+
 def test_zeta_is_proven_unchanged() -> None:
     run = _source("cmd_run")
     assert run.count("zeta_before_digest") >= 3, "ZETA must be proven byte-identical after the write AND after isolation"
@@ -1227,6 +1471,7 @@ if __name__ == "__main__":
             test_a_403_with_an_empty_body_alone_cannot_satisfy_e48,
             test_missing_or_uninterpretable_denial_evidence_fails_closed,
             test_no_command_or_document_claims_a_control_read_the_witness_now_performs,
+            test_the_e48_abort_precedes_the_second_isolation_leg_and_every_document_says_so,
             test_zeta_is_proven_unchanged,
             test_no_leak_scan_covers_every_shape,
             test_lawful_url_free_text_passes_the_no_leak_scan_but_credential_shapes_still_fail,
