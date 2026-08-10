@@ -699,16 +699,75 @@ _CONTROL_STORE_WRITE_METHODS = frozenset(
     }
 )
 
+# The POSITIVE census: every type name the composed workspace deps may legitimately reach.
+# This is the load-bearing check, and it is an ALLOW-list on purpose. The deny-lists above name
+# today's privileged classes and methods; they cannot, even in principle, catch a NEW privileged
+# class with a NEW method name — an independent adversarial review demonstrated exactly that.
+# An allow-list inverts the burden: anything not named here fails the guard, so a capability
+# arriving under any name at all has to be argued for in this list, in review.
+#
+# The composed graph is ~18 objects, so this stays small and readable — that smallness IS the
+# narrowing. If this list ever needs to grow by a Control-Plane service, the narrowing is over.
+_ALLOWED_REACHABLE_TYPES = frozenset(
+    {
+        # the narrow read capability and the per-unit-of-work factories behind it
+        "ControlStoreMembershipReader",
+        "SharedControlStoreFactory",
+        "PostgresControlStoreFactory",
+        "InMemoryControlStore",  # test-only store retained by the UNSET posture (see GF-9d)
+        # the Control-DB secret binding — a reference and its resolver, never a DSN literal
+        "EnvReferenceSecretStore",
+        "SecretRef",
+        # the public-boundary kernel and its two injected ports
+        "PublicBoundary",
+        "HttpPrincipalAuthenticator",
+        "InMemoryEdgeAudit",
+        "DurableEdgeAuditPartition",
+        "BoundedEdgeAuditPolicy",
+        "HttpEdgeAudit",
+        # CPython's ABC bookkeeping (``_abc_impl``), surfaced by the class-attribute traversal.
+        # Allow-listed by TYPE rather than skipped by attribute name: nothing can make a
+        # ControlPlane *be* an ``_abc_data``, whereas a name-based skip would be a hole.
+        "_abc_data",
+        # plain data
+        "NoneType",
+        "bool",
+        "bytes",
+        "dict",
+        "float",
+        "frozenset",
+        "int",
+        "list",
+        "set",
+        "str",
+        "tuple",
+        "type",
+    }
+)
+
 _ATOMIC = (str, bytes, bytearray, int, float, complex, bool, type(None))
+
+# Attributes that hold captured objects without ever being an instance attribute.
+_INDIRECT_HOLDERS = ("func", "args", "keywords", "fget", "fset", "__wrapped__", "__defaults__", "__kwdefaults__")
 
 
 def _reachable(root: object, limit: int = 20000) -> list:
     """Every object reachable from ``root`` by attribute / container traversal.
 
-    Deliberately traverses PRIVATE attributes and bound-method owners: an object hidden behind
-    a leading underscore is still held by the process, and "we only call the safe method" is
-    exactly the reasoning this guard exists to refuse. Classes and modules are traversal STOPS
-    — following them would walk the entire interpreter and prove nothing about this composition.
+    Deliberately traverses PRIVATE attributes, bound-method owners, **closure cells**, **class
+    attributes**, ``property`` accessors and ``functools.partial`` internals. An object hidden
+    behind a leading underscore — or behind no name at all — is still held by the process, and
+    "we only call the safe method" is exactly the reasoning this guard exists to refuse.
+
+    The closure/partial/class-attribute legs are not hypothetical: an independent adversarial
+    review smuggled a full ``ControlPlane`` into the composed deps through a single closure cell
+    and every gate in this repository stayed green. A capability captured by a lambda is held
+    just as firmly as one assigned to ``self``.
+
+    Classes, modules and ``__globals__`` are traversal STOPS. Following a module namespace means
+    walking the interpreter, and it would also collapse the distinction this guard is careful
+    about: it proves the composed OBJECT GRAPH is narrow, not that the process is (see the
+    family note above).
     """
     seen: set = set()
     out: list = []
@@ -738,17 +797,39 @@ def _reachable(root: object, limit: int = 20000) -> list:
         owner = getattr(obj, "__self__", None)  # a bound method carries the object it came from
         if owner is not None:
             stack.append(owner)
+        for cell in getattr(obj, "__closure__", None) or ():  # a lambda's captured objects
+            try:
+                stack.append(cell.cell_contents)
+            except ValueError:
+                pass  # an empty cell
+        for name in _INDIRECT_HOLDERS:  # functools.partial, property accessors, wrappers, defaults
+            held = getattr(obj, name, None)
+            if held is not None and not isinstance(held, type):
+                stack.append(held)
+        for name, value in vars(type(obj)).items():  # a capability parked as a CLASS attribute
+            if not name.startswith("__") and not callable(value):
+                stack.append(value)
     return out
 
 
 def _capability_offences(root: object, *, include_store_writes: bool) -> dict:
-    """The privilege verdict on one composed object graph."""
+    """The privilege verdict on one composed object graph.
+
+    ``unexpected`` is the strongest key and is checked first by every caller: it is the positive
+    census, so it catches capability arriving under a name no deny-list anticipated. The three
+    deny-list keys are retained because they name the *specific* objects this narrowing removed,
+    which is what makes a failure message diagnostic rather than merely red.
+    """
     objects = _reachable(root)
+    if len(objects) >= 20000:
+        raise AssertionError("the reachability walk hit its bound — a truncated walk cannot clear a composition")
     methods = set(_FORBIDDEN_CAPABILITY_METHODS)
     if include_store_writes:
         methods |= _CONTROL_STORE_WRITE_METHODS
+    present = {type(obj).__name__ for obj in objects}
     return {
-        "types": sorted({type(obj).__name__ for obj in objects} & _FORBIDDEN_CAPABILITY_TYPES),
+        "unexpected": sorted(present - _ALLOWED_REACHABLE_TYPES),
+        "types": sorted(present & _FORBIDDEN_CAPABILITY_TYPES),
         "methods": sorted({f"{type(obj).__name__}.{name}" for obj in objects for name in methods if hasattr(obj, name)}),
         "admin_refs": sorted({obj for obj in objects if isinstance(obj, str) and "provisioning-admin" in obj}),
     }
@@ -769,8 +850,16 @@ def _composed_workspace_deps(control_store: str) -> tuple:
     return deps
 
 
-def _with_workspace_env(control_store: str, fn):
-    """Run ``fn`` under the workspace-edge composition env, restoring every variable after."""
+def _with_workspace_env(control_store: str, fn, *, live_postgres: bool = False):
+    """Run ``fn`` under the workspace-edge composition env, restoring every variable after.
+
+    ``live_postgres`` selects the ALL-POSTGRES composition (all four selectors), which is the
+    ONLY posture in which the old ``create_app()`` path bound ``PROVISIONING_ADMIN_DSN_REF``,
+    composed the real ``PostgresProvisioningOperator`` (``CREATE DATABASE``) and left
+    ``RecoveryCompensationService`` un-guarded (``DROP DATABASE``). Running the probe there is
+    what makes the ``admin_refs`` assertion mean something instead of passing by absence.
+    Composition remains lazy-connect, so this still opens no socket and no connection.
+    """
     import control_plane.main as cp_main
 
     names = (
@@ -790,6 +879,9 @@ def _with_workspace_env(control_store: str, fn):
         os.environ[cp_main.SP2_EDGE_AUTH_ROUTER_BASE_URL] = "http://auth.invalid"
         if control_store:
             os.environ[cp_main.CONTROL_STORE_ENV] = control_store
+        if live_postgres:
+            for name in (cp_main.PROVISIONING_ADAPTER_ENV, cp_main.TENANT_SCHEMA_APPLICATOR_ENV, cp_main.DISTINCTNESS_LEDGER_ENV):
+                os.environ[name] = "postgres"
         return fn()
     finally:
         for name, value in saved.items():
@@ -847,26 +939,37 @@ def test_gf9b_the_workspace_edge_declares_the_narrow_read_port_as_its_dependency
 def test_gf9c_the_composed_workspace_edge_holds_no_privileged_capability() -> None:
     """EXECUTION leg: compose for real, then walk the object graph the process would hold.
 
-    Run under BOTH store postures, because they compose different factories: the durable one
-    retains no store at all (it issues a fresh one per unit of work), the test-only in-memory one
-    retains the process-local store. Under the durable posture the graph must therefore contain
-    no Control-DB WRITE method either — that is the posture that matters for privilege.
-    """
-    durable = _with_workspace_env(
-        "postgres",
-        lambda: _capability_offences(_composed_workspace_deps("postgres"), include_store_writes=True),
-    )
-    assert durable["types"] == [], f"durable workspace composition holds a privileged capability object: {durable['types']}"
-    assert durable["methods"] == [], f"durable workspace composition exposes a privileged/mutating method: {durable['methods']}"
-    assert durable["admin_refs"] == [], f"durable workspace composition carries a provisioning-admin reference: {durable['admin_refs']}"
+    Run under all THREE postures, because they used to compose very different planes:
 
-    default = _with_workspace_env(
-        "",
-        lambda: _capability_offences(_composed_workspace_deps(""), include_store_writes=False),
-    )
-    assert default["types"] == [], f"default workspace composition holds a privileged capability object: {default['types']}"
-    assert default["methods"] == [], f"default workspace composition exposes a privileged method: {default['methods']}"
-    assert default["admin_refs"] == [], f"default workspace composition carries a provisioning-admin reference: {default['admin_refs']}"
+    * **durable** (``SP2_CP_CONTROL_STORE=postgres``, live selectors unset) — the only durable
+      posture the runbook prescribes;
+    * **all-postgres** (all four selectors) — the ONLY posture in which the old ``create_app()``
+      path bound ``PROVISIONING_ADMIN_DSN_REF`` and composed the real ``CREATE``/``DROP DATABASE``
+      operators. Running here is what makes ``admin_refs`` a real assertion rather than one that
+      passes because the credential was never in play;
+    * **default** (everything unset) — the test-only in-memory composition.
+
+    The durable and all-postgres postures must additionally hold NO Control-DB WRITE method: only
+    the test-only default retains a writer, and GF-9d pins that exception exactly.
+    """
+    for label, store, live, writes in (
+        ("durable", "postgres", False, True),
+        ("all-postgres", "postgres", True, True),
+        ("default", "", False, False),
+    ):
+        offences = _with_workspace_env(
+            store,
+            lambda store=store, writes=writes: _capability_offences(_composed_workspace_deps(store), include_store_writes=writes),
+            live_postgres=live,
+        )
+        # The POSITIVE census first: it is the only leg that catches capability arriving under a
+        # name no deny-list anticipated.
+        assert offences["unexpected"] == [], f"{label} workspace composition reaches an unapproved type: {offences['unexpected']}"
+        assert offences["types"] == [], f"{label} workspace composition holds a privileged capability object: {offences['types']}"
+        assert offences["methods"] == [], f"{label} workspace composition exposes a privileged/mutating method: {offences['methods']}"
+        assert offences["admin_refs"] == [], (
+            f"{label} workspace composition carries a provisioning-admin reference: {offences['admin_refs']}"
+        )
 
 
 def test_gf9d_the_only_control_db_writer_the_default_posture_retains_is_the_test_only_store() -> None:
@@ -920,17 +1023,58 @@ def test_gf9_nonvacuity() -> None:
     first = next(n for n in ast.walk(bad) if isinstance(n, ast.FunctionDef)).args.args[0]
     assert ast.unparse(first.annotation).strip("\"'") != "WorkspaceMembershipReadPort", "the signature probe must reject a broad annotation"
 
-    # And the reachability walk must actually traverse private attributes and bound methods.
-    class _Hidden:
-        def __init__(self) -> None:
-            self._secret = ControlPlane(store=InMemoryControlStore())
+    # Every SMUGGLING SHAPE the walk must defeat. Each of these was demonstrated by an
+    # independent adversarial review against an earlier version of this guard; the closure case
+    # in particular got a full ControlPlane into the composed deps with all five GF-9 tests, the
+    # whole 2163-test suite, ruff, mypy and import-linter green. A capability is held whether it
+    # sits on `self`, on the class, in a closure cell, inside a partial, or behind a property.
+    import functools
 
-    assert "ControlPlane" in _capability_offences(_Hidden(), include_store_writes=False)["types"], (
-        "a capability hidden behind a private attribute must still be found"
-    )
-    bound = ControlPlane(store=InMemoryControlStore()).control_store_unit_of_work
-    assert "ControlPlane" in _capability_offences(bound, include_store_writes=False)["types"], (
-        "a capability reachable through a bound method's owner must still be found"
+    plane = lambda: ControlPlane(store=InMemoryControlStore())  # noqa: E731 — a fresh plane per shape
+
+    class _PrivateAttr:
+        def __init__(self) -> None:
+            self._secret = plane()
+
+    class _ClassAttr:
+        held = plane()
+
+    class _Property:
+        _held = plane()
+
+        @property
+        def anything(self):
+            return self._held
+
+    captured = plane()
+    _default_held = plane()
+
+    def _defaulted(_p=_default_held):
+        return _p
+
+    shapes = {
+        "private attribute": _PrivateAttr(),
+        "class attribute": _ClassAttr(),
+        "property-backed attribute": _Property(),
+        "bound method owner": plane().control_store_unit_of_work,
+        "closure cell": (lambda: captured),
+        "functools.partial argument": functools.partial(len, plane()),
+        "default argument": _defaulted,
+        "nested container": {"deps": [(plane(),)]},
+    }
+    for label, shape in shapes.items():
+        found = _capability_offences(shape, include_store_writes=False)
+        assert "ControlPlane" in found["types"], f"a capability held via a {label} must still be found; got {found['types']}"
+
+    # The POSITIVE census must flag a capability arriving under a name no deny-list anticipated —
+    # this is what a pure deny-list structurally cannot do.
+    class TotallyNovelPrivilegedThing:
+        def do_something_unanticipated(self) -> None: ...
+
+    novel = _capability_offences((TotallyNovelPrivilegedThing(), ()), include_store_writes=False)
+    assert novel["types"] == [], "the deny-list is blind to a novel class — that is exactly why the census exists"
+    assert novel["unexpected"] == ["TotallyNovelPrivilegedThing"], (
+        f"the positive census must flag an unapproved type regardless of its name; got {novel['unexpected']}"
     )
 
 
