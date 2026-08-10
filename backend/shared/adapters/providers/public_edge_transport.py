@@ -10,8 +10,9 @@ exactly the browser-facing half — and nothing else:
 * **raw-target decisions** — every allowlist/matcher decision is made against the undecoded
   request target plus the verbatim query string, so a percent-encoded traversal is judged as
   it arrived rather than after the framework decoded it into something acceptable;
-* **query rejection** — no public target accepts a query string (a prohibited tenant carrier
-  channel), refused ``404`` pre-handler;
+* **query rejection** — no public target accepts a NON-EMPTY query string (a prohibited
+  tenant carrier channel), refused ``404`` pre-handler. A bare trailing ``?`` carries nothing
+  and is indistinguishable from its absence in the ASGI scope, so it is served normally;
 * **request bounds** — request-target bytes, header count, total header bytes, chunked
   transfer refusal, and a per-route body budget the owning edge supplies;
 * **exact-origin CORS** — an allowlist of literal origins, never a wildcard, never

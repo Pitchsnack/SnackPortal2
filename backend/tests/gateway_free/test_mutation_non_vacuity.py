@@ -19,7 +19,10 @@ from __future__ import annotations
 import pathlib
 import sys
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+# APPEND, never insert(0): backend/tests contains packages named after the services
+# (tests/database_router/, tests/control_plane/, tests/shared/). Putting it first makes those
+# EMPTY stubs win over the production packages, which silently blinds any sys.modules census.
+sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
 from gateway_free._fakes import (  # noqa: E402
     ACME,
@@ -368,7 +371,6 @@ def test_m10_widening_cors_to_a_wildcard_is_DETECTED(monkeypatch) -> None:
 
 def test_m11_accepting_an_unbounded_correlation_id_is_DETECTED(monkeypatch) -> None:
     edge, _provider, _auth, _audit = _edge()
-    hostile = "spoofed\nX-Injected: yes"
     with edge:
         clean = edge.request("GET", _ACME_TARGET, headers={**bearer(ACME_BEARER), "x-correlation-id": "c" * 400})
         monkeypatch.setattr(transport, "_correlation_id", lambda request: request.headers.get("x-correlation-id") or "")
@@ -376,4 +378,54 @@ def test_m11_accepting_an_unbounded_correlation_id_is_DETECTED(monkeypatch) -> N
 
     assert clean[2]["x-correlation-id"] != "c" * 400, "baseline: an oversized id is replaced by a minted one"
     assert breached[2]["x-correlation-id"] == "c" * 400, "DETECTOR: the unbounded caller-supplied id was echoed verbatim"
-    assert hostile, "the anti-injection charset is the same control; see test_a17"
+
+
+def test_m11b_a_correlation_id_carrying_a_header_injection_payload_is_rejected() -> None:
+    """The anti-log-injection half of the same control, driven with a real CRLF payload.
+
+    The previous version of this test asserted on a non-empty local variable that was never
+    sent anywhere — unconditionally true, and therefore no coverage at all.
+    """
+    edge, _provider, _auth, audit = _edge()
+    with edge:
+        status, _body, headers = edge.request_raw(
+            "GET",
+            _ACME_TARGET,
+            pairs=[("Authorization", "Bearer " + ACME_BEARER), ("x-correlation-id", "ok-prefix\tX-Injected: yes")],
+        )
+    assert status == 200
+    echoed = headers["x-correlation-id"]
+    assert "X-Injected" not in echoed and "\t" not in echoed, "an injection payload must never be echoed"
+    assert len(echoed) == 32, "it is replaced by a freshly minted opaque id"
+    assert all("X-Injected" not in (event.correlation_id or "") for event in audit.events), "nor reach an audit record"
+
+
+def test_m12_collapsing_headers_into_a_mapping_makes_the_STRADDLE_CHECK_UNREACHABLE(monkeypatch) -> None:
+    """The defect an independent review found in this experiment's first implementation.
+
+    The edges originally handed the kernel ``dict(request.headers)``. HTTP allows a header name
+    to repeat, and a mapping keeps only the FIRST value — so two ``X-Tenant-Id`` headers, the
+    ordinary way a client asserts two tenants in one request, were silently reduced to one and
+    the straddle branch could never execute. The request then proceeded as an ordinary
+    single-carrier one.
+
+    Nothing was exploitable (authority is the signed claim either way), but an advertised
+    control was unreachable by the exact mechanism it exists to catch. This mutation restores
+    the old collapsing view and asserts the control goes dark.
+    """
+    edge, provider, auth, audit = _edge()
+    pairs = [("Authorization", "Bearer " + ACME_BEARER), ("X-Tenant-Id", ACME), ("X-Tenant-Id", ZETA)]
+    with edge:
+        clean = edge.request_raw("GET", _ACME_TARGET, pairs=pairs)
+        clean_actions = list(audit.actions())
+        clean_auth_calls = list(auth.calls)
+        # The mutation: reduce the raw pair list to a first-value-wins mapping, exactly as
+        # dict(request.headers) did.
+        monkeypatch.setattr(edge_module, "_raw_headers", lambda request: list(dict(request.headers).items()))
+        breached = edge.request_raw("GET", _ACME_TARGET, pairs=pairs)
+
+    assert clean[0] == 403 and clean_actions == ["IsolationAnomaly"], "baseline: the straddle is caught"
+    assert clean_auth_calls == [], "baseline: and caught BEFORE authentication"
+    assert breached[0] == 200, "MUTATED: the second asserted tenant vanished and the request was served"
+    assert "IsolationAnomaly" not in audit.actions()[len(clean_actions) :], "DETECTOR: the straddle evidence disappeared"
+    assert provider.opened == [(ACME, ACME_PRINCIPAL)], "the request proceeded on the first carrier alone"

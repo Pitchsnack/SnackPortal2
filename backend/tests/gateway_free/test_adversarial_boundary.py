@@ -16,7 +16,10 @@ from __future__ import annotations
 import pathlib
 import sys
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+# APPEND, never insert(0): backend/tests contains packages named after the services
+# (tests/database_router/, tests/control_plane/, tests/shared/). Putting it first makes those
+# EMPTY stubs win over the production packages, which silently blinds any sys.modules census.
+sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
 from gateway_free._fakes import (  # noqa: E402
     ACME,
@@ -255,16 +258,28 @@ def test_a9b_the_recorded_actor_is_always_the_authenticated_principal() -> None:
 # ------------------------------------------------------------------------------------------
 
 
-def test_a10_unknown_tenant_and_non_member_deny_identically() -> None:
-    # STRANGER_BEARER carries a signed ACME claim with NO membership row — the shape of a
-    # revoked or forged claim. It must be indistinguishable from a claim naming a tenant that
-    # does not exist, so neither answer reveals whether a tenant exists.
+def test_a10_a_non_member_is_denied_with_no_existence_signal() -> None:
+    """Scoped honestly to what this suite can prove.
+
+    ``STRANGER_BEARER`` carries a signed ACME claim with NO membership row — the shape of a
+    REVOKED membership. What is proven here is that such a caller is denied 403 with an empty
+    body and opens no database, carrier or not.
+
+    What is NOT proven here, and must not be read into it: that an *unknown tenant* and a
+    non-member are indistinguishable. The real ``TenantContextResolver`` makes two independent
+    lookups (``get_tenant_state`` → ``state is None``, and ``is_member``) and only then collapses
+    them into one ``forbidden``; this suite's identity double has a single membership check, so
+    the two branches are identical BY CONSTRUCTION of the double and a regression that split
+    them would be invisible here. That property belongs to ``auth_router`` and is covered by its
+    own tests. Nor is a FORGED token proven: forgery fails at Stage 1 with 401, and the double
+    has no Stage-1 signature path by design.
+    """
     edge, provider, _auth, _audit = _startup_edge()
     with edge:
-        non_member = edge.request("GET", _ACME_TARGET, headers=bearer(STRANGER_BEARER))
-        unknown_tenant = edge.request("GET", _ACME_TARGET, headers={**bearer(STRANGER_BEARER), "X-Tenant-Id": ACME})
-    assert non_member[0] == 403 and non_member[1] == b"", "a non-member is denied 403 with an empty body"
-    assert unknown_tenant[0] == 403 and unknown_tenant[1] == b"", "the carrier-matched non-member is denied identically"
+        no_carrier = edge.request("GET", _ACME_TARGET, headers=bearer(STRANGER_BEARER))
+        with_matching_carrier = edge.request("GET", _ACME_TARGET, headers={**bearer(STRANGER_BEARER), "X-Tenant-Id": ACME})
+    assert no_carrier[0] == 403 and no_carrier[1] == b"", "a non-member is denied 403 with an empty body"
+    assert with_matching_carrier[0] == 403 and with_matching_carrier[1] == b"", "a matching carrier changes nothing"
     assert provider.opened == [], "neither denial opens a tenant database"
 
 
@@ -300,9 +315,10 @@ def test_a11_one_accepted_request_opens_exactly_one_tenant_session() -> None:
     assert provider.opened == [(ACME, ACME_PRINCIPAL)]
 
 
-def test_a11b_two_carriers_are_a_straddle_and_are_rejected_before_authentication() -> None:
-    # Two DISTINCT asserted carriers cannot both match one signed claim. The kernel rejects the
-    # straddle before it calls the authenticator at all.
+def test_a11b_a_comma_joined_carrier_is_a_MISMATCH_not_a_straddle() -> None:
+    # Named precisely. A comma-joined value is ONE carrier string, so it reaches the
+    # authenticator and is rejected there as a mismatch — the straddle branch is NOT taken.
+    # The distinction matters: only the real two-value cases below are rejected pre-auth.
     edge, provider, auth, audit = _startup_edge()
     with edge:
         status, body, _headers = edge.request(
@@ -310,13 +326,61 @@ def test_a11b_two_carriers_are_a_straddle_and_are_rejected_before_authentication
             _ACME_TARGET,
             headers={**bearer(ACME_BEARER), "X-Tenant-Id": ACME + ", " + ZETA},
         )
-    # A comma-joined header is ONE carrier value, so it is a mismatch, not a straddle; either
-    # way it is rejected and no database opens.
     assert status == 403
     assert body == b""
     assert provider.opened == [], "a rejected multi-tenant assertion opens no database"
-    assert audit.actions(), "the rejection is audited"
-    assert auth.calls, "the request reached the authenticator only as a carrier-match question"
+    assert audit.actions() == ["CarrierMismatch"], "it is audited as a mismatch, not an isolation anomaly"
+    assert len(auth.calls) == 1, "a single carrier value legitimately reaches the carrier-match check"
+
+
+def test_a11c_two_x_tenant_id_headers_are_a_STRADDLE_rejected_before_authentication() -> None:
+    """The ordinary two-header form of a multi-tenant assertion.
+
+    This is the case the straddle check exists for, and it is the one a mapping-shaped header
+    view silently destroys: ``dict(request.headers)`` keeps only the first value, so the second
+    tenant disappears before the kernel ever sees it and the request proceeds as an ordinary
+    single-carrier one. The edge therefore hands the kernel the RAW ASGI header list.
+    """
+    edge, provider, auth, audit = _startup_edge()
+    with edge:
+        status, body, _headers = edge.request_raw(
+            "GET",
+            _ACME_TARGET,
+            pairs=[("Authorization", "Bearer " + ACME_BEARER), ("X-Tenant-Id", ACME), ("X-Tenant-Id", ZETA)],
+        )
+    assert status == 403, "asserting two tenants in one request must be rejected"
+    assert body == b""
+    assert audit.actions() == ["IsolationAnomaly"], "it is the straddle class, not a carrier mismatch"
+    assert auth.calls == [], "REJECTED BEFORE AUTHENTICATION — the authenticator is never reached"
+    assert provider.opened == [], "and no tenant database is opened"
+
+
+def test_a11d_a_subdomain_disagreeing_with_a_header_is_also_a_straddle() -> None:
+    # The second reachable straddle shape: a host-derived carrier plus a disagreeing header.
+    edge, provider, auth, audit = _startup_edge()
+    with edge:
+        status, _body, _headers = edge.request_raw(
+            "GET",
+            _ACME_TARGET,
+            pairs=[("Host", ZETA + ".sp2.example.com"), ("Authorization", "Bearer " + ACME_BEARER), ("X-Tenant-Id", ACME)],
+        )
+    assert status == 403
+    assert audit.actions() == ["IsolationAnomaly"]
+    assert auth.calls == [], "rejected before authentication"
+    assert provider.opened == []
+
+
+def test_a11e_duplicate_identical_carriers_collapse_and_are_not_a_straddle() -> None:
+    # Two occurrences of the SAME value assert one tenant, not two — it must not false-positive.
+    edge, provider, _auth, _audit = _startup_edge()
+    with edge:
+        status, _body, _headers = edge.request_raw(
+            "GET",
+            _ACME_TARGET,
+            pairs=[("Authorization", "Bearer " + ACME_BEARER), ("X-Tenant-Id", ACME), ("X-Tenant-Id", ACME)],
+        )
+    assert status == 200, "identical duplicates collapse to one carrier and the request proceeds"
+    assert provider.opened == [(ACME, ACME_PRINCIPAL)]
 
 
 # ------------------------------------------------------------------------------------------
@@ -544,19 +608,52 @@ def test_a19_a_terminal_audit_failure_fails_the_request_closed() -> None:
 # ------------------------------------------------------------------------------------------
 
 
-def test_a20_the_internal_startup_edge_is_absent_from_the_gateway_free_mvp_composition() -> None:
-    # The bypass is closed by DELETION, not by network policy. The public edge holds the
-    # executor in-process, so the Gateway-free MVP composition never constructs, imports, or
-    # binds the internal envelope edge — and its composition function is reachable only from
-    # the legacy seam it belongs to.
-    import database_router.main as dbr_main
+def test_a20_the_public_edge_never_reaches_the_internal_envelope_edge() -> None:
+    # The public edge holds the executor in-process, so it neither imports nor constructs the
+    # internal envelope edge. Asserted on the AST, not on substrings, and never on a docstring:
+    # an earlier version of this test asserted that a docstring contained the word "boundary",
+    # which is not a behavioural oracle and passed while the internal edge ran alongside it.
+    import ast
+
     from database_router.adapters.providers import http_public_startup_edge as public_edge
 
-    source = pathlib.Path(public_edge.__file__).read_text(encoding="utf-8")
-    assert "http_tenant_startup_api" not in source, "the public edge must not reach the internal envelope edge"
-    assert "build_tenant_startup_server" not in source, "the public edge must not construct the internal envelope edge"
-    deps_source = dbr_main.build_public_startup_edge_deps_from_env.__doc__ or ""
-    assert "boundary" in deps_source.lower(), "the composition gate is documented as requiring the boundary"
+    tree = ast.parse(pathlib.Path(public_edge.__file__).read_text(encoding="utf-8"))
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module)
+            imported.update(node.module + "." + alias.name for alias in node.names)
+    assert not any("http_tenant_startup_api" in name for name in imported), "the public edge must not import the internal edge"
+    called = {node.func.id for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
+    called |= {node.func.attr for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)}
+    assert "build_tenant_startup_server" not in called, "the public edge must not construct the internal edge"
+
+
+def test_a20d_KNOWN_RESIDUAL_the_internal_envelope_edge_still_composes_under_mvp_env(monkeypatch) -> None:
+    """A deliberately UNCOMFORTABLE test: it pins what is NOT true, so no one can claim it is.
+
+    The MVP topology does not *launch* the internal envelope edge — but the module, its
+    application factory and its serve entrypoint all remain, and its composition gate is the
+    SAME variable (``SP2_DBR_ROUTING_READ_BASE_URL``) the public edge itself requires. So under
+    exactly the Gateway-free MVP environment it composes perfectly well, and the standing
+    launcher still starts it on 8004.
+
+    "The hazard is deleted" would therefore be false; "the hazard is not launched" is true. The
+    difference is a topology choice, not a structural guarantee, and closing it for real needs
+    the later cleanup PR that deletes the module. This test exists so that distinction cannot
+    quietly rot into the stronger claim.
+    """
+    import database_router.main as dbr_main
+
+    monkeypatch.setenv(dbr_main.SP2_EDGE_AUTH_ROUTER_BASE_URL, "http://auth.invalid")
+    monkeypatch.setenv(dbr_main.SP2_DBR_ROUTING_READ_BASE_URL, "http://routing.invalid")
+    # Socket-inert on purpose: this proves composability without binding a listener.
+    assert dbr_main.build_tenant_startup_ops_from_env() is not None, (
+        "KNOWN RESIDUAL: the internal envelope edge's executor composes under the MVP environment"
+    )
+    assert dbr_main.build_public_startup_edge_deps_from_env() is not None, "and so does the public edge, from the same gate"
 
 
 def test_a20b_positive_control_the_internal_edge_really_is_unauthenticated() -> None:
@@ -588,20 +685,31 @@ def test_a20b_positive_control_the_internal_edge_really_is_unauthenticated() -> 
 
 
 def test_a20c_the_public_edge_exposes_no_internal_envelope_surface() -> None:
+    """Probed with NO body, deliberately.
+
+    An earlier version sent a 2-byte body on every probe. Every non-PATCH route has a body
+    budget of zero, so all five probes were refused ``413`` by the transport gate BEFORE
+    routing — the same status an EXISTING route returns for a body it will not accept. The
+    oracle therefore could not distinguish "route absent" from "route present, body-bounded",
+    and it passed unchanged against an application with the internal envelope route registered
+    and leaking. Body-less probes reach the router, so ``404``/``405`` now genuinely means the
+    surface is not exposed, and the positive control proves the probe shape reaches routes that
+    DO exist.
+    """
     edge, provider, _auth, _audit = _startup_edge()
+    foreign = (
+        "/internal/tenant/startups/read",
+        "/internal/tenant/startups/update",
+        "/memberships",
+        "/import/x",
+        "/directory/startup",
+    )
     with edge:
-        results = {
-            path: edge.request("POST", path, headers={**bearer(ACME_BEARER), "Content-Type": "application/json"}, body=b"{}")[0]
-            for path in (
-                "/internal/tenant/startups/read",
-                "/internal/tenant/startups/update",
-                "/memberships",
-                "/import/x",
-                "/directory/startup",
-            )
-        }
-    assert all(status in (404, 405, 413) for status in results.values()), f"no internal or foreign surface is exposed; got {results}"
-    assert provider.opened == [], "none of those probes reached a tenant database"
+        results = {path: edge.request("POST", path, headers=bearer(ACME_BEARER))[0] for path in foreign}
+        own_route = edge.request("GET", _ACME_TARGET, headers=bearer(ACME_BEARER))[0]
+    assert all(status in (404, 405) for status in results.values()), f"no internal or foreign surface is exposed; got {results}"
+    assert own_route == 200, "POSITIVE CONTROL: the edge's own route IS served by the same probe shape"
+    assert provider.opened == [(ACME, ACME_PRINCIPAL)], "only the positive control reached a tenant database"
 
 
 # ------------------------------------------------------------------------------------------

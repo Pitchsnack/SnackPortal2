@@ -147,7 +147,13 @@ def test_gf1b_composing_both_mvp_edges_never_loads_api_gateway() -> None:
     """
     program = (
         "import sys\n"
-        "sys.path.insert(0, 'tests')\n"
+        # APPEND, never insert(0). `backend/tests` contains EMPTY packages named after the
+        # services (tests/database_router/, tests/control_plane/, tests/shared/). Putting it
+        # first makes those stubs win over the production packages, and this census then cannot
+        # see a dependency declared in a service's own __init__.py — the guard goes blind
+        # exactly where a module-level import would sit. Verified by mutation: with insert(0),
+        # `import api_gateway.gateway` added to database_router/__init__.py still printed [].
+        "sys.path.append('tests')\n"
         "from gateway_free._fakes import TwoTenantProvider, build_boundary\n"
         "from database_router.tenant_startup_ops import TenantStartupOperations\n"
         "from database_router.adapters.providers.http_public_startup_edge import make_app as startup_app\n"
@@ -185,6 +191,45 @@ def test_gf1_nonvacuity() -> None:
     assert result.returncode == 0, f"the positive control could not import api_gateway: {result.stderr[-2000:]}"
     assert "API_GATEWAY_MODULES=[]" not in result.stdout, "the probe must detect a real api_gateway import"
     assert "'api_gateway.gateway'" in result.stdout, "the probe must name the loaded module"
+
+
+def test_gf1_probes_resolve_the_PRODUCTION_packages_not_the_test_stubs() -> None:
+    """The census is only as good as which ``database_router`` the subprocess actually loaded.
+
+    ``backend/tests`` contains EMPTY packages named after the services. If a probe puts that
+    directory FIRST on ``sys.path``, those stubs shadow the production packages and the
+    ``sys.modules`` census silently stops seeing anything declared in a service's own
+    ``__init__.py``. An independent review found exactly that defect in GF-1b and demonstrated
+    it with an A/B mutation; this test is what stops it coming back.
+    """
+    stubs = [_BACKEND / "tests" / name / "__init__.py" for name in ("database_router", "control_plane", "shared")]
+    assert all(path.is_file() for path in stubs), "the shadowing stubs really do exist — that is why this test is needed"
+
+    program = (
+        "import sys\n"
+        "sys.path.append('tests')\n"
+        "import database_router, control_plane, shared\n"
+        "print('RESOLVED=' + repr([m.__file__ for m in (database_router, control_plane, shared)]))\n"
+    )
+    result = subprocess.run([sys.executable, "-c", program], cwd=str(_BACKEND), capture_output=True, text=True, timeout=180)
+    assert result.returncode == 0, result.stderr[-2000:]
+    resolved = result.stdout.strip()
+    assert "tests" not in resolved.replace("\\\\", "/").replace("backend/tests", "").lower() or "backend\\\\tests" not in resolved, resolved
+    for package in ("database_router", "control_plane", "shared"):
+        assert f"backend\\\\{package}\\\\__init__" in resolved or f"backend/{package}/__init__" in resolved, (
+            f"{package} must resolve to the PRODUCTION package, not the test stub; got {resolved}"
+        )
+
+    # And the negative control: putting `tests` first really does shadow them.
+    shadowed = subprocess.run(
+        [sys.executable, "-c", program.replace("sys.path.append", "sys.path.insert(0,", 1).replace("('tests')", "'tests')", 1)],
+        cwd=str(_BACKEND),
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert shadowed.returncode == 0, shadowed.stderr[-2000:]
+    assert "tests" in shadowed.stdout, "negative control: tests-first must visibly shadow the production packages"
 
 
 # ------------------------------------------------------------------------------------------
@@ -481,6 +526,128 @@ def test_gf6b_the_topology_states_its_experimental_status() -> None:
     text = _text(_TOPOLOGY).lower().replace("*", "")
     for anchor in ("experiment branch only", "not the standing topology", "do-not-activate"):
         assert anchor in text, f"the topology document must carry the {anchor!r} guard rail"
+
+
+# ------------------------------------------------------------------------------------------
+# GF-8 — the PRIVILEGE POSTURE of the public tier (a characterisation, not an approval)
+# ------------------------------------------------------------------------------------------
+
+
+def test_gf8_the_api_gateway_public_tier_is_credential_free_and_driver_free() -> None:
+    """What ``main`` has today, stated as a fact so the comparison cannot be fudged.
+
+    The Gateway is the only internet-facing process on ``main``, and it is STRUCTURALLY
+    incapable of touching a database: the driver-containment guard permits drivers only under
+    ``database_router/adapters/providers/`` and ``control_plane/adapters/providers/``, and every
+    Gateway selector is non-secret routing config. Compromising it yields no database access —
+    only the internal envelope API's two routes and one 500-character field.
+    """
+    drivers = {"psycopg", "psycopg2", "asyncpg", "sqlalchemy", "databases", "aiopg"}
+    secrets = {"EnvTenantSecretStore", "EnvReferenceSecretStore", "SecretRef", "SecretStore"}
+    for path in _scan.py_files(_BACKEND / "api_gateway"):
+        tops = _import_tops(path)
+        assert not (tops & drivers), f"{_scan.relposix(path)} imports a database driver"
+        assert not (_identifiers(path) & secrets), f"{_scan.relposix(path)} names a credential store"
+
+
+def test_gf8b_KNOWN_REGRESSION_the_gateway_free_public_tier_holds_database_credentials() -> None:
+    """The dominant security consequence of removing the Gateway. Pinned, not buried.
+
+    Because each public edge executes its own data access IN-PROCESS — the very thing that
+    removes the hop — the internet-facing processes are now composed INSIDE the credential-
+    holding, driver-permitted zones:
+
+    * the tenant Startup edge's composition reaches ``build_router_from_env``, which wires
+      ``EnvTenantSecretStore`` (every tenant's database credential) and ``PsycopgConnectionFactory``;
+    * the workspace edge's composition builds the whole ``ControlPlane``, which carries the
+      Control-DB store, the provisioning operator and the recovery/compensation services — to
+      serve one read-only route.
+
+    So the Gateway was not only a request boundary, it was a PRIVILEGE boundary: a public tier
+    that provably could not reach a database. Removing it collapses that tier. Nothing here says
+    that trade is wrong — plenty of systems let a service expose its own API — but it is a
+    decision, it is Dan's to make, and this test exists so it cannot be made silently.
+
+    If this test ever fails, the posture has CHANGED and the result document's risk section is
+    stale — which is exactly when someone should re-read it.
+    """
+    dbr_main = _text(_BACKEND / "database_router" / "main.py")
+    assert "build_public_startup_edge_deps_from_env" in dbr_main
+    assert "build_tenant_startup_ops_from_env" in dbr_main and "build_router_from_env" in dbr_main
+    for credential_bearing in ("EnvTenantSecretStore", "PsycopgConnectionFactory"):
+        assert credential_bearing in dbr_main, (
+            f"the public Startup edge's composition root still wires {credential_bearing} — the public tier holds tenant credentials"
+        )
+
+    # The workspace edge is handed the whole ControlPlane. Asserted on the AST of the
+    # composition function itself, so this cannot pass on a docstring or a stale comment.
+    cp_tree = ast.parse(_text(_BACKEND / "control_plane" / "main.py"))
+    deps_fn = next(
+        node for node in ast.walk(cp_tree) if isinstance(node, ast.FunctionDef) and node.name == "build_public_workspace_edge_deps_from_env"
+    )
+    called = {node.func.id for node in ast.walk(deps_fn) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
+    assert "create_app" in called, "the workspace edge is handed the full ControlPlane, not a narrowed store accessor"
+
+    # And the full ControlPlane really does carry the privileged collaborators.
+    from control_plane.main import ControlPlane
+
+    assigned = {
+        node.attr
+        for node in ast.walk(
+            next(
+                n
+                for n in ast.walk(ast.parse(_text(_BACKEND / "control_plane" / "main.py")))
+                if isinstance(n, ast.ClassDef) and n.name == "ControlPlane"
+            )
+        )
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "self"
+    }
+    for privileged in ("provisioning", "recovery", "secret_store", "store_factory"):
+        assert privileged in assigned, f"ControlPlane composes {privileged!r}, and that object is what the public edge receives"
+    assert ControlPlane is not None  # imported to prove the module composes, not merely parses
+
+
+# ------------------------------------------------------------------------------------------
+# GF-7 — the canonical uvicorn flags for the two PUBLIC edges
+# ------------------------------------------------------------------------------------------
+
+_CANONICAL_FLAGS = ("--factory", "--workers 1", "--no-access-log", "--no-server-header", "--no-proxy-headers")
+
+
+def _command_blocks() -> list:
+    """Every fenced ``uvicorn`` command in the Gateway-free topology document."""
+    return [line.strip() for line in _text(_TOPOLOGY).splitlines() if line.strip().startswith("uvicorn ")]
+
+
+def test_gf7_both_public_edges_have_a_pinned_canonical_startup_command() -> None:
+    """The nine-edge census in ``test_native_uvicorn_factories.py`` is a hard-coded list and does
+    NOT cover these two edges — so without this guard the canonical flags would be unenforced on
+    the only two edges that terminate public requests. Uvicorn's defaults are ``proxy_headers=True``,
+    ``server_header=True``, ``access_log=True``; every one of those is wrong for a public edge, and
+    on the native path the command line is the only place the loopback bind is enforced.
+    """
+    blocks = _command_blocks()
+    assert len(blocks) == 2, f"the topology must pin exactly one startup command per public edge; found {len(blocks)}"
+    for factory in _MVP_FACTORIES:
+        matching = [block for block in blocks if f"{factory}:create_app_from_env" in block]
+        assert len(matching) == 1, f"exactly one command block for {factory}; found {len(matching)}"
+        command = matching[0]
+        for flag in _CANONICAL_FLAGS:
+            assert flag in command, f"{factory} command is missing the canonical flag {flag!r}"
+        assert "--host 127.0.0.1" in command, f"{factory} must bind loopback explicitly (an omitted --host falls through to UVICORN_HOST)"
+        assert "--host 0.0.0.0" not in command and "--reload" not in command, f"{factory} must not bind all interfaces or reload"
+        port = int(command.split("--port ")[1].split()[0])
+        assert port in (8830, 8831), f"{factory} must use its documented public port; found {port}"
+        assert port not in range(8080, 8089) and port != 8820, "a public edge must not land on the smoke range or the Gateway port"
+
+
+def test_gf7_nonvacuity() -> None:
+    bad = "uvicorn x.y:create_app_from_env --factory --host 0.0.0.0 --port 8830"
+    missing = [flag for flag in _CANONICAL_FLAGS if flag not in bad]
+    assert missing == ["--workers 1", "--no-access-log", "--no-server-header", "--no-proxy-headers"], (
+        "the flag probe must flag a bad sample"
+    )
+    assert "--host 127.0.0.1" not in bad and "--host 0.0.0.0" in bad, "the bind probe must flag an all-interfaces sample"
 
 
 def test_gf6_nonvacuity() -> None:

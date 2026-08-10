@@ -44,7 +44,7 @@ AFTER (Gateway-free MVP, 5 edges, 2 public surfaces)
 | Removed | Standing port | Why it is not needed |
 |---|---:|---|
 | API Gateway | 8820 | No component dispatches across services any more. Each route family is served by its owner. |
-| Tenant Startup API (internal envelope edge) | 8004 | The public tenant Startup edge holds `TenantStartupOperations` **in-process**. The unauthenticated, body-selected-tenant envelope surface is *deleted from the topology*, not fronted. |
+| Tenant Startup API (internal envelope edge) | 8004 | The public tenant Startup edge holds `TenantStartupOperations` **in-process**, so nothing needs the envelope edge. ⚠️ **Not launched ≠ deleted:** the module and its factory remain, its composition gate is the *same* variable the public edge requires, and the standing launcher still starts it on 8004. Closing this for real needs the later cleanup PR. |
 | Database Router dispatch | 8002 | Only the Gateway's `RouterDispatchPort` consumed it, and no served Gateway route ever reached that fall-through. It is dead weight in the MVP. |
 
 ## 3. Environment selectors
@@ -61,6 +61,35 @@ AFTER (Gateway-free MVP, 5 edges, 2 public surfaces)
 
 Both public edges still bind `127.0.0.1` by default: exposure is the operator's deliberate act at a
 reverse proxy, never the consequence of an unset variable. TLS terminates at that proxy.
+
+## 3a. Startup commands for the two PUBLIC edges (canonical flags are mandatory)
+
+These edges terminate requests from a browser, so the four canonical uvicorn flags matter more
+here than anywhere else in the system — and on the native path the command line is the **only**
+place they are enforced. Uvicorn's own defaults are `proxy_headers=True`, `server_header=True`,
+`access_log=True`; every one of those is wrong for a public edge:
+
+* `--no-proxy-headers` — never let `X-Forwarded-*` reshape the request. The kernel already
+  refuses to treat them as a tenant carrier, but the client address and scheme must not be
+  rewritable by a caller either;
+* `--no-server-header` — no version disclosure;
+* `--no-access-log` — no per-request line, so a request target never reaches stderr;
+* `--workers 1` — one server per operating-system process (AT-D15T1-10);
+* `--host 127.0.0.1` — loopback bind. Exposure is a deliberate act at the reverse proxy, and an
+  omitted `--host` falls through to `UVICORN_HOST`.
+
+```text
+uvicorn database_router.adapters.providers.http_public_startup_edge:create_app_from_env --factory --host 127.0.0.1 --port 8830 --workers 1 --no-access-log --no-server-header --no-proxy-headers
+```
+
+```text
+uvicorn control_plane.adapters.providers.http_public_workspace_edge:create_app_from_env --factory --host 127.0.0.1 --port 8831 --workers 1 --no-access-log --no-server-header --no-proxy-headers
+```
+
+Both command blocks are pinned by `tests/architecture/test_gateway_free_mvp_boundaries.py`
+(GF-7), which is the Gateway-free counterpart of the nine-edge census in
+`test_native_uvicorn_factories.py` — that census is a hard-coded list and does not cover these
+two edges, so without GF-7 the flags would be unguarded precisely where they matter most.
 
 ## 4. MVP route inventory
 

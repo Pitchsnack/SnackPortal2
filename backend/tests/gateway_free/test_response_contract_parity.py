@@ -18,7 +18,10 @@ from __future__ import annotations
 import pathlib
 import sys
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+# APPEND, never insert(0): backend/tests contains packages named after the services
+# (tests/database_router/, tests/control_plane/, tests/shared/). Putting it first makes those
+# EMPTY stubs win over the production packages, which silently blinds any sys.modules census.
+sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
 from gateway_free._fakes import (  # noqa: E402
     ACME,

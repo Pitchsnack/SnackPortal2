@@ -300,9 +300,36 @@ class HostedEdge:
         headers: Optional[Dict[str, str]] = None,
         body: Optional[bytes] = None,
     ) -> Tuple[int, bytes, Dict[str, str]]:
+        return self.request_raw(method, target, pairs=list((headers or {}).items()), body=body)
+
+    def request_raw(
+        self,
+        method: str,
+        target: str,
+        *,
+        pairs: Optional[List[Tuple[str, str]]] = None,
+        body: Optional[bytes] = None,
+    ) -> Tuple[int, bytes, Dict[str, str]]:
+        """Send headers as an ORDERED LIST so a name can be repeated on the wire.
+
+        ``http.client``'s ``headers=`` dict cannot express a duplicate header, and a duplicate
+        is exactly what the straddle check exists to catch — so the ordinary helper above
+        cannot test it. This one drives ``putheader`` per pair.
+        """
+        sent = list(pairs or [])
+        if not any(name.lower() == "host" for name, _v in sent):
+            # HTTP/1.1 requires a Host. Supply the transport address, which asserts NO carrier
+            # (an IP literal is never a tenant subdomain), so tests that do not care about the
+            # host carrier are unaffected by it.
+            sent.insert(0, ("Host", f"127.0.0.1:{self.port}"))
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
         try:
-            conn.request(method, target, body=body, headers=headers or {})
+            conn.putrequest(method, target, skip_host=True, skip_accept_encoding=True)
+            for name, value in sent:
+                conn.putheader(name, value)
+            if body is not None:
+                conn.putheader("Content-Length", str(len(body)))
+            conn.endheaders(body)
             response = conn.getresponse()
             payload = response.read()
             return response.status, payload, {k.lower(): v for k, v in response.getheaders()}

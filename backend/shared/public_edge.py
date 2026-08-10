@@ -21,14 +21,19 @@ that proves this is an existing, unmodified contract.
 * authentication *consumption* — it calls an injected ``PrincipalAuthenticatorPort``
   (the IC-005 Auth Router, over the existing internal transport). It performs no JWT,
   JWKS, signature, issuer, or OIDC handling and mints no token;
-* the ``TrustedPrincipal`` — constructed **exclusively** from the authenticator's result.
-  No request header, body, query, cookie, path, or host value can set or alter any of
-  its fields. This is the keystone: it is why a client-supplied ``target_tenant_ref``,
-  ``actor_ref``, or ``X-Tenant-Id`` is non-authoritative;
+* the ``TrustedPrincipal`` — its AUTHORITY fields (``principal_ref``, ``active_tenant_id``,
+  ``role``) are constructed **exclusively** from the authenticator's result, and no request
+  header, body, query, cookie, path, or host value can set or alter one. This is the
+  keystone: it is why a client-supplied ``target_tenant_ref``, ``actor_ref``, or
+  ``X-Tenant-Id`` is non-authoritative. ``correlation_id`` is the deliberate exception —
+  a bounded, charset-restricted client-supplied trace id (see the field's own note);
 * one-request → one-authenticated-active-tenant binding for tenant-scoped routes;
 * references-only edge audit emission with per-request de-duplication, and the
-  fail-closed audit posture (a denial is never handed back without its evidence, and a
-  success is never handed back before its evidence is durable).
+  fail-closed audit posture for the events this kernel emits: a BOUNDARY denial (carrier
+  mismatch, straddle, route denied) is never handed back without its record, and a success
+  is never handed back before its evidence is accepted. Denials decided by the owning edge
+  AFTER admission — a refused request body, an unknown record, an executor failure — are
+  returned without an audit event, exactly as the API Gateway returned them.
 
 **What it does NOT own** — and cannot: route classification, endpoint dispatch, service
 selection, response composition for someone else's domain, database resolution, business
@@ -43,7 +48,7 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import List, Mapping, Optional, Sequence, Set, Tuple
+from typing import List, Optional, Sequence, Set, Tuple
 from urllib.parse import urlsplit
 
 __all__ = [
@@ -161,12 +166,18 @@ class PublicRequest:
     tenant, principal, or database selector. There is deliberately no ``body``, ``query``,
     or ``cookies`` field on the kernel's view: those channels are prohibited carriers, and
     the cheapest way to guarantee the kernel never reads them is not to hand them over.
+
+    ``headers`` is a SEQUENCE OF PAIRS, not a mapping, and that is load-bearing. HTTP permits
+    a header name to appear more than once, and collapsing the wire into a ``dict`` keeps only
+    the first value — which would make the straddle check below structurally unreachable for
+    the ordinary two-header form it exists to catch. The edge therefore hands over the raw ASGI
+    header list.
     """
 
     method: str
     path: str
     host: str
-    headers: Mapping[str, str]
+    headers: Sequence[Tuple[str, str]]
     authorization: Optional[str]
 
 
@@ -181,6 +192,13 @@ class TrustedPrincipal:
     References only (IC-001 / D-14): never a token, credential, JWT, secret, DSN, database
     identity, name, email, or any PII payload. ``active_tenant_id`` is ``None`` for a
     tenantless CONTROL principal (derived, never a field).
+
+    ``correlation_id`` is the ONE field a client can influence: an inbound ``x-correlation-id``
+    that is 1..128 characters of ``[A-Za-z0-9._-]`` is accepted verbatim, echoed, and recorded
+    on this request's audit events. That is deliberate — it is what makes a caller-side trace
+    id useful — but it means an attacker can choose the correlation value on their own
+    evidence records. It carries no authority: it selects no tenant, no principal and no
+    database, and the charset makes log injection impossible.
     """
 
     correlation_id: str
@@ -286,12 +304,17 @@ def recognized_carriers(request: PublicRequest) -> List[str]:
     Reads ONLY the host subdomain and the ``X-Tenant-Id`` header. Cookies, query-string
     parameters, portal/workspace state and client local storage are prohibited routing
     authority and are never read here — nor are they even present on ``PublicRequest``.
+
+    EVERY occurrence of the carrier header is returned, not just the first. A client that
+    sends ``X-Tenant-Id`` twice with different values is asserting two tenants in one request,
+    and that must reach the straddle check rather than being silently reduced to whichever
+    value happened to arrive first.
     """
     out: List[str] = []
     sub = _subdomain(request.host)
     if sub is not None:
         out.append(sub)
-    for key, value in request.headers.items():
+    for key, value in request.headers:
         if key.lower() == CARRIER_HEADER and value.strip():
             out.append(value.strip())
     return out

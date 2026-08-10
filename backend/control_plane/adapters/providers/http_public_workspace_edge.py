@@ -14,10 +14,12 @@ records behind it. It classifies nothing, dispatches nothing, and forwards nothi
 **The load-bearing invariant.** The internal read dispatcher answers
 ``GET /memberships?p=<principal_ref>`` — the subject comes from a QUERY PARAMETER, and that
 edge performs no authentication. This edge never exposes that parameter: the subject is
-``TrustedPrincipal.principal_ref`` and nothing else, and any query string at all is refused
-``404`` by the shared transport gate before a handler runs. Actor and subject are therefore
-always the same authenticated principal; there is no "on behalf of" form and no way to ask
-for one.
+``TrustedPrincipal.principal_ref`` and nothing else, and any non-empty query string is
+refused ``404`` by the shared transport gate before a handler runs. Actor and subject are
+therefore always the same authenticated principal; there is no "on behalf of" form and no way
+to ask for one. Note which of those two facts is load-bearing: the subject would still be the
+authenticated principal even if the query reached the handler, because no handler reads a query
+parameter — the rejection is defence-in-depth, not the control (see mutation M6).
 
 **Per-request unit of work is preserved.** Each served request opens its own fresh
 ``ControlStore`` unit of work and releases it (rollback + close) before the response is
@@ -31,7 +33,7 @@ tenant topology. Bearer-only; no cookie authentication, so CSRF is not applicabl
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Tuple, cast
+from typing import TYPE_CHECKING, List, Tuple, cast
 
 from fastapi import FastAPI, Request, Response
 
@@ -69,6 +71,16 @@ def _liveness() -> bytes:
 def _readiness() -> bytes:
     # Operational status only; never a database name, tenant identity/count, or topology.
     return json.dumps({"service": SERVICE, "state": GlobalReadiness.READY.value}).encode("utf-8")
+
+
+def _raw_headers(request: Request) -> List[Tuple[str, str]]:
+    """The raw ASGI header pairs, duplicates preserved.
+
+    Starlette's ``Headers`` is a multi-value mapping, so ``dict(request.headers)`` silently
+    discards every repeat of a name. The kernel needs to see repeats — two ``X-Tenant-Id``
+    values in one request is exactly the straddle it must reject.
+    """
+    return [(name.decode("latin-1"), value.decode("latin-1")) for name, value in (request.scope.get("headers") or [])]
 
 
 def _compose(rows: object) -> WorkspaceMembershipDTO:
@@ -115,7 +127,10 @@ def make_app(control_plane: "ControlPlane", boundary: PublicBoundary, allowed_or
                 method=request.method,
                 path=request.state.raw_target,
                 host=request.headers.get("Host", "") or "",
-                headers=dict(request.headers),
+                # The RAW ASGI header list, not a mapping: a mapping keeps only the first value
+                # per name, which would make the kernel's straddle check unreachable for the
+                # ordinary two-header form of a multi-tenant assertion.
+                headers=_raw_headers(request),
                 authorization=request.headers.get("Authorization"),
             ),
             request.state.correlation_id,

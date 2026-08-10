@@ -33,8 +33,15 @@ a client and the service that owns the data; there is no "between" here.
 here. They do not appear in any accepted body, header, query, or path; they are produced from
 ``TrustedPrincipal`` immediately before the executor call. That is the structural difference
 from the internal envelope edge this replaces, whose ``target_tenant_ref`` *was* a body field —
-the exact hazard the previous removal experiment demonstrated. The MVP topology does not run
-that internal edge at all, so the hazard is deleted rather than merely fronted.
+the exact hazard the previous removal experiment demonstrated.
+
+Stated precisely, because the stronger version is false: the MVP topology does not RUN that
+internal edge, and this edge never imports or constructs it. But the module, its application
+factory and its serve entrypoint all still exist, and its composition gate is the SAME variable
+this edge requires — so it composes perfectly well under the MVP environment, and the standing
+launcher still starts it on 8004. The hazard is NOT LAUNCHED, which is a topology choice; it is
+not deleted, which would need the later cleanup PR that removes the module. Pinned by
+``test_a20d_KNOWN_RESIDUAL_...``.
 
 Fail closed: every denial and unavailability carries a fixed status and an EMPTY body — never a
 provider body, exception text, stack, token, connection material, database identity, or tenant
@@ -46,7 +53,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Optional, Tuple, cast
+from typing import List, Optional, Tuple, cast
 
 from fastapi import FastAPI, Request, Response
 
@@ -114,6 +121,16 @@ def _readiness() -> bytes:
     return json.dumps({"service": SERVICE, "state": GlobalReadiness.READY.value}).encode("utf-8")
 
 
+def _raw_headers(request: Request) -> List[Tuple[str, str]]:
+    """The raw ASGI header pairs, duplicates preserved.
+
+    Starlette's ``Headers`` is a multi-value mapping, so ``dict(request.headers)`` silently
+    discards every repeat of a name. The kernel needs to see repeats — two ``X-Tenant-Id``
+    values in one request is exactly the straddle it must reject.
+    """
+    return [(name.decode("latin-1"), value.decode("latin-1")) for name, value in (request.scope.get("headers") or [])]
+
+
 def _detail(record: TenantStartupRecord) -> TenantStartupDetailDTO:
     """Compose the owner-resident IC-009-R1 DTO from the executor's typed record.
 
@@ -156,7 +173,10 @@ def make_app(ops: TenantStartupOperations, boundary: PublicBoundary, allowed_ori
                 method=request.method,
                 path=request.state.raw_target,
                 host=request.headers.get("Host", "") or "",
-                headers=dict(request.headers),
+                # The RAW ASGI header list, not a mapping: a mapping keeps only the first value
+                # per name, which would make the kernel's straddle check unreachable for the
+                # ordinary two-header form of a multi-tenant assertion.
+                headers=_raw_headers(request),
                 authorization=request.headers.get("Authorization"),
             ),
             request.state.correlation_id,
