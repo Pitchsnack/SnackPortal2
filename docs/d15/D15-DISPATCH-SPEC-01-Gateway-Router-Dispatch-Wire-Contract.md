@@ -1,5 +1,19 @@
 # D15-DISPATCH-SPEC-01 — Gateway↔Router Dispatch Wire Contract
 
+> ## ⛔ NO LONGER NORMATIVE — both ends of this wire are DELETED
+>
+> This specification governs the `api_gateway` urllib client ↔ `POST /internal/dispatch/route`
+> transport pair. On `experiment/complete-api-gateway-removal-mvp` **both** ends are deleted: the
+> Gateway's `HttpRouterDispatch` went with the package, and
+> `database_router/adapters/providers/http_dispatch_api.py` was removed as a Gateway-only seam with
+> no other consumer. `tests/architecture/test_d15t1_dispatch_transport_static.py`, the guard that
+> made this document normative, is deleted too.
+>
+> The document is retained as the **historical wire record** it now is. Nothing implements it, and
+> no acceptance ID in it may be cited as current evidence. The property it protected — one routed
+> request resolves to exactly one physical tenant database — is unchanged and is proved by the
+> onboarding live proof and by `tests/gateway_free/test_adversarial_boundary.py` (A5/A6/A11).
+
 **Family:** D-15 (Gateway↔Database-Router Dispatch Transport)
 **Status:** Normative for D-15-T1 · **Type:** Governance / wire-contract capture (no runtime)
 **Captured under:** PRD D-15-T1a (Dispatch Wire Contract Capture), 2026-07-07

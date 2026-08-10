@@ -44,6 +44,7 @@ from __future__ import annotations
 import ast
 import pathlib
 import sys
+import tempfile
 from typing import Optional, Set
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -253,11 +254,29 @@ def test_public_edges_publish_no_self_describing_surface() -> None:
 
 
 # --- one core call site, one route family -----------------------------------------------------
+def _has_loop(node: ast.AST) -> bool:
+    return any(isinstance(n, (ast.For, ast.While, ast.AsyncFor)) for n in ast.walk(node))
+
+
 def test_each_public_edge_has_exactly_one_admit_site_and_owns_no_core_logic() -> None:
     for edge, _service, _entry, _factory in _PUBLIC_EDGES:
         tree = _tree(edge)
         admits = _attr_call_count(tree, "admit")
         assert admits == 1, f"{_scan.relposix(edge)} must call the shared boundary exactly once (boundary.admit); found {admits}"
+        # AND it must not sit inside a retry loop. The Gateway-edge guard asserted this of
+        # `gateway.handle`, and an earlier draft of THIS file dropped it: counting one call site is
+        # not the same property. An automatic retry around admission re-drives authentication and
+        # the executor on a transient failure, which is how one accepted request becomes two tenant
+        # database sessions — the exact thing A11 exists to forbid.
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if not any(isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute) and c.func.attr == "admit" for c in ast.walk(node)):
+                continue
+            assert not _has_loop(node), (
+                f"{_scan.relposix(edge)}:{node.name} wraps the boundary admission in a loop — an automatic retry "
+                "re-drives authentication and the executor, turning one accepted request into two tenant sessions"
+            )
         used = _names_used(tree)
         # The successor to "the Gateway edge performs no core logic": the edge performs no
         # authentication, no membership decision, and no carrier interpretation of its own.
@@ -429,14 +448,16 @@ def test_public_edge_boundary_guard_nonvacuity() -> None:
     assert _attr_call_count(_parse("b.admit(a)\nb.admit(c)\n"), "admit") == 2, "the admit census must count call sites"
     # The route-path extractor resolves a constant NAME and would flag a widened surface.
     widened = "_P = '/memberships'\n\n@app.get(_P)\ndef a():\n    ...\n\n@app.get('/directory/{kind}')\ndef b():\n    ...\n"
-    tmp = _scan.BACKEND_ROOT / "tests" / "architecture" / "_nv_probe_public_edge.py"
-    try:
+    # Written into a TEMPORARY directory, never into the tracked tree. An earlier draft wrote the
+    # probe into tests/architecture/ and removed it in a `finally` — which still dirties the working
+    # tree for the duration of a normal `pytest` run and leaves a stray file behind if the process
+    # is killed mid-test.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = pathlib.Path(tmpdir) / "_nv_probe_public_edge.py"
         tmp.write_text(widened, encoding="utf-8")
         paths = _registered_paths(tmp)
-        assert paths == {"/memberships", "/directory/{kind}"}, f"the path extractor must resolve constants AND literals; got {paths}"
-        assert any(p.startswith("/directory") for p in paths), "a widened directory surface must be detectable"
-    finally:
-        tmp.unlink(missing_ok=True)
+    assert paths == {"/memberships", "/directory/{kind}"}, f"the path extractor must resolve constants AND literals; got {paths}"
+    assert any(p.startswith("/directory") for p in paths), "a widened directory surface must be detectable"
     # The serve-loop census flags a second/misplaced serve loop.
     doubled = _parse("def serve_public_startup_edge():\n    s.serve_forever()\n\ndef rogue():\n    s.serve_forever()\n")
     entry = _def(doubled, "serve_public_startup_edge")
@@ -449,6 +470,10 @@ def test_public_edge_boundary_guard_nonvacuity() -> None:
     }, "a foreign portal DTO must be flagged"
     # A print (token-logging) is detectable.
     assert _print_calls(_parse("print(authorization)\n")) == 1, "a print (token logging) must be detectable"
+    # A retry loop wrapping the admission is detectable (and a loop-free body passes).
+    looped = _parse("async def h(r):\n    while True:\n        boundary.admit(r, c)\n")
+    assert _has_loop(_def(looped, "h")), "a retry loop around admission must be detectable"
+    assert not _has_loop(_def(_parse("async def h(r):\n    boundary.admit(r, c)\n"), "h")), "a loop-free handler must pass"
     # The bounded matcher rejects wildcard/traversal/bare forms — a widened matcher is detectable.
     assert is_valid_tenant_startup_target("/tenant/startups/g1"), "a bounded single-segment ref must be accepted"
     assert not is_valid_tenant_startup_target("/tenant/startups/../g1"), "a traversal ref must be rejected (non-vacuous)"

@@ -1,5 +1,16 @@
 # CLM ACME tenant data-plane witness — evidence record (template)
 
+> ## ⛔ WITHDRAWN — this template records evidence from a topology that no longer exists
+>
+> It requires `SP2_GW_TENANT_STARTUP_BASE_URL` and the Gateway/8820 + dispatch/8002 +
+> tenant-Startup/8004 process map. All of those were deleted with the API Gateway, and the witness
+> that produced this evidence (`test_pg_clm_acme_dataplane_witness.py`) was deleted with them.
+>
+> **No evidence may be recorded against this template**, and evidence recorded against it before the
+> removal describes a prior architecture. A Gateway-free successor template must be authored
+> alongside a Gateway-free dataplane witness. See
+> `docs/reports/SnackPortal2_Complete_API_Gateway_Zero_Residual_Removal_Result_Claude.md` §18.
+
 **References only.** No DSN, password, bearer token, key material, or physical database name appears
 in a completed instance of this template. Every identity is redacted to `scheme://host:port/database`
 with the database name itself omitted where it is not already public. Fill in observations, never

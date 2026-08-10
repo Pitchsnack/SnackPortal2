@@ -142,15 +142,20 @@ $PORT_PUBLIC_WORKSPACE  = 8831
 # must refuse whether or not this run intends to start that edge.
 $STANDING_PORTS = @($PORT_AUTH, $PORT_CONTROL_READ, $PORT_EDGE_AUDIT, $PORT_PUBLIC_STARTUP, $PORT_PUBLIC_WORKSPACE)
 
-# Ports this launcher does NOT bind but MUST look at. 8820 was the standing API Gateway port and
-# 8080 the port the repository's historical operator documentation used for it; a listener on
-# either after the Gateway was deleted means a stale Gateway process from a pre-removal worktree is
-# still up, and the frontend may be talking to it instead of the public edges. 8002 / 8004 are the
-# two deleted internal transports, for the same reason. 8000 is uvicorn's own CLI default and
-# catches a hand-started edge that forgot --port. Advisory, not fatal: none of these ports belongs
-# to this topology, so refusing to start would be a false blocker (8080 is also an ordinary
-# dev-server port).
-$COLLISION_ADVISORY_PORTS = @(8820, 8080, 8002, 8004, 8000)
+# RETIRED ports: 8820 (API Gateway), 8002 (Database Router dispatch) and 8004 (the internal
+# tenant-Startup envelope edge). All three modules are DELETED, so a listener on one is a stale
+# process from a pre-removal worktree - and that is FATAL here, not advisory. Before the removal
+# these were members of $STANDING_PORTS and a busy port refused the start; downgrading them to a
+# warning would have been a real weakening. 8004 in particular served an UNAUTHENTICATED envelope
+# edge that read the tenant and actor from the request body, and a stale 8820 can keep serving a
+# browser while this topology starts alongside it.
+$RETIRED_PORTS = @(8820, 8002, 8004)
+
+# Ports this launcher neither binds nor forbids, but MUST look at. 8080 is the port the
+# repository's historical operator documentation used for the Gateway; 8000 is uvicorn's own CLI
+# default and catches a hand-started edge that forgot --port. Advisory, not fatal: neither belongs
+# to this topology, and 8080 is also an ordinary dev-server port.
+$COLLISION_ADVISORY_PORTS = @(8080, 8000)
 
 # ------------------------------------------------------------------------ ACTIVATION SELECTORS --
 # The four selectors below are DELIBERATELY NOT SET in the default standing profile. They are
@@ -232,18 +237,19 @@ if (-not $SkipChecks) {
     }
     Write-Host "  [ok] standing ports free ($($STANDING_PORTS -join ', '))"
 
+    $retiredBusy = @($RETIRED_PORTS | Where-Object { Test-Port $_ })
+    if ($retiredBusy) {
+        throw "RETIRED port(s) in use: $($retiredBusy -join ', '). Those components (API Gateway 8820, dispatch 8002, internal tenant-Startup envelope 8004) are DELETED, so a listener there is a STALE process from a pre-removal worktree. 8004 served an UNAUTHENTICATED edge that read the tenant and actor from the request body, and a stale 8820 can keep serving a browser while this topology starts alongside it. Stop those processes first."
+    }
+    Write-Host "  [ok] retired ports free ($($RETIRED_PORTS -join ', '))"
+
     foreach ($p in $COLLISION_ADVISORY_PORTS) {
         if (Test-Port $p) {
             Write-Host "  [WARN] something is listening on $p." -ForegroundColor Yellow
-            if ($p -eq 8820 -or $p -eq 8080) {
-                Write-Host "         This was an API Gateway port (8820 standing, 8080 in historical operator docs)." -ForegroundColor Yellow
-                Write-Host "         The API Gateway has been DELETED. A listener here is a STALE process started from" -ForegroundColor Yellow
-                Write-Host "         a pre-removal worktree - and the frontend may be talking to it instead of the two" -ForegroundColor Yellow
-                Write-Host "         public edges. Stop it before trusting anything this topology serves." -ForegroundColor Yellow
-            } elseif ($p -eq 8002 -or $p -eq 8004) {
-                Write-Host "         This was an internal Gateway-facing transport (8002 dispatch, 8004 tenant-Startup" -ForegroundColor Yellow
-                Write-Host "         envelope). Both modules are DELETED, so a listener here is a stale pre-removal" -ForegroundColor Yellow
-                Write-Host "         process - and 8004 in particular served an UNAUTHENTICATED envelope edge." -ForegroundColor Yellow
+            if ($p -eq 8080) {
+                Write-Host "         8080 is the port the repository's HISTORICAL operator documentation used for the" -ForegroundColor Yellow
+                Write-Host "         API Gateway. That component is DELETED; a listener here may be a stale pre-removal" -ForegroundColor Yellow
+                Write-Host "         process the frontend is still talking to." -ForegroundColor Yellow
             } else {
                 Write-Host "         8000 is uvicorn's own CLI default - a hand-started edge that omitted --port." -ForegroundColor Yellow
             }
@@ -463,6 +469,14 @@ $startupEdgeEnv = $publicEdgeEnv.Clone()
 $startupEdgeEnv["SP2_DBR_ROUTING_READ_BASE_URL"] = $controlUrl
 
 # The Workspace edge reads the Control DB through the SAME posture the read edge uses.
+#
+# PRIVILEGE NOTE, recorded because it is a real change and not an accident: with the durable opt-in
+# ON this binds a Control-store secret REFERENCE into a BROWSER-FACING process. The deleted API
+# Gateway bound no SecretRef at all - it was structurally driver-free and credential-free, which is
+# the privilege boundary GF-8/GF-8b pin as the dominant consequence of removing it. The reference is
+# required for the edge to read the real Control DB, so it cannot simply be withheld; the mitigation
+# is that the edge holds only a WorkspaceMembershipReadPort (one read method, self-scoped - GF-9),
+# and the open question is whether a public process may hold Control-DB credentials at all.
 $workspaceEdgeEnv = $publicEdgeEnv.Clone()
 if ($EnableDurableControlStore) {
     $workspaceEdgeEnv["SP2_CP_CONTROL_STORE"]         = $SELECTOR_CONTROL_STORE_VALUE
@@ -515,10 +529,18 @@ Start-Sleep -Seconds 3
 # --- the PUBLIC edges -------------------------------------------------------------------------
 # 127.0.0.1 by construction (Get-StandingUvicornCommand pins --host $STANDING_BIND_HOST). Exposure
 # is a deliberate act at a reverse proxy; nothing here opens one.
+# The Workspace edge serves ONE read-only Control-DB route and has no business with tenant
+# databases, so every tenant-credential variable is scrubbed from its window - the AW-1 Q8 idea
+# applied to a browser-facing process. This narrows what an attacker who compromises it inherits;
+# it does NOT remove the Control-store reference it legitimately needs, which is the residual
+# privilege GF-8b pins.
+$workspaceScrub = @("SNACKPORTAL_TENANT_SECRET*")
+
 Start-StandingEdge -Title "public_workspace $PORT_PUBLIC_WORKSPACE" `
     -Module "control_plane.adapters.providers.http_public_workspace_edge" `
     -Port $PORT_PUBLIC_WORKSPACE `
-    -EnvVars $workspaceEdgeEnv
+    -EnvVars $workspaceEdgeEnv `
+    -ExtraScrubPatterns $workspaceScrub
 
 if ($EnableTenantDataPlane) {
     Start-StandingEdge -Title "public_startup $PORT_PUBLIC_STARTUP" `

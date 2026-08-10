@@ -14,9 +14,13 @@ Current state (see `docs/SnackPortal2_Canonical_Overview_and_Decisions_v2.md` fo
   tenant-Startup envelope edge, and serves each MVP route family from the service that owns its
   records behind the shared `shared.public_edge` boundary (public edges on 8830 / 8831). On `main`
   the Gateway is untouched and B-7 remains as described in the PRD Index. **The removal is not
-  adopted:** IC-010 (Final) still names the API Gateway as the sole approved ingress, and IC-009 /
-  IC-011 / IC-012 carry Gateway-bound clauses. Ratifying those amendments is a human governance act
-  and is the named blocker before anything on that branch may be merged. See
+  adopted:** IC-010 (Final) still names the API Gateway as the sole approved ingress, and **IC-005**
+  (Final — 13 Gateway clauses, incl. the carrier hand-off), IC-009, IC-011 and IC-012 all carry
+  Gateway-bound clauses. IC-011's hosted-rollback gate additionally names a non-Gateway served edge
+  as a **STOP** condition, which the two-public-edge topology trips by construction, and the B5
+  production activation gate's criterion *"API Gateway remains the sole ingress"* is unsatisfiable
+  there. Ratifying that amendment set is a human governance act and is the named blocker before
+  anything on that branch may be merged. See
   `docs/reports/SnackPortal2_Complete_API_Gateway_Zero_Residual_Removal_Result_Claude.md`.
 - **Frontend (Lovable, separate Lovable Cloud project):** ~70% of screens built, but on an **interim** Supabase data layer using *logical* (`tenant_id` + RLS) separation. Per decisions D3/D7 this data layer is **interim** and must be re-pointed to the API Gateway + physical tenant databases; not yet brought into this repo's `frontend/`.
 

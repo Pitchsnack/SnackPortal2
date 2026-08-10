@@ -27,18 +27,18 @@ Before Gate A this index listed 2 of 14 files, so most of them had no discoverab
 | `controlled_rollback_rehearsal.md` | ⚪ | Controlled rollback rehearsal (disposable). |
 | `controlled_served_write_rehearsal.md` | ⚪ | Controlled served-write rehearsal (disposable). |
 | `dbr_ar_2_durable_routing_audit.md` | 🟢 | DBR-AR-2 durable routing audit: the governed operator procedure for DDL 010/011. |
-| `gateway_edge_v1_serve.md` | 🟠 | The served API Gateway edge's request contract, bounds, CORS and denial semantics. **Superseded for startup** by `docs/runbooks/backend_service_startup_fastapi.md`; corrected under Gate A for the ephemeral-port trap and for the tenant-Startup write family it previously denied existed. |
+| `gateway_edge_v1_serve.md` | ⛔ **WITHDRAWN** | The served API Gateway edge's request contract, bounds, CORS and denial semantics. **Superseded for startup** by `docs/runbooks/backend_service_startup_fastapi.md`; corrected under Gate A for the ephemeral-port trap and for the tenant-Startup write family it previously denied existed. |
 | `gateway_operational_audit_live_proof.md` | 🟡 | Governed operator procedure for the Gateway operational-audit DDL 012/013 against a **disposable** database. Carries the current-standing-state note and the five-pin lockstep warning. |
-| `import_copy_live_proof.md` | ⚪ | Import copy live proof (disposable). Import is outside the controlled local MVP journey (IMPORT-A / D-3). |
-| `smoke_c_integrated_live_proof.md` | 🟠 | Smoke C integrated live proof. Its standing-state preconditions were superseded by AUTHFIX-B; read the in-file HISTORICAL annotations. |
+| `import_copy_live_proof.md` | ⛔ **WITHDRAWN** | Import copy live proof (disposable). Import is outside the controlled local MVP journey (IMPORT-A / D-3). |
+| `smoke_c_integrated_live_proof.md` | ⛔ **WITHDRAWN** | Smoke C integrated live proof. Its standing-state preconditions were superseded by AUTHFIX-B; read the in-file HISTORICAL annotations. |
 
 ### Runbooks that do NOT live here
 
 | Runbook | Where | Why |
 |---|---|---|
-| `backend_service_startup_fastapi.md` | `docs/runbooks/` | **The canonical startup runbook.** Standing map 8001/8002/8003/8004/8005/**8820**; the `8080–8088` map is isolated smoke/verification only. |
-| `b5_service_startup_order.md` | `docs/runbooks/` | 🟠 **Superseded for the served topology.** Predates the FastAPI migration and the served Gateway edge; its dependency *order* still holds, its runtime description does not. |
-| `clm_acme_dataplane_witness.md` | here (added under Gate A) | The tenant data-plane proof protocol. Build-only under Gate A — the standing PATCH proof is not executed. |
+| `backend_service_startup_fastapi.md` | `docs/runbooks/` | **The canonical startup runbook.** Standing map 8001/8003/8005/**8830**/**8831** (the two PUBLIC edges); `8820`/`8002`/`8004` are RETIRED — those components are deleted — and the `8081–8088` map is isolated smoke/verification only. |
+| `b5_service_startup_order.md` | `docs/runbooks/` | 🟠 **Superseded for the served topology, and it starts processes that no longer exist.** Predates the FastAPI migration; its dependency *order* still holds for the surviving edges, its runtime description and its Gateway step do not. |
+| `clm_acme_dataplane_witness.md` | here (added under Gate A) | ⛔ **WITHDRAWN** — its harness drove `Gateway 8820 → Tenant Startup 8004`, both deleted. There is currently **no** live tenant-data-plane proof. |
 
 ## Standing rules for every runbook
 

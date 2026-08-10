@@ -511,6 +511,14 @@ def test_importlinter_config_enforces_ic012_section13() -> None:
     assert 'name = "the deployment root may compose only the authorized Edge 9 services"' in linter, (
         "the forward-narrowing forbidden contract must be present (IC-012 §13)"
     )
+    # ...and its forbidden_modules list is pinned BYTE-FOR-BYTE, like the independence contract
+    # below. Naming the contract without pinning its content left a one-line deletion able to
+    # empty the grant's complement while the name — and this assertion — stayed green.
+    edge9_forbidden = 'source_modules = ["deployment"]\nforbidden_modules = [\n  "auth_router",\n  "control_plane",\n]\n'
+    assert edge9_forbidden in toml, (
+        "the Edge 9 forbidden_modules list must be the EXACT complement of the authorized set over the "
+        "surviving services (IC-012 §3); it is pinned byte-for-byte so it cannot be silently emptied"
+    )
     # The pre-existing service-independence contract must survive verbatim and unweakened.
     independence = (
         "[[tool.importlinter.contracts]]\n"

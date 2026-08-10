@@ -195,6 +195,11 @@ def test_one_uvicorn_command_template_carrying_every_flag() -> None:
     )
     assert "--port $Port" in template, "the template must take the port from the governed per-edge assignment"
     assert re.search(r'\$STANDING_BIND_HOST\s*=\s*"127\.0\.0\.1"', text), "the governed standing bind host must be 127.0.0.1"
+    # ...and assigned EXACTLY ONCE. A second assignment later in the file silently rebinds every
+    # edge — including BOTH public ones — and the single-template check above would still pass,
+    # because the template interpolates the variable rather than the literal.
+    binds = re.findall(r"^\s*\$STANDING_BIND_HOST\s*=", "\n".join(line for _n, line in _code_lines(text)), re.M)
+    assert len(binds) == 1, f"$STANDING_BIND_HOST must be assigned exactly once; found {len(binds)} assignments"
 
 
 def test_standing_port_map_is_the_governed_map() -> None:
@@ -235,8 +240,15 @@ def test_no_retired_gateway_port_or_module_is_started() -> None:
     for module, port in edges.items():
         assert port not in RETIRED_PORTS, f"{module} is assigned RETIRED port {port} — that component was deleted"
         assert module not in RETIRED_MODULES, f"{module} was deleted with the API Gateway and must not be started"
+    # Not just the `-Module` argument: a raw `Start-Process ... uvicorn api_gateway...` would evade a
+    # census that only reads the helper's parameters, so the module names are banned from launcher
+    # CODE outright. Comments may still NAME them — that is how the retired map is documented — so
+    # this reads the comment-stripped view.
+    code = "\n".join(line for _n, line in _code_lines(text))
     for module in RETIRED_MODULES:
         assert f'-Module "{module}"' not in text, f"the launcher must not name the deleted module {module}"
+        assert module not in code, f"the launcher must not name the deleted module {module} anywhere in code (side-channel start)"
+    assert "api_gateway" not in code, "no launcher code may name the deleted package by any route"
     consts = _port_constants(text)
     for name, value in consts.items():
         assert value not in RETIRED_PORTS, f"${name} = {value} is a retired port constant"
@@ -304,7 +316,9 @@ def test_activation_selectors_are_gated_behind_an_explicit_opt_in() -> None:
         opens_gate = bool(re.search(r"^\s*if\s*\(.*\$Enable[A-Za-z]+", line))
         for name in GATED_ACTIVATION_SELECTORS:
             # An assignment form: `["NAME"] = ...`, `NAME = ...` or `NAME=...` inside a hashtable.
-            if re.search(rf'(\["{name}"\]|\b{name}\b)\s*=[^=]', line):
+            # `["NAME"] = ...`, `NAME = ...`, `NAME=...` inside a hashtable, AND `.Add("NAME", ...)` —
+            # the Add() form is a real bypass of an assignment-only pattern.
+            if re.search(rf'(\["{name}"\]|\b{name}\b)\s*=[^=]', line) or re.search(rf'\.Add\(\s*["\']{name}["\']', line):
                 assert depth_of_gate or opens_gate, (
                     f"{LAUNCHER.name}:{line_no} assigns {name} outside an -Enable* opt-in block. Gate A authorises "
                     "the launcher to CONTAIN the activation selectors so their governed values are pinned and a "
@@ -317,6 +331,72 @@ def test_activation_selectors_are_gated_behind_an_explicit_opt_in() -> None:
         depth += line.count("{") - line.count("}")
         while depth_of_gate and depth <= depth_of_gate[-1]:
             depth_of_gate.pop()
+
+
+def test_retired_ports_are_a_FATAL_refusal_not_a_warning() -> None:
+    """A stale pre-removal process must stop the start, exactly as a busy standing port does.
+
+    Before the removal, 8820 / 8002 / 8004 were members of ``$STANDING_PORTS``: busy meant refuse to
+    start. Downgrading them to an advisory warning when they became "not our ports" would have been
+    a real weakening — a stale Gateway on 8820 can keep serving a browser while this topology starts
+    alongside it, and 8004 served an UNAUTHENTICATED envelope edge.
+    """
+    text = _text()
+    match = re.search(r"\$RETIRED_PORTS\s*=\s*@\(([^)]*)\)", text)
+    assert match, "the launcher must declare $RETIRED_PORTS as a single reviewable array"
+    declared = {int(item.strip()) for item in match.group(1).split(",") if item.strip()}
+    assert declared == set(RETIRED_PORTS), f"the retired-port census must be exactly {sorted(RETIRED_PORTS)}, got {sorted(declared)}"
+    code = "\n".join(line for _n, line in _code_lines(text))
+    assert re.search(r"\$retiredBusy\s*=\s*@\(\$RETIRED_PORTS \| Where-Object \{ Test-Port \$_ \}\)", code), (
+        "the launcher must TEST every retired port"
+    )
+    assert re.search(r"if \(\$retiredBusy\) \{\s*\n\s*throw ", code), (
+        "a listener on a retired port must THROW — a warning lets a stale pre-removal process keep serving"
+    )
+    # ...and they must not have quietly moved into the advisory list instead.
+    advisory = re.search(r"\$COLLISION_ADVISORY_PORTS\s*=\s*@\(([^)]*)\)", text)
+    assert advisory, "the advisory list must still exist"
+    advisory_ports = {int(item.strip()) for item in advisory.group(1).split(",") if item.strip()}
+    assert not (advisory_ports & set(RETIRED_PORTS)), (
+        f"a retired port may not be demoted to advisory; found {sorted(advisory_ports & set(RETIRED_PORTS))}"
+    )
+
+
+def test_the_tenant_data_plane_switch_actually_gates_the_public_startup_edge() -> None:
+    """The Gate-B M14 control, pinned — it was previously enforced by nothing.
+
+    Under the Gateway, ``SP2_GW_TENANT_STARTUP_BASE_URL`` decided whether the tenant data plane was
+    wired. The public Startup edge holds ``TenantStartupOperations`` IN-PROCESS, so composing it IS
+    the data plane and the equivalent control is whether the edge STARTS. That control is only worth
+    having if something checks it: without this test, inverting the condition — or dropping the
+    ``if`` entirely — would start a tenant-write-capable public edge by default and every other
+    guard would stay green.
+    """
+    text = _text()
+    lines = text.splitlines()
+    start_line = next(
+        (i for i, line in enumerate(lines, 1) if '-Module "database_router.adapters.providers.http_public_startup_edge"' in line),
+        None,
+    )
+    assert start_line, "the launcher must start the public tenant Startup edge somewhere"
+    # Walk BACKWARDS to the nearest enclosing condition and require it to be the positive form.
+    guard_line = next(
+        (i for i in range(start_line, max(start_line - 12, 0), -1) if re.search(r"^\s*if \(\$EnableTenantDataPlane\)\s*\{", lines[i - 1])),
+        None,
+    )
+    assert guard_line, (
+        "the public Startup edge's Start-StandingEdge must sit inside `if ($EnableTenantDataPlane) {` — "
+        "starting it IS the tenant data plane (Gate-B class M14), so an ungated start is an ungated activation"
+    )
+    assert not re.search(r"if \(-not \$EnableTenantDataPlane\)", text), "the gate must not be inverted"
+    # The switch is off by default (a PowerShell [switch] has no default value).
+    assert re.search(r"\[switch\]\$EnableTenantDataPlane\b", text), "-EnableTenantDataPlane must be a switch"
+    assert not re.search(r"\[switch\]\$EnableTenantDataPlane\s*=", text), "-EnableTenantDataPlane must have no default value"
+    # The Workspace edge is NOT gated by it — only the tenant-write-capable edge is.
+    workspace_line = next(
+        (i for i, line in enumerate(lines, 1) if '-Module "control_plane.adapters.providers.http_public_workspace_edge"' in line), None
+    )
+    assert workspace_line and workspace_line < start_line, "the read-only Workspace edge starts unconditionally, before the gated one"
 
 
 def test_launcher_resolves_its_own_worktree() -> None:
@@ -425,6 +505,8 @@ if __name__ == "__main__":
             test_standing_port_map_is_the_governed_map,
             test_public_edges_are_8830_8831_and_no_standing_edge_lands_in_the_smoke_range,
             test_no_retired_gateway_port_or_module_is_started,
+            test_retired_ports_are_a_FATAL_refusal_not_a_warning,
+            test_the_tenant_data_plane_switch_actually_gates_the_public_startup_edge,
             test_no_gateway_environment_selector_survives_in_launcher_code,
             test_no_unauthorized_serving_mode_in_the_launcher,
             test_the_three_e60_selectors_are_never_set,

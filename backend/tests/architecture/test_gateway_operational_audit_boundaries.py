@@ -15,7 +15,7 @@ persistence slice only (V1b operator retrieval is out of scope). Pins:
 * the CP store + port — CP-local record/port (no sibling-service import), one abstract
   write method, ON CONFLICT (audit_id), append-only adapter surface;
 * the composition seams — the CP loopback-host allowlist + fail-closed; the gateway
-  SP2_GW_AUDIT_SINK_BASE_URL selector with NO loopback default and ValueError-before-socket; the
+  SP2_EDGE_AUDIT_SINK_BASE_URL selector with NO loopback default and ValueError-before-socket; the
   BoundedGatewayAuditPolicy bounded single retry;
 * the gateway fail-closed edit — the success emit is wrapped and a terminal failure returns 503;
 * the MANUAL_ONLY disposable proof — STOP-before-connect, exact 012→013 apply order, no wildcard,

@@ -48,6 +48,7 @@ import importlib.util
 import json
 import pathlib
 import sys
+import tempfile
 from typing import Dict, List, Set
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -394,18 +395,18 @@ def test_static_detectors_flag_planted_violations() -> None:
     # The recursive key walk sees nested keys (a smuggled DSN inside a nested record is caught).
     assert _recursive_keys({"memberships": [{"tenant_id": "t", "dsn": "x"}]}) & _P2_FORBIDDEN == {"dsn"}
     # The dataclass census reads the module's own AST, so an added shape is visible.
-    tmp = _scan.BACKEND_ROOT / "tests" / "architecture" / "_nv_probe_portal.py"
-    try:
+    # A TEMPORARY directory, never the tracked tree: a guard that writes into tests/architecture/
+    # dirties the working tree during a normal `pytest` run and strands a file if the process dies.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = pathlib.Path(tmpdir) / "_nv_probe_portal.py"
         tmp.write_text("import dataclasses\n\n\n@dataclasses.dataclass(frozen=True)\nclass PlantedDTO:\n    x: str\n", encoding="utf-8")
         spec = importlib.util.spec_from_file_location("_nv_probe_portal", tmp)
         assert spec and spec.loader
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         found = _portal_dataclasses(tmp, module)
-        assert {c.__name__ for c in found} == {"PlantedDTO"}, "the dataclass census must see a planted shape"
-        assert found != set(_EXACT_FIELD_SETS), "an unlisted shape must break catalogue closure"
-    finally:
-        tmp.unlink(missing_ok=True)
+    assert {c.__name__ for c in found} == {"PlantedDTO"}, "the dataclass census must see a planted shape"
+    assert found != set(_EXACT_FIELD_SETS), "an unlisted shape must break catalogue closure"
 
 
 if __name__ == "__main__":

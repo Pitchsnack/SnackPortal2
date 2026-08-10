@@ -1,5 +1,16 @@
 # SnackPortal2 — Action Tracker
 
+> ## ⚠️ DRIFT FLAG — `experiment/complete-api-gateway-removal-mvp` contradicts this document
+>
+> Next-action **#6 "Author PRD 04 V2 API Gateway Implementation PRD"**, **#7** and **#8** are for a component that branch DELETES. They are left ⬜ open here rather than closed or struck: whether the Gateway is built or removed is Dan's decision, and marking them done or dropped would prejudge it.
+>
+> **This document is NOT amended.** CLAUDE.md makes the Overview authoritative on scope and the
+> locked decisions, and says to *flag DRIFT before acting* — which is what this banner is. Reopening
+> a locked invariant or reversing a decision needs Dan's sign-off, not a code change. On `main`
+> nothing here has moved.
+>
+> Full evidence: `docs/reports/SnackPortal2_Complete_API_Gateway_Zero_Residual_Removal_Result_Claude.md`.
+
 > Use this to track progress. Flip a Next item's status to ✅ as you finish it. The Next list is ordered roughly by sequence/priority.
 
 **Updated:** 2026-06-20 · **Status key:** ✅ done · 🟡 in progress · ⬜ to do · ⏸ deferred · ❓ needs your input

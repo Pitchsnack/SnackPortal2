@@ -35,13 +35,12 @@ here. They do not appear in any accepted body, header, query, or path; they are 
 from the internal envelope edge this replaces, whose ``target_tenant_ref`` *was* a body field —
 the exact hazard the previous removal experiment demonstrated.
 
-Stated precisely, because the stronger version is false: the MVP topology does not RUN that
-internal edge, and this edge never imports or constructs it. But the module, its application
-factory and its serve entrypoint all still exist, and its composition gate is the SAME variable
-this edge requires — so it composes perfectly well under the MVP environment, and the standing
-launcher still starts it on 8004. The hazard is NOT LAUNCHED, which is a topology choice; it is
-not deleted, which would need the later cleanup PR that removes the module. Pinned by
-``test_a20d_KNOWN_RESIDUAL_...``.
+That internal edge is now DELETED — module, application factory and serve entrypoint — and the
+standing launcher no longer names it. An earlier revision of this docstring said the opposite,
+correctly at the time: the hazard was then NOT LAUNCHED, which is a topology choice, rather than
+removed. The stronger claim is now the true one, and it is asserted on three independent oracles
+(file absent, ``importlib.util.find_spec`` fails, no builder on the composition root) by
+``test_a20d_the_internal_envelope_edge_IS_DELETED_not_merely_unlaunched``.
 
 Fail closed: every denial and unavailability carries a fixed status and an EMPTY body — never a
 provider body, exception text, stack, token, connection material, database identity, or tenant

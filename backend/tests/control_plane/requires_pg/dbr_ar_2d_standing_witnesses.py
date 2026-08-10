@@ -64,7 +64,7 @@ witness). The B5-4/B5-4A/Smoke C operator modules are NEVER imported.
 
 DRIVER/VENDOR CONTAINMENT. No static database-driver import (psycopg is located via importlib at
 call time) and no JWT/crypto vendor import (tokens are minted by the blessed B5-5 fixture,
-``tests/api_gateway/crypto_fixture.py``, loaded lazily by file location). Module import is inert
+``tests/shared/crypto_fixture.py``, loaded lazily by file location). Module import is inert
 (no I/O, no env mutation, no socket, no thread). Backend/provider imports are lazy, inside
 commands. Runbook: ``infrastructure/runbooks/dbr_ar_2_durable_routing_audit.md`` (invoked from
 ``backend/`` as ``python tests/control_plane/requires_pg/dbr_ar_2d_standing_witnesses.py <cmd>``).
@@ -128,7 +128,7 @@ _B5_4_PASS_COUNT = 6
 _B5_4A_PASS_COUNT = 12
 
 # The blessed B5-5 RS256 fixture (loaded lazily by file location; vendors stay contained there).
-_CRYPTO_FIXTURE_PATH = _BACKEND_ROOT / "tests" / "api_gateway" / "crypto_fixture.py"
+_CRYPTO_FIXTURE_PATH = _BACKEND_ROOT / "tests" / "shared" / "crypto_fixture.py"
 
 # The reviewed DBR-AR-2B DDL — exact repository paths, applied 010 then 011, each exactly once.
 _CONTROL_DDL_DIR = _REPO_ROOT / "infrastructure" / "db" / "control"

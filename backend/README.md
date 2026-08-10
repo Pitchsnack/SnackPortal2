@@ -11,11 +11,10 @@ rules that later build phases ride on. All work traces to the Final contracts
 ## Layout
 | Path | Purpose |
 |---|---|
-| `shared/` | Vendor-neutral cross-cutting library — **dependency leaf** (pure stdlib). Ports + shapes only. |
-| `api_gateway/` | Single request entry point (skeleton). |
+| `shared/` | Vendor-neutral cross-cutting library — **dependency leaf**. Ports + shapes, plus `public_edge.py`: the public-boundary security kernel both public edges link **in-process**. It is a library, not a component — import-linter proves it can reach no service. |
 | `auth_router/` | Authentication + tenant-context (skeleton; IC-005). |
-| `database_router/` | Registry-authoritative routing (skeleton; IC-005/IC-002). |
-| `control_plane/` | Control DB, registry, readiness, directories (skeleton; IC-001). |
+| `database_router/` | Registry-authoritative routing (skeleton; IC-005/IC-002). Owns the **public tenant Startup edge** (`adapters/providers/http_public_startup_edge.py`) — one of the two surfaces a browser may reach. |
+| `control_plane/` | Control DB, registry, readiness, directories (skeleton; IC-001). Owns the **public Workspace edge** (`adapters/providers/http_public_workspace_edge.py`) — the other public surface. |
 | `import_service/` | Global→tenant import-copy (skeleton; IC-003). |
 | `lineage_service/` | Tenant-resident provenance (skeleton; IC-004). |
 | `tests/architecture/` | Architecture/governance validation (runnable via pytest or `python`). |

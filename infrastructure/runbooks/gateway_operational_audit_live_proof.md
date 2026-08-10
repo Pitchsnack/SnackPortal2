@@ -107,8 +107,11 @@ Gateway MembershipsForPrincipal success
 
 ## 5. Disable / incident response (allowed actions)
 
-- **Unset the durable selector** (`SP2_GW_AUDIT_SINK_BASE_URL`) so the NEXT composition returns to the
-  prior in-memory no-sink posture — never a silent fallback while durable mode is selected.
+- **Unset the durable selector** (`SP2_EDGE_AUDIT_SINK_BASE_URL` — it was
+  `SP2_GW_AUDIT_SINK_BASE_URL` until the API Gateway was deleted; unsetting the OLD name is now a
+  **silent no-op** and would leave durable writes live during an incident) so the NEXT composition
+  returns to the prior in-memory no-sink posture — never a silent fallback while durable mode is
+  selected. The selector must be unset on **BOTH** public edges: each composes its own boundary.
 - **Stop the ingest endpoint** — served MembershipsForPrincipal successes then fail closed to the typed
   503 (audit-before-hand-back); no success is served without durable persistence.
 - **Preserve rows** — audit rows are never altered, moved, or removed during an incident.

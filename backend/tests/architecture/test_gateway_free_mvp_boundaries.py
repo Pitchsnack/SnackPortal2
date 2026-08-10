@@ -49,6 +49,11 @@ _TOPOLOGY = _BACKEND.parent / "docs" / "runbooks" / "gateway_free_mvp_topology.m
 
 _PUBLIC_EDGE_FILES = (_KERNEL, _TRANSPORT, _AUTH_CLIENT, _EDGE_AUDIT, _STARTUP_EDGE, _WORKSPACE_EDGE, _DBR_PORTAL, _CP_PORTAL)
 
+# The commit immediately BEFORE the API Gateway was deleted. GF-8 reads the Gateway's own
+# sources out of git at this commit, because the baseline it establishes is a fact about the
+# component that was removed — and that fact cannot be measured against an empty directory.
+_PRE_REMOVAL_COMMIT = "8719f4f3"
+
 _SERVICES = ("api_gateway", "auth_router", "database_router", "control_plane", "import_service", "lineage_service")
 
 # The two public-edge application factories the Gateway-free MVP topology runs.
@@ -565,21 +570,65 @@ def test_gf6b_the_topology_states_its_experimental_status() -> None:
 # ------------------------------------------------------------------------------------------
 
 
-def test_gf8_the_api_gateway_public_tier_is_credential_free_and_driver_free() -> None:
+def _imported_modules_of_tree(tree):
+    """Absolute imported module names from an already-parsed tree (the `_scan.imported_modules`
+    contract, for source that is read from git rather than from disk)."""
+    mods = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            mods.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            mods.append(node.module)
+    return mods
+
+
+def test_gf8_the_api_gateway_public_tier_was_credential_free_and_driver_free() -> None:
     """What ``main`` has today, stated as a fact so the comparison cannot be fudged.
 
-    The Gateway is the only internet-facing process on ``main``, and it is STRUCTURALLY
-    incapable of touching a database: the driver-containment guard permits drivers only under
+    The Gateway is the only internet-facing process on ``main``, and it is STRUCTURALLY incapable
+    of touching a database: driver containment permits drivers only under
     ``database_router/adapters/providers/`` and ``control_plane/adapters/providers/``, and every
-    Gateway selector is non-secret routing config. Compromising it yields no database access —
-    only the internal envelope API's two routes and one 500-character field.
+    Gateway selector is non-secret routing config. Compromising it yields no database access.
+
+    **This guard WENT VACUOUS when the package was deleted and has been repaired.** It used to walk
+    ``_scan.py_files(_BACKEND / "api_gateway")``; that generator now yields nothing, so the loop body
+    never executed and the test passed with ZERO assertions run — while remaining the baseline half
+    of the entire privilege-regression argument. A silently-passing baseline is worse than no
+    baseline, because the comparison in GF-8b then rests on nothing.
+
+    The repair reads the deleted sources back out of git at the pre-removal commit, so the baseline
+    is measured against the real Gateway rather than against an empty directory, and the census
+    asserts it saw a non-empty file set before it asserts anything about the contents.
     """
+    import subprocess
+
     drivers = {"psycopg", "psycopg2", "asyncpg", "sqlalchemy", "databases", "aiopg"}
     secrets = {"EnvTenantSecretStore", "EnvReferenceSecretStore", "SecretRef", "SecretStore"}
-    for path in _scan.py_files(_BACKEND / "api_gateway"):
-        tops = _import_tops(path)
-        assert not (tops & drivers), f"{_scan.relposix(path)} imports a database driver"
-        assert not (_identifiers(path) & secrets), f"{_scan.relposix(path)} names a credential store"
+    listing = subprocess.run(
+        ["git", "ls-tree", "-r", "--name-only", _PRE_REMOVAL_COMMIT, "backend/api_gateway"],
+        cwd=str(_scan.REPO_ROOT),
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert listing.returncode == 0, f"the pre-removal Gateway tree must be readable from git: {listing.stderr[-400:]}"
+    modules = [p for p in listing.stdout.split() if p.endswith(".py")]
+    # NON-VACUITY, first: the baseline must be measured against a real, non-empty package. This is
+    # the assertion whose absence let the original version pass on an empty directory.
+    assert len(modules) >= 15, f"the pre-removal Gateway must have at least 15 modules to measure; found {len(modules)}"
+    checked = 0
+    for rel in modules:
+        blob = subprocess.run(
+            ["git", "show", f"{_PRE_REMOVAL_COMMIT}:{rel}"], cwd=str(_scan.REPO_ROOT), capture_output=True, text=True, timeout=120
+        )
+        assert blob.returncode == 0, f"could not read {rel} at {_PRE_REMOVAL_COMMIT}"
+        tree = ast.parse(blob.stdout, filename=rel)
+        tops = {m.split(".")[0] for m in _imported_modules_of_tree(tree)}
+        names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)} | {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+        assert not (tops & drivers), f"{rel} imported a database driver"
+        assert not (names & secrets), f"{rel} named a credential store"
+        checked += 1
+    assert checked == len(modules), "every pre-removal Gateway module must have been inspected"
 
 
 def test_gf8b_KNOWN_REGRESSION_the_gateway_free_public_tier_holds_database_credentials() -> None:

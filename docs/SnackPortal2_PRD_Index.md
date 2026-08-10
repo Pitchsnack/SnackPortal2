@@ -1,5 +1,16 @@
 # SnackPortal2 — PRD Index (two-track numbering)
 
+> ## ⚠️ DRIFT FLAG — `experiment/complete-api-gateway-removal-mvp` contradicts this document
+>
+> **B-7 API Gateway** is DELETED on that branch, not advanced to V2. The row is left as-is because the index tracks `main`, where B-7 is unchanged.
+>
+> **This document is NOT amended.** CLAUDE.md makes the Overview authoritative on scope and the
+> locked decisions, and says to *flag DRIFT before acting* — which is what this banner is. Reopening
+> a locked invariant or reversing a decision needs Dan's sign-off, not a code change. On `main`
+> nothing here has moved.
+>
+> Full evidence: `docs/reports/SnackPortal2_Complete_API_Gateway_Zero_Residual_Removal_Result_Claude.md`.
+
 > **Decision D5:** PRDs use two prefixed tracks so the old number clashes disappear.
 > - **P- = Product PRDs** — user-facing features, built in Lovable.
 > - **B- = Backend / Platform PRDs** — vendor-neutral infrastructure, external.

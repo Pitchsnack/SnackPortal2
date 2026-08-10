@@ -233,7 +233,7 @@ smoke checks in §7 after starting them.
 | `SP2_AR_CONTROL_PLANE_READ_BASE_URL` | **yes** | `http://127.0.0.1:8081` — activation selector; unset ⇒ startup failure |
 | `SP2_AR_ISSUERS` | **yes when active** | JSON object mapping issuer → `{issuer, audience, allowed_algs, jwks, tenant_claim}`. The `issuer` field must equal its map key. |
 
-### Database Router Dispatch (8083) and Tenant Startup (8084)
+### Database Router — the routing/tenant-credential selectors (standing **8830**; smoke 8083)
 
 | Variable | Required | Meaning |
 |---|---|---|

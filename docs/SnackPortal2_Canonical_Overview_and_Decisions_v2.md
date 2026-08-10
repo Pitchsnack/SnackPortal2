@@ -1,5 +1,16 @@
 # SnackPortal2 — Canonical Overview & Decisions (v2)
 
+> ## ⚠️ DRIFT FLAG — `experiment/complete-api-gateway-removal-mvp` contradicts this document
+>
+> **Part 2 locked invariant #7 — *"The Gateway is the boundary"* — and the Part 1 *"One doorway only: the API Gateway"* framing are both contradicted on that branch: the API Gateway package is DELETED and each MVP route family is served by the service that owns its records, behind a shared boundary library linked in-process. **D4 ("build the Gateway next") is superseded there too.** The proposed replacement invariant is *"the authenticated public edge is the boundary — the frontend reaches only route-owning public edges, never a database, an internal read API, or a router directly."*
+>
+> **This document is NOT amended.** CLAUDE.md makes the Overview authoritative on scope and the
+> locked decisions, and says to *flag DRIFT before acting* — which is what this banner is. Reopening
+> a locked invariant or reversing a decision needs Dan's sign-off, not a code change. On `main`
+> nothing here has moved.
+>
+> Full evidence: `docs/reports/SnackPortal2_Complete_API_Gateway_Zero_Residual_Removal_Result_Claude.md`.
+
 > **What changed in v2.** Decisions D1–D4 and D7 are recorded as made; **D6 is now formally Deferred** (with a reservation spec in Part 4B). The Lovable project-state report has been folded in as confirmed drift plus a keep/replace rework list, and registered as session **S6** so it slots into the comparison.
 
 **Version:** v2.2
