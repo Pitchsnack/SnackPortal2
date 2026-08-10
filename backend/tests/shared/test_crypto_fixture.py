@@ -18,12 +18,12 @@ verification path, network-free and DB-free:
 
 This module imports NO JWT/crypto vendor itself — the vendor surface stays inside the one
 blessed fixture module (exact-file containment). It is isolated auth-fixture validation
-only: no gateway, no server, no thread, no database, no Smoke C execution, no standing-
+only: no public edge, no server, no thread, no database, no Smoke C execution, no standing-
 fixture interaction. B5-BLK-4 stays OPEN; the Physical Multi-Database MVP is NOT completed
 or advanced by these tests.
 
 Stdlib + fixture only; runnable standalone:
-  python tests/api_gateway/test_crypto_fixture.py
+  python tests/shared/test_crypto_fixture.py
 """
 
 from __future__ import annotations

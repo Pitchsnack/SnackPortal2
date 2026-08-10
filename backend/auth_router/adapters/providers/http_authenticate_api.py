@@ -7,7 +7,7 @@ portal-reachable, public, or frontend/Lovable-facing (IC-010 §R Internal-Surfac
 Protection; §M Service Contract; Section B). It binds ``127.0.0.1`` by default and serves
 through the shared uvicorn runtime (``shared.adapters.providers.asgi_runtime``); the
 FastAPI app declares exactly the one route and the OpenAPI/docs surface is disabled, so the
-closed single-surface posture is unchanged. It imports NO ``api_gateway`` and emits NO
+closed single-surface posture is unchanged. It imports NO sibling service and emits NO
 Database Router ``RequestContext`` — the gateway builds ``RequestContext`` exclusively from
 this response (Section F).
 
@@ -263,7 +263,7 @@ def serve_authenticate_api() -> None:
 
     Ops: docs/runbooks/b5_service_startup_order.md (the control-plane read edge starts first; its
     URL feeds ``SP2_AR_CONTROL_PLANE_READ_BASE_URL``; this service's URL then feeds
-    ``SP2_GW_AUTH_ROUTER_BASE_URL``). No overclaim: this makes the service RUNNABLE — it does not
+    ``SP2_EDGE_AUTH_ROUTER_BASE_URL``). No overclaim: this makes the service RUNNABLE — it does not
     deploy or supervise it, prove a served-request live topology, provision a physical database,
     or complete Smoke C / the Physical Multi-Database MVP (B5-BLK-4 stays OPEN).
     """

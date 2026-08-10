@@ -1,5 +1,13 @@
 # DBR-AR-2 — Durable Routing Audit (operator runbook)
 
+> ## ⛔ WITHDRAWN — the API Gateway has been DELETED
+>
+> The DBR-AR-2D V3 standing witness (`tests/control_plane/requires_pg/dbr_ar_2d_standing_witnesses.py`) now REFUSES on `run`: it composed the API Gateway and the internal dispatch edge, both deleted. `plan` and `status` are unaffected, and the durable routing-audit property itself is still proved in CI by `tests/control_plane/requires_pg/test_dbr_ar_2d_routing_audit_live_pg.py`, which never touched the Gateway.
+>
+> Nothing in this document may be run, and no evidence produced by it before the removal may be
+> cited as current. It is retained because the recorded scenario, its ordering rules and its
+> evidence format are what a Gateway-free successor must reproduce.
+
 **Scope:** NON-PRODUCTION / documentation only (PRD DBR-AR-2D V2). This runbook documents the governed
 operator procedure for applying the reviewed routing-audit DDL
 (`infrastructure/db/control/010_routing_audit.sql` + `011_routing_audit_append_only.sql`) to a **standing

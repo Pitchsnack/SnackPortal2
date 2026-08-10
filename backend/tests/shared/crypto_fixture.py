@@ -3,6 +3,8 @@
 This module is the SINGLE test-side module permitted to import the JWT/crypto vendors
 (``jwt``/PyJWT + ``cryptography``) under the exact-file containment allowance in
 ``tests/architecture/test_vendor_and_db_containment.py`` (``JWT_CRYPTO_FIXTURE_ALLOW``).
+It lives under ``tests/shared/`` — a service-neutral home; it was previously under the deleted
+``tests/api_gateway/`` tree and moved unchanged when the API Gateway was removed.
 Production JWT crypto stays where it always was — the ``PyJwtSignatureVerifier`` provider
 under ``auth_router/adapters/providers/``. Production code must never import this module.
 

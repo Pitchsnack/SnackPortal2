@@ -37,7 +37,7 @@ DB_PROVIDER_ZONES = (
 # (widening it to a tuple, directory, package prefix, or wildcard is a containment breach;
 # `test_jwt_crypto_allowance_is_exact_file_and_nonvacuous` fails on any such widening).
 JWT_CRYPTO_PREFIXES = ["jwt", "cryptography"]
-JWT_CRYPTO_FIXTURE_ALLOW = "tests/api_gateway/crypto_fixture.py"
+JWT_CRYPTO_FIXTURE_ALLOW = "tests/shared/crypto_fixture.py"
 
 
 def _matches(mod: str, prefixes: list) -> bool:
@@ -82,7 +82,7 @@ def test_jwt_crypto_vendors_only_in_providers_or_the_one_blessed_fixture() -> No
 def test_jwt_crypto_allowance_is_exact_file_and_nonvacuous() -> None:
     # The allowance is ONE exact file: a plain string, no wildcard/prefix/directory/tuple form.
     assert isinstance(JWT_CRYPTO_FIXTURE_ALLOW, str), "the allowance must be a single exact-path string"
-    assert JWT_CRYPTO_FIXTURE_ALLOW == "tests/api_gateway/crypto_fixture.py", "the allowance names exactly the one blessed fixture"
+    assert JWT_CRYPTO_FIXTURE_ALLOW == "tests/shared/crypto_fixture.py", "the allowance names exactly the one blessed fixture"
     assert "*" not in JWT_CRYPTO_FIXTURE_ALLOW and "?" not in JWT_CRYPTO_FIXTURE_ALLOW, "no wildcard forms"
     assert not JWT_CRYPTO_FIXTURE_ALLOW.endswith(("/", ".")), "no directory/prefix forms"
     assert (_scan.BACKEND_ROOT / JWT_CRYPTO_FIXTURE_ALLOW).is_file(), "the blessed fixture module must exist"
@@ -93,12 +93,11 @@ def test_jwt_crypto_allowance_is_exact_file_and_nonvacuous() -> None:
     assert _jwt_crypto_allowed(JWT_CRYPTO_FIXTURE_ALLOW)
     assert _jwt_crypto_allowed("auth_router/adapters/providers/pyjwt_verifier.py")
     for rejected in (
-        "tests/api_gateway/test_crypto_fixture.py",  # a SECOND test module is never blessed
-        "tests/api_gateway/crypto_fixture2.py",  # nor a same-directory sibling
+        "tests/shared/test_crypto_fixture.py",  # a SECOND test module is never blessed
+        "tests/shared/crypto_fixture2.py",  # nor a same-directory sibling
         "tests/auth_router/crypto_fixture.py",  # nor the same basename in another package
         "tests/architecture/test_vendor_and_db_containment.py",
         "tests/",  # nor any directory/prefix widening
-        "api_gateway/main.py",
         "auth_router/main.py",
         "shared/audit.py",
     ):

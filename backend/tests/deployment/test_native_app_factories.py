@@ -39,18 +39,17 @@ if str(_BACKEND) not in sys.path:
 # (label, module path, the routes the factory's app must expose)
 _EDGES = (
     (
-        "api_gateway",
-        "api_gateway.adapters.providers.http_gateway_edge",
-        {"/memberships", "/health", "/readiness", "/import/{source_ref:path}", "/tenant/startups/{startup_ref}"},
+        "public_startup",
+        "database_router.adapters.providers.http_public_startup_edge",
+        {"/tenant/startups/{startup_ref}", "/health", "/readiness"},
+    ),
+    (
+        "public_workspace",
+        "control_plane.adapters.providers.http_public_workspace_edge",
+        {"/memberships", "/health", "/readiness"},
     ),
     ("control_read", "control_plane.adapters.providers.http_read_api", {"/{_target:path}"}),
     ("auth_router", "auth_router.adapters.providers.http_authenticate_api", {"/internal/auth/authenticate"}),
-    ("dbr_dispatch", "database_router.adapters.providers.http_dispatch_api", {"/internal/dispatch/route"}),
-    (
-        "tenant_startup",
-        "database_router.adapters.providers.http_tenant_startup_api",
-        {"/internal/tenant/startups/read", "/internal/tenant/startups/update"},
-    ),
     ("gateway_audit", "control_plane.adapters.providers.http_gateway_audit_api", {"/internal/gateway-audit/events"}),
     ("import_audit", "control_plane.adapters.providers.http_import_audit_api", {"/internal/import-audit/events"}),
     ("routing_audit", "control_plane.adapters.providers.http_routing_audit_api", {"/internal/routing-audit/events"}),
@@ -97,20 +96,18 @@ _ALL_SELECTORS = (
     "SP2_IMPORT_AUDIT_SINK_BASE_URL",
     "SP2_IMPORT_HOST",
     "SP2_IMPORT_PORT",
-    "SP2_GW_AUTH_ROUTER_BASE_URL",
-    "SP2_GW_CONTROL_READ_BASE_URL",
-    "SP2_GW_DB_ROUTER_BASE_URL",
-    "SP2_GW_TENANT_STARTUP_BASE_URL",
-    "SP2_GW_IMPORT_BASE_URL",
-    "SP2_GW_AUDIT_SINK_BASE_URL",
-    "SP2_GW_EDGE_ALLOWED_ORIGINS",
-    "SP2_GW_EDGE_HOST",
-    "SP2_GW_EDGE_PORT",
+    "SP2_EDGE_AUTH_ROUTER_BASE_URL",
+    "SP2_EDGE_AUDIT_SINK_BASE_URL",
+    "SP2_EDGE_ALLOWED_ORIGINS",
+    "SP2_DBR_PUBLIC_STARTUP_HOST",
+    "SP2_DBR_PUBLIC_STARTUP_PORT",
+    "SP2_CP_PUBLIC_WORKSPACE_HOST",
+    "SP2_CP_PUBLIC_WORKSPACE_PORT",
 )
 
 
 def _complete_env(tmp_secret_dir: str) -> Dict[str, str]:
-    """A configuration under which all nine factories compose successfully."""
+    """A configuration under which all eight factories compose successfully."""
     return {
         "SP2_CP_CONTROL_STORE": "in_memory",
         "SP2_CP_CONTROL_STORE_DSN_REF": "control/control-store-dsn",
@@ -119,9 +116,7 @@ def _complete_env(tmp_secret_dir: str) -> Dict[str, str]:
         "SP2_DBR_ROUTING_READ_BASE_URL": _LOOPBACK,
         "SNACKPORTAL_TENANT_SECRET_DIR": tmp_secret_dir,
         "SP2_IMPORT_DIRECTORY_READ_BASE_URL": _LOOPBACK,
-        "SP2_GW_AUTH_ROUTER_BASE_URL": _LOOPBACK,
-        "SP2_GW_CONTROL_READ_BASE_URL": _LOOPBACK,
-        "SP2_GW_DB_ROUTER_BASE_URL": _LOOPBACK,
+        "SP2_EDGE_AUTH_ROUTER_BASE_URL": _LOOPBACK,
     }
 
 
@@ -206,8 +201,10 @@ def test_factory_is_callable_with_no_arguments() -> None:
 # --- fail closed ----------------------------------------------------------------------------
 
 
-# The five edges whose composition can report "inactive" convert that into a hard startup failure.
-_MUST_RAISE_WITHOUT_CONFIG = ("api_gateway", "auth_router", "dbr_dispatch", "tenant_startup", "import_service")
+# The four edges whose composition can report "inactive" convert that into a hard startup failure.
+# For the two PUBLIC edges this is the load-bearing case: an unset SP2_EDGE_AUTH_ROUTER_BASE_URL must
+# never yield an edge that serves without authenticating, so it yields no application at all.
+_MUST_RAISE_WITHOUT_CONFIG = ("public_startup", "public_workspace", "auth_router", "import_service")
 
 # The four edges that compose LAZILY and fail closed at FIRST STORE USE instead of at startup: the
 # three durable audit edges (their control-store secret REFERENCE has a non-blank default, and the
@@ -261,18 +258,28 @@ def test_read_edge_in_memory_default_is_a_documented_operator_hazard() -> None:
     assert "test-only" in text, "the runbook must mark the in-memory default as test-only"
 
 
-def test_partial_gateway_composition_never_activates() -> None:
-    # Two of three transports set: the gateway must refuse rather than front a partial composition.
-    for omitted in ("SP2_GW_AUTH_ROUTER_BASE_URL", "SP2_GW_CONTROL_READ_BASE_URL", "SP2_GW_DB_ROUTER_BASE_URL"):
+def test_partial_public_edge_composition_never_activates() -> None:
+    """Successor of ``test_partial_gateway_composition_never_activates``.
+
+    The Gateway needed three transports and refused to front a partial composition. Each public edge
+    needs fewer, and the property is sharper: the AUTHENTICATION selector is what must never be
+    optional. Omitting it must produce NO application — not an edge that serves unauthenticated.
+    """
+    cases = (
+        ("database_router.adapters.providers.http_public_startup_edge", "SP2_EDGE_AUTH_ROUTER_BASE_URL"),
+        ("database_router.adapters.providers.http_public_startup_edge", "SP2_DBR_ROUTING_READ_BASE_URL"),
+        ("control_plane.adapters.providers.http_public_workspace_edge", "SP2_EDGE_AUTH_ROUTER_BASE_URL"),
+    )
+    for module_path, omitted in cases:
         env = _complete_env(_secret_dir())
-        env.pop(omitted)
+        env.pop(omitted, None)
         with _env(env):
             raised = None
             try:
-                _factory("api_gateway.adapters.providers.http_gateway_edge")()
+                _factory(module_path)()
             except RuntimeError as exc:
                 raised = exc
-            assert raised is not None, f"the gateway must fail closed when {omitted} is absent"
+            assert raised is not None, f"{module_path} must fail closed when {omitted} is absent"
 
 
 def test_malformed_selector_fails_closed_before_composition() -> None:
@@ -281,7 +288,7 @@ def test_malformed_selector_fails_closed_before_composition() -> None:
     with _env(env):
         raised = None
         try:
-            _factory("database_router.adapters.providers.http_dispatch_api")()
+            _factory("database_router.adapters.providers.http_public_startup_edge")()
         except ValueError as exc:
             raised = exc
         assert raised is not None, "a malformed routing selector must raise, never fall back to a double"
@@ -321,16 +328,19 @@ def test_import_edge_still_requires_real_routing() -> None:
 
 
 def test_factory_and_compatibility_seam_produce_the_same_route_set() -> None:
-    # Both paths go through the same `_make_app`, so the served surface cannot drift between the
-    # canonical native startup and the retained compatibility lifecycle.
-    from database_router.adapters.providers.http_dispatch_api import build_dispatch_server
-    from database_router.main import build_router_from_env
+    # Both paths go through the same `make_app`, so the served surface cannot drift between the
+    # canonical native startup and the retained compatibility lifecycle. Re-aimed at the PUBLIC
+    # tenant Startup edge: the internal dispatch edge this used to check was deleted with the API
+    # Gateway, and the property (one surface, two entry points) belongs to whichever edge exists.
+    from database_router.adapters.providers.http_public_startup_edge import build_public_startup_edge_server
+    from database_router.main import build_public_startup_edge_deps_from_env
 
     with _env(_complete_env(_secret_dir())):
-        native = _factory("database_router.adapters.providers.http_dispatch_api")()
-        router = build_router_from_env()
-        assert router is not None
-        server, _base = build_dispatch_server(router, "127.0.0.1", 0)
+        native = _factory("database_router.adapters.providers.http_public_startup_edge")()
+        deps = build_public_startup_edge_deps_from_env()
+        assert deps is not None
+        ops, boundary, allowed_origins = deps
+        server, _base = build_public_startup_edge_server(ops, boundary, host="127.0.0.1", port=0, allowed_origins=allowed_origins)
         try:
             assert _routes(native) == _routes(server.app), "the native and compatibility paths must expose one surface"
         finally:
@@ -354,7 +364,7 @@ if __name__ == "__main__":
         test_gated_factories_fail_closed_with_no_configuration,
         test_lazy_factories_compose_but_never_resolve_a_secret_at_startup,
         test_read_edge_in_memory_default_is_a_documented_operator_hazard,
-        test_partial_gateway_composition_never_activates,
+        test_partial_public_edge_composition_never_activates,
         test_malformed_selector_fails_closed_before_composition,
         test_import_edge_accepts_env_var_only_tenant_secrets,
         test_import_edge_still_requires_real_routing,

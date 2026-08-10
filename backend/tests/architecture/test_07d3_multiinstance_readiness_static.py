@@ -103,14 +103,13 @@ _READ_EDGE_MAKE_SERVER_BLESSED = {"control_plane/main.py"}
 # ``ThreadingHTTPServer`` is never blessed anywhere (AT-D15T1-10 single-threaded HARD-GATE).
 _SERVE_LOOP_BLESSED = {
     "auth_router/adapters/providers/http_authenticate_api.py": "serve_authenticate_api",
-    "database_router/adapters/providers/http_dispatch_api.py": "serve_dispatch_api",
-    "api_gateway/adapters/providers/http_gateway_edge.py": "serve_gateway_edge",
     "import_service/adapters/providers/http_import_api.py": "serve_import_api",
-    # D-42 CLM Stage B: the internal Database-Router tenant Startup operations edge (the
-    # dispatch-edge sibling; same single-entrypoint/single-serve_forever shape).
-    "database_router/adapters/providers/http_tenant_startup_api.py": "serve_tenant_startup_api",
-    # Gateway-free MVP (EXPERIMENT BRANCH): the two service-owned PUBLIC edges that replace the
-    # single central Gateway edge. Each is registered on exactly the same terms as every entry
+    # The API Gateway edge, the Database-Router dispatch edge and the internal tenant-Startup
+    # envelope edge were DELETED with the Gateway; their blessings went with them, which is the
+    # census working as intended — a blessing can never outlive the module it blesses (asserted
+    # immediately below).
+    # The two service-owned PUBLIC edges that replace the single central Gateway edge. Each is
+    # registered on exactly the same terms as every entry
     # above — one named blocking entrypoint per module, containing exactly one ``serve_forever``
     # — so the census stays narrow, named and per-module. Registering a legitimate new edge is
     # what this dictionary is for; the guard's strength is the per-entrypoint rule, not the
@@ -437,10 +436,18 @@ def test_read_edge_wiring_census_is_non_vacuous() -> None:
     # ThreadingHTTPServer is flagged EVERYWHERE — even in a serve-blessed module (AT-D15T1-10).
     assert probe(auth_relp, "srv = ThreadingHTTPServer(addr, handler)\n") == [f"{auth_relp} references ThreadingHTTPServer"]
     assert probe("some_service/evil.py", "srv = ThreadingHTTPServer(addr, handler)\n"), "unblessed ThreadingHTTPServer must be flagged"
-    # The dispatch blessing is entrypoint-specific: the auth entrypoint name does not bless dispatch.
-    dbr_relp = "database_router/adapters/providers/http_dispatch_api.py"
+    # The blessing is entrypoint-specific: the auth entrypoint name does not bless another module.
+    # (Re-aimed at the public Startup edge — the dispatch edge this used to probe was deleted with
+    # the API Gateway, and a probe naming a module that no longer exists would still "pass" while
+    # testing nothing.)
+    dbr_relp = "database_router/adapters/providers/http_public_startup_edge.py"
     assert probe(dbr_relp, "def serve_authenticate_api():\n    s.serve_forever()\n"), "the wrong entrypoint name must be flagged"
-    assert probe(dbr_relp, "def serve_dispatch_api():\n    s.serve_forever()\n") == []
+    assert probe(dbr_relp, "def serve_public_startup_edge():\n    s.serve_forever()\n") == []
+    # A module that is no longer blessed at all (its blessing was struck when it was deleted) is
+    # flagged like any other unblessed module — the census cannot carry a dead exemption.
+    assert probe("database_router/adapters/providers/http_dispatch_api.py", "srv.serve_forever()\n"), (
+        "a struck blessing must not keep exempting its old module"
+    )
 
 
 def test_serve_loop_census_blessed_entrypoints_are_real() -> None:
@@ -448,17 +455,14 @@ def test_serve_loop_census_blessed_entrypoints_are_real() -> None:
     # defines its single blocking entrypoint with exactly one serve_forever inside it (the blessing
     # never outlives the code it blesses); the blessed set stays exactly the named adapter
     # modules; and the retained 07E-1 precedent (serve_read_api in the read adapter) survives. W1a
-    # blessed the served internal import edge serve_import_api; the D-42 CLM Stage B slice blessed
-    # the internal Database-Router tenant Startup operations edge serve_tenant_startup_api; and the
-    # Gateway-free MVP experiment blesses the two service-owned PUBLIC edges. The set below is the
+    # blessed the served internal import edge serve_import_api; the Gateway-free MVP blesses the two
+    # service-owned PUBLIC edges, and the three Gateway-era entries were struck when their modules
+    # were deleted. The set below is the
     # census — every entry is checked against real code immediately after, so a blessing can never
     # outlive the module it blesses.
     assert set(_SERVE_LOOP_BLESSED) == {
         "auth_router/adapters/providers/http_authenticate_api.py",
-        "database_router/adapters/providers/http_dispatch_api.py",
-        "api_gateway/adapters/providers/http_gateway_edge.py",
         "import_service/adapters/providers/http_import_api.py",
-        "database_router/adapters/providers/http_tenant_startup_api.py",
         "database_router/adapters/providers/http_public_startup_edge.py",
         "control_plane/adapters/providers/http_public_workspace_edge.py",
     }, "the serve-loop blessing must stay exactly the named adapter modules"

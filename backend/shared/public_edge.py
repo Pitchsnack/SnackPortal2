@@ -84,7 +84,7 @@ _CARRIER_REF_MAX_LEN = 64
 
 # The public-edge audit action vocabulary. These are the EXACT seven strings the existing
 # Control-Plane operational-audit store already accepts (``control_plane.gateway_audit
-# .GATEWAY_AUDIT_STORE_ACTIONS``, mirroring the DDL 012 CHECK). The Gateway-free architecture
+# .EDGE_AUDIT_STORE_ACTIONS``, mirroring the DDL 012 CHECK). The Gateway-free architecture
 # adds no class, removes none, renames none, and re-homes none — it changes only WHICH
 # component emits them, from one central Gateway to the route-owning edge. Keeping the strings
 # identical is what makes the durable audit home a no-op rather than a schema migration.

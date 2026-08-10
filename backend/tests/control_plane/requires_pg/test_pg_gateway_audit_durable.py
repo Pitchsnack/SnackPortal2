@@ -6,10 +6,10 @@ DDL (infrastructure/db/control/012_gateway_operational_audit.sql then
 013_gateway_operational_audit_append_only.sql — exact paths, exact order, each exactly once, never a
 wildcard) and proves the REAL persistence path end-to-end:
 
-    Gateway DurableAuditEmitter -> Control-Plane ingest edge (build_gateway_audit_server)
+    public-edge HttpEdgeAudit -> Control-Plane ingest edge (build_gateway_audit_server)
         -> PostgresGatewayAuditStore -> disposable PostgreSQL
 
-Every event crosses the real HTTP wire (the gateway's own ``DurableAuditEmitter`` transport client
+Every event crosses the real HTTP wire (the shared ``HttpEdgeAudit`` transport client
 and raw ``_post`` probes); the store is never called directly. Proof set: reviewed-blob
 STOP-before-connect; live schema evidence from the PostgreSQL catalogs (exact 14 columns — the D-42
 ``record_ref`` reference column included — identity ordering authority, unique ``audit_id``,
@@ -70,11 +70,23 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))  # backend 
 
 # Pure-stdlib backend modules only at module scope (clean-skip without psycopg); the psycopg-bearing
 # provider modules are imported lazily inside the exercise.
-from api_gateway.adapters.providers.durable_audit_emitter import (  # noqa: E402
-    DurableAuditEmitter,
-    DurableAuditTransportError,
+# The durable emitter moved from the Gateway (api_gateway/adapters/providers/durable_audit_emitter.py,
+# deleted) into the shared public-boundary audit library, where both route-owning edges link it
+# in-process. The WIRE, the ingest edge, the store, the DDL and the action vocabulary are unchanged —
+# only the emitter's home moved — so this live proof is re-aimed rather than withdrawn.
+#
+# NOT RE-EXECUTED: this harness is MANUAL_ONLY and requires live PostgreSQL, which the removal task
+# was not authorized to touch. Treat it as UNVERIFIED against the Gateway-free topology until an
+# operator re-runs it under a separate live authorization.
+from shared.adapters.providers.edge_audit import (  # noqa: E402
+    EdgeAuditTransportError,
+    HttpEdgeAudit,
 )
-from api_gateway.models import AuditAction, GatewayAuditEvent  # noqa: E402
+from shared.public_edge import (  # noqa: E402
+    ACTION_CARRIER_MISMATCH,
+    ACTION_WORKSPACE_MEMBERSHIPS_READ,
+    EdgeAuditEvent,
+)
 
 # The proof-owned scratch database: created and dropped by THIS file only. The name is collision-free
 # vs every standing Control/tenant database name and every sibling harness scratch family.
@@ -224,9 +236,9 @@ def _cm_wire(audit_id: str, correlation_id: str, **over: object) -> Dict[str, ob
     return event
 
 
-def _success_event(audit_id: str, correlation_id: str) -> GatewayAuditEvent:
-    return GatewayAuditEvent(
-        action=AuditAction.WORKSPACE_MEMBERSHIPS_READ,
+def _success_event(audit_id: str, correlation_id: str) -> EdgeAuditEvent:
+    return EdgeAuditEvent(
+        action=ACTION_WORKSPACE_MEMBERSHIPS_READ,
         correlation_id=correlation_id,
         outcome="success",
         actor_ref="principal_gwa",
@@ -237,10 +249,10 @@ def _success_event(audit_id: str, correlation_id: str) -> GatewayAuditEvent:
     )
 
 
-def _cm_denial_event(audit_id: str, correlation_id: str) -> GatewayAuditEvent:
+def _cm_denial_event(audit_id: str, correlation_id: str) -> EdgeAuditEvent:
     """The D-43 CarrierMismatch denial event as the gateway emits it (references only)."""
-    return GatewayAuditEvent(
-        action=AuditAction.CARRIER_MISMATCH,
+    return EdgeAuditEvent(
+        action=ACTION_CARRIER_MISMATCH,
         correlation_id=correlation_id,
         outcome="rejected",
         carrier_ref="carrier:tenant-b",
@@ -367,7 +379,7 @@ def test_gateway_audit_v1a_disposable_live_proof(admin_dsn: str) -> None:
         server_a, base_a = build_gateway_audit_server(store_a, host="127.0.0.1", port=0)
         thread_a = _serve(server_a)
         try:
-            emitter = DurableAuditEmitter(base_a, timeout=5.0)
+            emitter = HttpEdgeAudit(base_a, timeout=5.0)
             assert emitter.emit(_success_event(_AUDIT_ID, "cid-gwa-1")) is None, (
                 "the durable emitter must persist the success event (INSERTED)"
             )
@@ -377,7 +389,7 @@ def test_gateway_audit_v1a_disposable_live_proof(admin_dsn: str) -> None:
             assert row[8] == "api_gateway" and row[9] == row[10] == "principal_gwa" and row[11] is None and row[12] is None
             assert row[13] is None, "the memberships success event persists no record reference"
             assert row[4] is not None and getattr(row[4], "tzinfo", None) is not None, "recorded_at must be DB-assigned and tz-aware"
-            print("PASS: GWA-4 end-to-end path (DurableAuditEmitter -> ingest -> store -> PG; one success row persisted)")
+            print("PASS: GWA-4 end-to-end path (HttpEdgeAudit -> ingest -> store -> PG; one success row persisted)")
 
             # PROOF GWA-5 — wire idempotency + conflict (INSERTED / DUPLICATE_MATCH / CONFLICT; no extra rows).
             assert emitter.emit(_success_event(_AUDIT_ID, "cid-gwa-1")) is None, (
@@ -485,7 +497,7 @@ def test_gateway_audit_v1a_disposable_live_proof(admin_dsn: str) -> None:
         thread_b = _serve(server_b)
         try:
             assert _rows(conn) == snapshot, "every durable row must survive store release + server stop (restart durability)"
-            assert DurableAuditEmitter(base_b, timeout=5.0).emit(_success_event(_AUDIT_ID, "cid-gwa-1")) is None, (
+            assert HttpEdgeAudit(base_b, timeout=5.0).emit(_success_event(_AUDIT_ID, "cid-gwa-1")) is None, (
                 "a replay against the FRESH store/server must stay the idempotent DUPLICATE_MATCH success"
             )
             assert _rows(conn) == snapshot, "the fresh-instance replay must add NO row"
@@ -521,9 +533,9 @@ def test_gateway_audit_v1a_disposable_live_proof(admin_dsn: str) -> None:
                 )
                 assert set(body.keys()) == {"version", "result"}, "no SQL/topology/exception detail may cross the ingest edge"
                 try:
-                    DurableAuditEmitter(base_x, timeout=5.0).emit(_success_event("77777777777777777777777777777777", "cid-gwa-down"))
+                    HttpEdgeAudit(base_x, timeout=5.0).emit(_success_event("77777777777777777777777777777777", "cid-gwa-down"))
                     raise AssertionError("the emitter must fail closed when the store DB is unreachable")
-                except DurableAuditTransportError as exc:
+                except EdgeAuditTransportError as exc:
                     assert exc.kind == "unavailable"
             finally:
                 _stop(server_x, thread_x)

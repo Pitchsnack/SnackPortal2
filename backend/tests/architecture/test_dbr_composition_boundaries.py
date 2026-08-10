@@ -41,8 +41,11 @@ import _scan  # noqa: E402
 _DBR_MAIN = _scan.BACKEND_ROOT / "database_router" / "main.py"
 
 _SELECTOR_ENV = "SP2_DBR_ROUTING_READ_BASE_URL"
-_DISPATCH_HOST_ENV = "SP2_DBR_DISPATCH_HOST"
-_DISPATCH_PORT_ENV = "SP2_DBR_DISPATCH_PORT"
+# The bind knobs of the SERVER seam this guard covers. They were the internal Gateway-facing
+# dispatch server's (SP2_DBR_DISPATCH_HOST/PORT) until that edge was deleted with the API
+# Gateway; the surviving server seam in this composition root is the PUBLIC tenant Startup edge.
+_EDGE_HOST_ENV = "SP2_DBR_PUBLIC_STARTUP_HOST"
+_EDGE_PORT_ENV = "SP2_DBR_PUBLIC_STARTUP_PORT"
 _MAIN_IMPORT_TOPS_ALLOW = frozenset({"__future__", "os", "typing", "urllib", "shared"})
 _BUILD_ROUTER_KWONLY = [
     "read",
@@ -61,7 +64,6 @@ _BUILD_ROUTER_KWONLY = [
 # inside the seam so main.py stays driver-free at import), and any concurrency machinery.
 _FORBIDDEN_TOPS = frozenset(
     {
-        "api_gateway",
         "auth_router",
         "control_plane",
         "import_service",
@@ -192,9 +194,11 @@ def test_dbr_composition_boundary_guard() -> None:
 
 def test_dbr_composition_guard_nonvacuity() -> None:
     # The ban-set intersection flags sibling-service / DB-driver imports (the same mechanism the guard
-    # applies to the real module) — critically NO api_gateway/auth_router/control_plane and NO psycopg.
-    assert _tops_of_source("from api_gateway.main import build_gateway\n") & _FORBIDDEN_TOPS == {"api_gateway"}, (
-        "composition guard must flag an api_gateway import"
+    # applies to the real module) — critically NO auth_router/control_plane and NO psycopg.
+    # The probe names a package that EXISTS: after the API Gateway was deleted a planted
+    # `import api_gateway` would be flagged for the wrong reason (unresolvable).
+    assert _tops_of_source("from auth_router.main import build_authenticator\n") & _FORBIDDEN_TOPS == {"auth_router"}, (
+        "composition guard must flag a sibling-service import"
     )
     assert _tops_of_source("import auth_router\n") & _FORBIDDEN_TOPS == {"auth_router"}, "composition guard must flag an auth_router import"
     assert _tops_of_source("import psycopg\n") & _FORBIDDEN_TOPS == {"psycopg"}, "composition guard must flag a top-level DB driver import"
@@ -214,49 +218,54 @@ def test_dbr_composition_guard_nonvacuity() -> None:
     )
 
 
-# --- dispatch-server composition guard (build_dispatch_server_from_env) ----------------------------
-def test_dbr_dispatch_server_composition_boundary_guard() -> None:
+# --- public-edge server composition guard (build_public_startup_edge_server_from_env) --------------
+# Successor of the dispatch-server composition guard. The subject changed (the internal
+# Gateway->Database-Router dispatch server was deleted with the API Gateway); every property is the
+# same, because they were never properties of the Gateway — they are properties of composing a
+# server object inside this composition root.
+def test_dbr_public_edge_server_composition_boundary_guard() -> None:
     assert _nonempty(_DBR_MAIN), "the database_router composition root must exist and be non-empty"
     text = _DBR_MAIN.read_text(encoding="utf-8")
     tree = _tree(_DBR_MAIN)
     names = _names_used(tree)
     defs = _top_level_defs(tree)
 
-    # The dispatch seam exists with BOTH new bind selectors, is router-gate-first, and composes the
-    # existing build_dispatch_server adapter (references only — construction binds a socket, not a DB).
-    assert "build_dispatch_server_from_env" in defs, "the dispatch-server composition seam must exist"
-    assert _DISPATCH_HOST_ENV in text, "composition root must pin the SP2_DBR_DISPATCH_HOST selector"
-    assert _DISPATCH_PORT_ENV in text, "composition root must pin the SP2_DBR_DISPATCH_PORT selector"
-    assert "build_dispatch_server" in names, "the dispatch seam must compose via the build_dispatch_server adapter"
-    assert "build_router_from_env" in names, "the dispatch seam must be router-gate-first (calls build_router_from_env)"
+    # The public-edge seam exists with BOTH bind selectors, is gate-first, and composes the edge's
+    # own factory (references only — construction binds a socket, not a DB).
+    assert "build_public_startup_edge_server_from_env" in defs, "the public-edge server composition seam must exist"
+    assert _EDGE_HOST_ENV in text, "composition root must pin the SP2_DBR_PUBLIC_STARTUP_HOST selector"
+    assert _EDGE_PORT_ENV in text, "composition root must pin the SP2_DBR_PUBLIC_STARTUP_PORT selector"
+    assert "build_public_startup_edge_server" in names, "the seam must compose via the edge's build_public_startup_edge_server factory"
+    assert "build_router_from_env" in names, "the seam must be router-gate-first (calls build_router_from_env)"
+    # The deleted seams must not come back under their old names.
+    for gone in ("build_dispatch_server_from_env", "build_tenant_startup_server_from_env"):
+        assert gone not in defs, f"{gone} was removed with the API Gateway and must not reappear"
 
-    # Additive + boundary-clean: the dispatch seam does NOT widen the module-top import surface
-    # (build_dispatch_server is lazily/relatively imported inside the seam -> skipped by _scan), imports
-    # no sibling service / DB driver / concurrency top, and adds no serve lifecycle at composition.
+    # Additive + boundary-clean: the seam does NOT widen the module-top import surface (the edge
+    # factory is lazily/relatively imported inside the seam -> skipped by _scan), imports no sibling
+    # service / DB driver / concurrency top, and adds no serve lifecycle at composition.
     tops = _import_tops(_DBR_MAIN)
     assert not (tops - _MAIN_IMPORT_TOPS_ALLOW), (
-        f"the dispatch seam must not widen the module-top import surface: {sorted(tops - _MAIN_IMPORT_TOPS_ALLOW)}"
+        f"the seam must not widen the module-top import surface: {sorted(tops - _MAIN_IMPORT_TOPS_ALLOW)}"
     )
-    assert not (tops & _FORBIDDEN_TOPS), "the dispatch seam must import no sibling service / DB driver / concurrency at module top"
-    assert "psycopg" not in tops, "the dispatch seam must keep the composition root driver-free at import"
+    assert not (tops & _FORBIDDEN_TOPS), "the seam must import no sibling service / DB driver / concurrency at module top"
+    assert "psycopg" not in tops, "the seam must keep the composition root driver-free at import"
     assert not _urlopen_calls(tree), "the composition root must perform no network I/O at composition"
     lowered = text.lower()
     for needle in ("serve_forever", "threadinghttpserver", "threadingmixin"):
-        assert needle not in lowered, f"the dispatch seam must carry no serve lifecycle ({needle}) — it constructs only"
+        assert needle not in lowered, f"the seam must carry no serve lifecycle ({needle}) — it constructs only"
 
 
-def test_dbr_dispatch_guard_nonvacuity() -> None:
-    # A root missing the dispatch seam is detectable.
-    assert "build_dispatch_server_from_env" not in _top_level_defs(_parse("def other():\n    pass\n")), (
-        "dispatch guard must distinguish a root missing the dispatch seam"
+def test_dbr_public_edge_guard_nonvacuity() -> None:
+    # A root missing the public-edge seam is detectable.
+    assert "build_public_startup_edge_server_from_env" not in _top_level_defs(_parse("def other():\n    pass\n")), (
+        "the guard must distinguish a root missing the public-edge seam"
     )
     # The serve-lifecycle needle catches a planted serve loop (the seam must construct, never serve).
-    assert "serve_forever" in "threading.Thread(target=server.serve_forever).start()".lower(), (
-        "dispatch guard must detect a planted serve loop"
-    )
-    # The ban-set intersection still flags a sibling-service import in a bad dispatch-seam sample.
-    assert _tops_of_source("from api_gateway.main import build_gateway\n") & _FORBIDDEN_TOPS == {"api_gateway"}, (
-        "dispatch guard must flag a sibling-service import"
+    assert "serve_forever" in "threading.Thread(target=server.serve_forever).start()".lower(), "the guard must detect a planted serve loop"
+    # The ban-set intersection still flags a sibling-service import in a bad seam sample.
+    assert _tops_of_source("from auth_router.main import build_authenticator\n") & _FORBIDDEN_TOPS == {"auth_router"}, (
+        "the guard must flag a sibling-service import"
     )
 
 
@@ -265,7 +274,7 @@ if __name__ == "__main__":
         [
             test_dbr_composition_boundary_guard,
             test_dbr_composition_guard_nonvacuity,
-            test_dbr_dispatch_server_composition_boundary_guard,
-            test_dbr_dispatch_guard_nonvacuity,
+            test_dbr_public_edge_server_composition_boundary_guard,
+            test_dbr_public_edge_guard_nonvacuity,
         ]
     )

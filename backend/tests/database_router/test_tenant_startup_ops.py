@@ -1,19 +1,20 @@
-"""D-42 CLM Stage B — Database-Router tenant Startup executor + internal edge tests (default suite; in-memory session double).
+"""D-42 CLM Stage B — Database-Router tenant Startup EXECUTOR tests (default suite; in-memory session double).
 
-Covers the bounded read/update executor (one routed session per operation; the sole
-CLM-mutable column; no partial write; lineage_reference resolution) and the internal
-loopback transport edge (envelope validation; fail-closed 400/404/405/503 mapping).
+Covers the bounded read/update executor: one routed session per operation; the sole
+CLM-mutable column; no partial write; lineage_reference resolution.
+
+The internal loopback transport edge that used to be exercised here
+(``http_tenant_startup_api``, ``POST /internal/tenant/startups/*``) was DELETED with the API
+Gateway — it existed only to carry a Gateway request into this service, and the public tenant
+Startup edge now holds this executor in-process. Its envelope-validation and fail-closed
+mapping tests went with it; the public edge's equivalent properties are proved end-to-end in
+``tests/gateway_free/test_adversarial_boundary.py``.
 """
 
 from __future__ import annotations
 
-import json
-import threading
-import time
-from http.client import HTTPConnection
 from typing import Any, Dict, List, Optional, Tuple
 
-from database_router.adapters.providers.http_tenant_startup_api import build_tenant_startup_server
 from database_router.tenant_startup_ops import TenantStartupOperations, TenantStartupRecord
 from shared.session import Lane, RoutedSessionProvider, RoutedTenantSession
 
@@ -171,115 +172,3 @@ def test_update_over_bound_value_raises_before_any_session_is_opened() -> None:
 # ===========================================================================
 # Internal edge — envelope validation + fail-closed mapping
 # ===========================================================================
-class _StubOps(TenantStartupOperations):
-    def __init__(self, record: Optional[TenantStartupRecord], *, raising: bool = False) -> None:
-        self._record = record
-        self._raising = raising
-        self.calls: List[Tuple[str, Dict[str, Any]]] = []
-
-    def read(self, **kwargs: Any) -> Optional[TenantStartupRecord]:  # type: ignore[override]
-        self.calls.append(("read", kwargs))
-        if self._raising:
-            raise RuntimeError("routing failure (double)")
-        return self._record
-
-    def update(self, **kwargs: Any) -> Optional[TenantStartupRecord]:  # type: ignore[override]
-        self.calls.append(("update", kwargs))
-        if self._raising:
-            raise RuntimeError("routing failure (double)")
-        return self._record
-
-
-def _post(base: str, path: str, body: Optional[Dict[str, Any]]) -> Tuple[int, bytes]:
-    from urllib.parse import urlsplit
-
-    parts = urlsplit(base)
-    payload = json.dumps(body).encode("utf-8") if body is not None else b""
-    last: Optional[BaseException] = None
-    # Bounded retries: the single-threaded stdlib loopback server occasionally aborts a
-    # connection under Windows (WinError 10053 and siblings, surfacing as assorted OSError
-    # shapes under suite-wide socket pressure) — a test-transport artifact, not behavior.
-    for attempt in range(3):
-        conn = HTTPConnection(parts.hostname or "127.0.0.1", parts.port, timeout=10)
-        try:
-            conn.request("POST", path, body=payload, headers={"Content-Type": "application/json", "Connection": "close"})
-            resp = conn.getresponse()
-            return resp.status, resp.read()
-        except OSError as exc:  # ConnectionAborted/Reset/RemoteDisconnected and kin
-            last = exc
-            time.sleep(0.05 * (attempt + 1))
-        finally:
-            conn.close()
-    raise AssertionError(f"loopback request failed three times: {last!r}")
-
-
-def _serving(ops: TenantStartupOperations):
-    server, base = build_tenant_startup_server(ops)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    return server, thread, base
-
-
-def _read_envelope(**overrides: Any) -> Dict[str, Any]:
-    envelope: Dict[str, Any] = {"v": 1, "startup_ref": _REF, "target_tenant_ref": _TENANT, "correlation_id": "cid-1", "actor_ref": "p1"}
-    envelope.update(overrides)
-    return envelope
-
-
-def test_edge_read_success_and_not_found_and_unavailable() -> None:
-    record = TenantStartupRecord(
-        record_ref=_REF,
-        display_name="CLM Synthetic Co",
-        short_description="original description",
-        investment_stage="seed",
-        lineage_reference="clm-lineage-0001",
-    )
-    for ops, expected_status, expect_record in (
-        (_StubOps(record), 200, True),
-        (_StubOps(None), 404, False),
-        (_StubOps(record, raising=True), 503, False),
-    ):
-        server, thread, base = _serving(ops)
-        try:
-            status, raw = _post(base, "/internal/tenant/startups/read", _read_envelope())
-        finally:
-            server.shutdown()
-            server.server_close()
-            thread.join(timeout=5)
-        assert status == expected_status
-        body = json.loads(raw.decode("utf-8"))
-        if expect_record:
-            assert set(body["record"].keys()) == {
-                "record_ref",
-                "display_name",
-                "short_description",
-                "investment_stage",
-                "lineage_reference",
-            }, "references + the two bounded nullable content fields only"
-        else:
-            assert "record" not in body, "no record content may leak on any denial"
-
-
-def test_edge_rejects_malformed_envelopes_before_any_executor_call() -> None:
-    ops = _StubOps(None)
-    server, thread, base = _serving(ops)
-    try:
-        for path, bad in (
-            ("/internal/tenant/startups/read", None),  # empty body
-            ("/internal/tenant/startups/read", {"v": 2, **{k: v for k, v in _read_envelope().items() if k != "v"}}),
-            ("/internal/tenant/startups/read", _read_envelope(extra="x")),
-            ("/internal/tenant/startups/read", _read_envelope(startup_ref="")),
-            ("/internal/tenant/startups/read", _read_envelope(actor_ref="postgresql://leak")),
-            ("/internal/tenant/startups/update", _read_envelope()),  # update requires short_description
-            ("/internal/tenant/startups/update", _read_envelope(short_description=7)),
-            ("/internal/tenant/startups/update", _read_envelope(short_description="a" * 501)),
-        ):
-            status, raw = _post(base, path, bad)
-            assert (status, json.loads(raw.decode("utf-8"))["result"]) == (400, "INVALID"), f"{path} {str(bad)[:60]}"
-        assert ops.calls == [], "a malformed envelope never reaches the executor (no partial write)"
-        status, _ = _post(base, "/internal/tenant/other", _read_envelope())
-        assert status == 404, "wrong path: refused pre-executor"
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=5)

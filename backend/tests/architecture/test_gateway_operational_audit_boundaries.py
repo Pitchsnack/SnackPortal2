@@ -5,14 +5,14 @@ of the committed sources — every detector carries a planted non-vacuity compan
 persistence slice only (V1b operator retrieval is out of scope). Pins:
 
 * DDL 012/013 blob equality to the reviewed pins; the frozen shape (id identity PK; UNIQUE audit_id;
-  the five-value action CHECK; the source_service='api_gateway' CHECK; the event_version>0 CHECK;
+  the five-value action CHECK; the FROZEN source_service='api_gateway' CHECK (DDL, separately governed); the event_version>0 CHECK;
   both append-only triggers; references-only — no JSON/hash-chain/FK); and 012/013 un-enrolled in the
   standing apply order (created-not-applied);
 * the gateway durable emitter — stdlib urllib only, no DB driver, no cross-service import, no DSN
   literal, exact ten-key references-only wire, single transport attempt (the composition owns retry);
 * the Control-Plane ingest edge — internal-only loopback path, POST-only, single-threaded, imports
-  only control_plane.gateway_audit, forbidden-name + secret-shape defenses, no api_gateway/DB driver;
-* the CP store + port — CP-local record/port (no api_gateway/database_router import), one abstract
+  only control_plane.gateway_audit, forbidden-name + secret-shape defenses, no sibling service/DB driver;
+* the CP store + port — CP-local record/port (no sibling-service import), one abstract
   write method, ON CONFLICT (audit_id), append-only adapter surface;
 * the composition seams — the CP loopback-host allowlist + fail-closed; the gateway
   SP2_GW_AUDIT_SINK_BASE_URL selector with NO loopback default and ValueError-before-socket; the
@@ -47,14 +47,21 @@ _CONTROL = _REPO / "infrastructure" / "db" / "control"
 
 _DDL_012 = _CONTROL / "012_gateway_operational_audit.sql"
 _DDL_013 = _CONTROL / "013_gateway_operational_audit_append_only.sql"
-_EMITTER = _BACKEND / "api_gateway" / "adapters" / "providers" / "durable_audit_emitter.py"
-_GW_MAIN = _BACKEND / "api_gateway" / "main.py"
-_GATEWAY = _BACKEND / "api_gateway" / "gateway.py"
+# The durable emitter and its selection moved from the Gateway
+# (api_gateway/adapters/providers/durable_audit_emitter.py + api_gateway/main.py, both deleted) into
+# the SHARED public-boundary audit library, where both route-owning edges link it in-process. The
+# WIRE, the store, the DDL and the action vocabulary are unchanged — only the emitter's home moved.
+_EMITTER = _BACKEND / "shared" / "adapters" / "providers" / "edge_audit.py"
+_GW_MAIN = _BACKEND / "shared" / "adapters" / "providers" / "edge_audit.py"
+_KERNEL = _BACKEND / "shared" / "public_edge.py"
 _CP_INGEST = _BACKEND / "control_plane" / "adapters" / "providers" / "http_gateway_audit_api.py"
 _CP_STORE = _BACKEND / "control_plane" / "adapters" / "providers" / "postgres_store.py"
 _CP_PORT = _BACKEND / "control_plane" / "gateway_audit.py"
 _CP_MAIN = _BACKEND / "control_plane" / "main.py"
 _PROOF = _BACKEND / "tests" / "control_plane" / "requires_pg" / "test_pg_gateway_audit_durable.py"
+# The emitter selector now lives in EACH route-owning service's composition root (one shared
+# implementation, two call sites) instead of the single Gateway root.
+_SELECTOR_ROOTS = (_BACKEND / "database_router" / "main.py", _BACKEND / "control_plane" / "main.py")
 _RUNBOOK = _REPO / "infrastructure" / "runbooks" / "gateway_operational_audit_live_proof.md"
 _OPS = _BACKEND / "tests" / "control_plane" / "requires_pg" / "b5_standing_topology.py"
 _COMPLETENESS_GUARD = _BACKEND / "tests" / "architecture" / "test_live_pg_workflow_runset_completeness.py"
@@ -101,7 +108,7 @@ def _load_ops_module():  # noqa: ANN202
 
 # --- 1. file surface + DDL blob/shape/enrollment ---------------------------------------------------
 def test_v1a_file_surface_exists() -> None:
-    for path in (_DDL_012, _DDL_013, _EMITTER, _GW_MAIN, _GATEWAY, _CP_INGEST, _CP_STORE, _CP_PORT, _CP_MAIN, _PROOF, _RUNBOOK):
+    for path in (_DDL_012, _DDL_013, _EMITTER, _KERNEL, _CP_INGEST, _CP_STORE, _CP_PORT, _CP_MAIN, _PROOF, _RUNBOOK, *_SELECTOR_ROOTS):
         assert path.is_file(), f"V1a surface file missing: {path}"
 
 
@@ -192,8 +199,8 @@ def test_ddl_012_013_headers_state_a_window_invariant_posture() -> None:
 # --- 2. gateway durable emitter --------------------------------------------------------------------
 def test_emitter_is_stdlib_only_no_driver_no_cross_service_no_dsn() -> None:
     tops = _import_tops(_EMITTER)
-    assert tops <= {"__future__", "json", "urllib", "typing", "api_gateway"}, (
-        f"emitter imports outside the stdlib/gateway surface: {sorted(tops)}"
+    assert tops <= {"__future__", "abc", "json", "urllib", "typing", "shared"}, (
+        f"emitter imports outside the stdlib/shared surface: {sorted(tops)}"
     )
     for banned in ("psycopg", "psycopg2", "asyncpg", "sqlalchemy", "control_plane", "database_router", "auth_router", "threading"):
         assert banned not in tops, f"the emitter must not import {banned}"
@@ -239,7 +246,8 @@ def test_cp_ingest_edge_boundaries() -> None:
     assert tops <= {"__future__", "json", "typing", "fastapi", "control_plane", "shared"}, (
         f"ingest imports outside the adapter surface: {sorted(tops)}"
     )
-    assert "api_gateway" not in tops, "the ingest edge must not import api_gateway (DAG independence)"
+    for sibling in ("database_router", "auth_router", "import_service", "lineage_service"):
+        assert sibling not in tops, f"the ingest edge must not import {sibling} (DAG independence)"
     # FastAPI is the ONE sanctioned framework; the ASGI server and its socket stay in the shared runtime.
     for banned in ("psycopg", "psycopg2", "asyncpg", "sqlalchemy", "threading", "asyncio", "starlette", "uvicorn", "http"):
         assert banned not in tops, f"the ingest edge must not import {banned}"
@@ -261,8 +269,8 @@ def test_cp_ingest_edge_boundaries() -> None:
 # --- 4. CP store + port ----------------------------------------------------------------------------
 def test_cp_port_is_control_local_append_only() -> None:
     tops = _import_tops(_CP_PORT)
-    for banned in ("api_gateway", "database_router", "auth_router", "psycopg"):
-        assert banned not in tops, f"the CP gateway-audit port must not import {banned}"
+    for banned in ("database_router", "auth_router", "psycopg"):
+        assert banned not in tops, f"the CP operational-audit port must not import {banned}"
     text = _text(_CP_PORT)
     assert "def append_gateway_audit" in text, "the store port must expose append_gateway_audit"
     for verb in ("def list", "def get", "def read", "def query", "def export", "def purge", "def update", "def delete"):
@@ -285,16 +293,24 @@ def test_cp_composition_seam_loopback_failclosed() -> None:
     assert "_GATEWAY_AUDIT_LOOPBACK_HOSTS" in text and '"127.0.0.1"' in text, "the ingest edge must be loopback-only (fail closed)"
 
 
-def test_gateway_selector_no_loopback_default_single_retry() -> None:
+def test_edge_audit_selector_no_loopback_default_single_retry() -> None:
+    # The selector lives in EACH route-owning composition root now (one shared implementation, two
+    # call sites) instead of the single Gateway root. Both must select it fail-closed, and NEITHER
+    # may carry a loopback default — a default would silently activate a durable transport.
+    for root in _SELECTOR_ROOTS:
+        root_text = _text(root)
+        assert "SP2_EDGE_AUDIT_SINK_BASE_URL" in root_text, f"{root.name} must pin the durable audit-sink selector"
+        assert "def build_public_boundary_from_env" in root_text, f"{root.name} must own the boundary composition seam"
+        assert "loopback default" in root_text.lower(), f"{root.name} must document that the audit-sink selector has no loopback default"
+        for host in ("127.0.0.1", "localhost"):
+            assert f'SP2_EDGE_AUDIT_SINK_BASE_URL = "http://{host}' not in root_text, (
+                f"{root.name} must not default the audit sink to a loopback URL"
+            )
     text = _text(_GW_MAIN)
-    assert "SP2_GW_AUDIT_SINK_BASE_URL" in text and "def build_audit_emitter_from_env" in text
-    assert "class BoundedGatewayAuditPolicy" in text
-    # No loopback default: the unset branch returns None (the caller keeps the in-memory default).
-    assert 'GW_AUDIT_SINK_BASE_URL_ENV) or ""' in text, "the selector must read the env directly"
-    assert "no silent fallback" in text, "the fail-closed intent must be documented at the selector"
+    assert "class BoundedEdgeAuditPolicy" in text
     # The policy performs exactly one retry: a single follow-up inner.emit after the retryable branch,
     # and no loop.
-    policy = next(n for n in ast.walk(_tree(_GW_MAIN)) if isinstance(n, ast.ClassDef) and n.name == "BoundedGatewayAuditPolicy")
+    policy = next(n for n in ast.walk(_tree(_GW_MAIN)) if isinstance(n, ast.ClassDef) and n.name == "BoundedEdgeAuditPolicy")
     emit_fn = next(n for n in ast.walk(policy) if isinstance(n, ast.FunctionDef) and n.name == "emit")
     assert not any(isinstance(n, (ast.For, ast.While)) for n in ast.walk(emit_fn)), (
         "the policy must not use a retry LOOP (bounded single retry only)"
@@ -303,24 +319,38 @@ def test_gateway_selector_no_loopback_default_single_retry() -> None:
     assert len(inner_emits) == 2, "the policy must call the inner emit at most twice (initial + exactly one retry)"
 
 
-def test_gateway_success_emit_is_fail_closed() -> None:
-    text = _text(_GATEWAY)
-    # The success emit is wrapped so a terminal durable-audit failure returns the typed 503.
-    assert "WORKSPACE_MEMBERSHIPS_READ" in text
-    assert 'GatewayResponse(status=503, public_code="unavailable", category=category)' in text, "the fail-closed 503 must be present"
-    # AST: the workspace_memberships_read emit sits inside a Try whose handler returns a 503.
-    handle = next(n for n in ast.walk(_tree(_GATEWAY)) if isinstance(n, ast.FunctionDef) and n.name == "_handle")
+def test_edge_success_emit_is_fail_closed() -> None:
+    """Audit-before-hand-back, migrated from the Gateway core to the shared boundary kernel.
+
+    The Gateway wrapped its own success emit in a try/except returning 503. The kernel now owns
+    that behaviour for BOTH edges: ``PublicBoundary.emit`` converts a terminal audit-transport
+    failure into ``unavailable()``, which the edges map to a typed 503 with an empty body. One
+    implementation instead of one per consumer, and no edge can opt out of it.
+    """
+    text = _text(_KERNEL)
+    assert "ACTION_WORKSPACE_MEMBERSHIPS_READ" in text, "the workspace success class must exist in the kernel vocabulary"
+    assert "def unavailable" in text, "the kernel must own the fail-closed unavailable() denial"
+    # The kernel declares TWO `emit` functions: the abstract port method and PublicBoundary's.
+    # Walk into the CLASS first — `next(...)` over the module would pick the abstract one and the
+    # check would pass vacuously on a body that is `...`.
+    boundary_cls = next(n for n in ast.walk(_tree(_KERNEL)) if isinstance(n, ast.ClassDef) and n.name == "PublicBoundary")
+    emit_fn = next(n for n in ast.walk(boundary_cls) if isinstance(n, ast.FunctionDef) and n.name == "emit")
+    assert len(emit_fn.body) > 1, "the detector must be looking at a real implementation, not an abstract stub"
     wrapped = False
-    for node in ast.walk(handle):
+    for node in ast.walk(emit_fn):
         if isinstance(node, ast.Try):
-            emits_here = any(
-                isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute) and c.func.attr == "emit"
-                for c in ast.walk(node.body[0] if node.body else node)
-            )
-            returns_503 = "503" in ast.dump(ast.Module(body=node.handlers, type_ignores=[]))
-            if emits_here and returns_503:
+            raises_unavailable = "unavailable" in ast.dump(ast.Module(body=node.handlers, type_ignores=[]))
+            if raises_unavailable:
                 wrapped = True
-    assert wrapped, "the workspace_memberships_read success emit must be wrapped in a try/except that returns 503 (audit-before-hand-back)"
+    assert wrapped, "PublicBoundary.emit must convert a terminal audit failure into the fail-closed denial"
+    # Both edges must map that denial to a 503 with an empty body — never serve the success anyway.
+    for edge in (
+        _BACKEND / "database_router" / "adapters" / "providers" / "http_public_startup_edge.py",
+        _BACKEND / "control_plane" / "adapters" / "providers" / "http_public_workspace_edge.py",
+    ):
+        edge_text = _text(edge)
+        assert "PublicBoundaryDenied" in edge_text, f"{edge.name} must map the kernel denial, not swallow it"
+        assert "empty_response" in edge_text, f"{edge.name} must answer a denial with an EMPTY body"
 
 
 # --- 6. MANUAL_ONLY disposable proof ---------------------------------------------------------------
@@ -425,26 +455,36 @@ def test_post10c_carriermismatch_durable_wiring_stays_inside_frozen_vocabulary()
     assert check is not None, "the action CHECK must exist in DDL 012"
     assert set(re.findall(r"'([A-Za-z_]+)'", check.group(1))) == frozen_seven, "the DDL action CHECK must stay the frozen seven"
     # ...and the runtime AuditAction enum + the CP store vocabulary carry the SAME seven values.
-    models_tree = _tree(_BACKEND / "api_gateway" / "models.py")
-    enum_cls = next(n for n in ast.walk(models_tree) if isinstance(n, ast.ClassDef) and n.name == "AuditAction")
+    kernel_tree = _tree(_KERNEL)
     enum_values: dict = {}
-    for node in enum_cls.body:
-        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name) and isinstance(node.value, ast.Constant):
+    for node in ast.walk(kernel_tree):
+        if (
+            isinstance(node, ast.Assign)
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id.startswith("ACTION_")
+            and isinstance(node.value, ast.Constant)
+        ):
             enum_values[node.targets[0].id] = node.value.value
-    assert set(enum_values.values()) == frozen_seven, "the AuditAction enum must stay the frozen seven (no new action string)"
+    assert set(enum_values.values()) == frozen_seven, (
+        "the shared kernel's ACTION_* vocabulary must stay the frozen seven (no new action string). "
+        "The emitter moved from the Gateway to the route-owning edges; not one action string changed, "
+        "which is what keeps DDL 012's frozen CHECK satisfied without a schema migration."
+    )
     port_constants = None
     for node in _tree(_CP_PORT).body:
-        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "GATEWAY_AUDIT_STORE_ACTIONS" for t in node.targets):
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "EDGE_AUDIT_STORE_ACTIONS" for t in node.targets):
             port_constants = set(ast.literal_eval(node.value))
     assert port_constants == frozen_seven, "the CP store vocabulary must stay the frozen seven (no new action string)"
     # (4) the gateway durable partition wires EXACTLY the five events — a strict subset of the store vocabulary.
     durable_assign = next(
         n
         for n in _tree(_GW_MAIN).body
-        if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "_CLM_DURABLE_ACTIONS" for t in n.targets)
+        if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "DURABLE_EDGE_AUDIT_ACTIONS" for t in n.targets)
     )
-    attr_names = {a.attr for a in ast.walk(durable_assign.value) if isinstance(a, ast.Attribute)}
-    durable_values = {enum_values[name] for name in attr_names}
+    # The durable partition names the kernel's ACTION_* constants, so resolve through the same
+    # `enum_values` map the frozen-seven census built (Name nodes now, Attribute nodes before).
+    referenced = {n.id for n in ast.walk(durable_assign.value) if isinstance(n, ast.Name)}
+    durable_values = {enum_values[name] for name in referenced if name in enum_values}
     assert durable_values == five_wired, f"the durable partition must wire EXACTLY the five CLM events: {sorted(durable_values)}"
     assert durable_values < frozen_seven, "the five-event runtime wiring must stay a STRICT subset of the store vocabulary"
     # (5) the CP ingest edge wires the SAME five and keeps the two anomaly classes refused.
@@ -492,8 +532,8 @@ if __name__ == "__main__":
             test_cp_port_is_control_local_append_only,
             test_cp_store_on_conflict_audit_id_append_only_surface,
             test_cp_composition_seam_loopback_failclosed,
-            test_gateway_selector_no_loopback_default_single_retry,
-            test_gateway_success_emit_is_fail_closed,
+            test_edge_audit_selector_no_loopback_default_single_retry,
+            test_edge_success_emit_is_fail_closed,
             test_proof_stop_before_connect_and_apply_order,
             test_proof_disposable_ownership_teardown_and_references_control_dir,
             test_proof_registered_manual_only_no_hosted_enrollment,

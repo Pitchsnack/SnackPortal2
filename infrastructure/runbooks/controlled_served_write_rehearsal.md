@@ -1,5 +1,13 @@
 # Controlled Served-Write Rehearsal (operator runbook)
 
+> ## ⛔ WITHDRAWN — the API Gateway has been DELETED
+>
+> The served-write rehearsal harness (`tests/control_plane/requires_pg/test_pg_controlled_served_write_rehearsal.py`) was DELETED: it composed `build_gateway_edge_server_from_env` and drove a served tenant write through the Gateway edge.
+>
+> Nothing in this document may be run, and no evidence produced by it before the removal may be
+> cited as current. It is retained because the recorded scenario, its ordering rules and its
+> evidence format are what a Gateway-free successor must reproduce.
+
 **Scope:** **MANUAL_ONLY** / NON-PRODUCTION. This runbook governs the operator procedure for the controlled
 served-write rehearsal: joining the **W1b served Gateway Edge** (`POST /import/<source_ref>`) to the **W1a
 real-PostgreSQL composed import path** inside one test-owned higher deployment root, against a **disposable

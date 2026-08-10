@@ -5,7 +5,7 @@ MembershipsForPrincipal enumeration that drives the workspace switcher. The data
 Control-DB data this service already owns, so under the Gateway-free MVP this service serves
 it directly:
 
-    browser -> API Gateway (8820) -> [HTTP] -> internal Control-Plane read (8003)     (before)
+    browser -> API Gateway (8820) -> [HTTP] -> internal Control-Plane read (8003)     (before, now deleted)
     browser -> workspace edge -> WorkspaceMembershipReadPort -> Control-DB read       (after)
 
 **Why this is not the Gateway renamed.** One route family, owned by the service that owns the

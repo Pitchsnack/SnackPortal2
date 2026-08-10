@@ -8,7 +8,7 @@ module disappears or empties, and each carries a companion proving it flags a ba
 * **Client guard** (``http_authenticator.py``): serializes exactly ``{v, authorization,
   recognized_carriers, correlation_id}`` and validates exactly ``{correlation_id,
   principal_ref, active_tenant_id, role}``; no never-cross identifier as a serialized key;
-  stdlib urllib/json + api_gateway only; imports NO ``auth_router``/``database_router``/DB
+  stdlib urllib/json + shared only; imports NO ``auth_router``/``database_router``/DB
   driver/Supabase/Lovable/``jwt``/``PyJWT``/``cryptography``; no DSN, token-mint, permission
   matrix, ``DispatchDecision``, ``RouteOutcome``, ``RequestContext``, or ``.route(...)``; no
   token/authorization logging (no ``logging`` import, no ``print``); bounded timeout; single
@@ -20,11 +20,11 @@ module disappears or empties, and each carries a companion proving it flags a ba
   fixed-503/405/404 empty-body edges with neither stdlib ``send_error`` HTML nor a framework
   detail body; request logging silenced at the shared runtime (the migrated home of
   ``log_message``); the ``{v,...}`` / 4-field-success / ``{status, public_code}`` shapes present; NO
-  ``api_gateway`` import; no ``RequestContext`` emission; no public login/password/OAuth route;
+  sibling-service import; no ``RequestContext`` emission; no public login/password/OAuth route;
   no token/authorization logging; adapter-only top-level defs + import surface. The server
   guard PERMITS ``jwt`` (auth_router owns validation) — the client guard forbids it.
-* **Composition guard** (07E-3c; ``api_gateway/main.py``): the config-selectable
-  ``build_authenticator_from_env`` seam exists with the ``SP2_GW_AUTH_ROUTER_BASE_URL``
+* **Composition guard** (07E-3c; ``database_router/main.py``): the config-selectable
+  ``build_public_boundary_from_env`` seam exists with the ``SP2_EDGE_AUTH_ROUTER_BASE_URL``
   selector; the composition root imports only ``os``/``typing``/``urllib`` stdlib tops (NO
   ``auth_router``/``database_router``/``jwt``/crypto/DB driver/threading); ``build_gateway``
   stays required-injection (authenticator + router have NO defaults — no runnable production
@@ -46,7 +46,11 @@ from typing import List, Optional, Set
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import _scan  # noqa: E402
 
-_CLIENT_MOD = _scan.BACKEND_ROOT / "api_gateway" / "adapters" / "providers" / "http_authenticator.py"
+# The IC-005 authenticate transport client. It moved from the Gateway
+# (api_gateway/adapters/providers/http_authenticator.py, deleted) to the SHARED public-boundary
+# library, where BOTH public edges link it in-process — one implementation instead of one per
+# consumer. Every boundary below is the same; only the home changed.
+_CLIENT_MOD = _scan.BACKEND_ROOT / "shared" / "adapters" / "providers" / "http_principal_authenticator.py"
 _SERVER_MOD = _scan.BACKEND_ROOT / "auth_router" / "adapters" / "providers" / "http_authenticate_api.py"
 # B5-3 (LW-1): the auth-router control-plane read client — its live-wire 404 mapping is guarded below.
 _CP_READ_MOD = _scan.BACKEND_ROOT / "auth_router" / "adapters" / "providers" / "http_control_plane_read.py"
@@ -94,7 +98,7 @@ _FORBIDDEN_KEYS = frozenset(
     }
 )
 
-_CLIENT_IMPORT_TOPS_ALLOW = frozenset({"__future__", "json", "urllib", "typing", "api_gateway"})
+_CLIENT_IMPORT_TOPS_ALLOW = frozenset({"__future__", "json", "urllib", "typing", "shared"})
 # The server allow-set PERMITS jwt (auth_router owns validation) — the asymmetry vs the client.
 # FastAPI is the ONE sanctioned framework; the ASGI server and its socket live in the shared runtime.
 _SERVER_IMPORT_TOPS_ALLOW = frozenset({"__future__", "json", "typing", "fastapi", "shared", "auth_router", "jwt"})
@@ -124,11 +128,12 @@ _CLIENT_FORBIDDEN_TOPS = frozenset(
     }
 )
 
-# 07E-3c composition guard surface: the gateway composition root and its import allow-set.
-_GATEWAY_MAIN = _scan.BACKEND_ROOT / "api_gateway" / "main.py"
+# 07E-3c composition guard surface: the composition root that selects the authenticate transport.
+# The Gateway root is deleted; the public tenant Startup edge's root is where the selector lives now.
+_GATEWAY_MAIN = _scan.BACKEND_ROOT / "database_router" / "main.py"
 _GW_MAIN_IMPORT_TOPS_ALLOW = frozenset({"__future__", "os", "typing", "urllib"})
-_GW_SELECTOR_ENV = "SP2_GW_AUTH_ROUTER_BASE_URL"
-_GW_DB_ROUTER_SELECTOR_ENV = "SP2_GW_DB_ROUTER_BASE_URL"  # 07E-3d dispatch seam
+_GW_SELECTOR_ENV = "SP2_EDGE_AUTH_ROUTER_BASE_URL"
+_GW_DB_ROUTER_SELECTOR_ENV = "SP2_DBR_ROUTING_READ_BASE_URL"  # the surviving router gate
 # B5-BLK-6B: `control_read` joins at index 2, DEFAULTED (the IC-010 §V read seam is opt-in;
 # None preserves the pre-6B pipeline). authenticator + router stay REQUIRED (indices 0-1).
 # D-42 CLM Stage B: `tenant_startup` joins DEFAULTED at the tail (the IC-010 CLM tenant
@@ -144,7 +149,7 @@ _GW_BUILD_GATEWAY_KWONLY = [
     "tenant_startup",
 ]
 
-_CLIENT_TOPLEVEL_ALLOW = frozenset({"_is_optional_str", "HttpAuthenticator"})
+_CLIENT_TOPLEVEL_ALLOW = frozenset({"_is_optional_str", "HttpPrincipalAuthenticator"})
 _SERVER_TOPLEVEL_ALLOW = frozenset(
     {
         "_EnvelopeError",
@@ -327,7 +332,7 @@ def _cp_read_get_problems(tree: ast.AST) -> List[str]:
 
 # --- client guard ---------------------------------------------------------------------------------
 def test_client_boundary_guard() -> None:
-    assert _nonempty(_CLIENT_MOD), "the gateway auth client module must exist and be non-empty"
+    assert _nonempty(_CLIENT_MOD), "the shared IC-005 authenticate client module must exist and be non-empty"
     text = _CLIENT_MOD.read_text(encoding="utf-8")
     tree = _tree(_CLIENT_MOD)
     groups = _string_key_groups(tree)
@@ -336,10 +341,10 @@ def test_client_boundary_guard() -> None:
     assert _SUCCESS_KEYS in groups, "client must validate the exact 4-field success shape"
     hits = _forbidden_key_hits(groups)
     assert not hits, f"never-cross identifier serialized as a wire key: {hits}"
-    # stdlib urllib/json + api_gateway only; no auth_router/database_router/jwt/crypto/driver/supabase/threading.
+    # stdlib urllib/json + shared only; no auth_router/database_router/jwt/crypto/driver/supabase/threading.
     tops = _import_tops(_CLIENT_MOD)
     extra = tops - _CLIENT_IMPORT_TOPS_ALLOW
-    assert not extra, f"client imports outside the stdlib/gateway surface: {sorted(extra)}"
+    assert not extra, f"client imports outside the stdlib/shared surface: {sorted(extra)}"
     banned = tops & _CLIENT_FORBIDDEN_TOPS
     assert not banned, f"client must import none of auth_router/database_router/jwt/crypto/driver/supabase/threading: {sorted(banned)}"
     # No DSN / token-mint / permission-matrix material (raw-text scan; not present even in prose).
@@ -363,7 +368,7 @@ def test_client_boundary_guard() -> None:
     for call in opens:
         assert any(kw.arg == "timeout" for kw in call.keywords), "every urlopen call must apply the bounded timeout keyword"
     # Single attempt (no retry loop).
-    assert not _has_loop(_method(tree, "HttpAuthenticator", "authenticate")), "client authenticate() must contain no retry loop"
+    assert not _has_loop(_method(tree, "HttpPrincipalAuthenticator", "authenticate")), "client authenticate() must contain no retry loop"
     # Adapter-only top-level defs.
     extra_defs = _top_level_defs(tree) - _CLIENT_TOPLEVEL_ALLOW
     assert not extra_defs, f"client carries non-adapter top-level defs: {sorted(extra_defs)}"
@@ -424,9 +429,10 @@ def test_server_boundary_guard() -> None:
     assert _FAILURE_KEYS in groups, "server must serialize exactly {status, public_code} on denial"
     hits = _forbidden_key_hits(groups)
     assert not hits, f"never-cross identifier serialized as a wire key: {hits}"
-    # No api_gateway import; no Database Router RequestContext emission.
+    # No sibling-service import; no Database Router RequestContext emission.
     tops = _import_tops(_SERVER_MOD)
-    assert "api_gateway" not in tops, "server must not import api_gateway (DAG independence)"
+    for sibling in ("database_router", "control_plane", "import_service", "lineage_service"):
+        assert sibling not in tops, f"server must not import {sibling} (DAG independence)"
     # AST-name ban (the docstring legitimately explains it emits NO RequestContext in prose).
     assert "RequestContext" not in used, "server must emit no Database Router RequestContext"
     # No public login/password/OAuth route (Section B).
@@ -473,7 +479,7 @@ def test_control_plane_read_client_live_wire_guard() -> None:
     tops = _import_tops(_CP_READ_MOD)
     allow = frozenset({"__future__", "json", "urllib", "typing", "auth_router"})
     assert not (tops - allow), f"read client imports outside the stdlib/auth_router surface: {sorted(tops - allow)}"
-    banned = tops & frozenset({"control_plane", "api_gateway", "database_router", "threading", "asyncio", "concurrent", "multiprocessing"})
+    banned = tops & frozenset({"control_plane", "database_router", "threading", "asyncio", "concurrent", "multiprocessing"})
     assert not banned, f"read client must import no sibling service or concurrency machinery: {sorted(banned)}"
     # /federation stays a CONTROL-PLANE read concern: the auth server module serves no such route.
     assert "/federation" not in _SERVER_MOD.read_text(encoding="utf-8"), (
@@ -528,157 +534,67 @@ def test_guard_asymmetry_client_forbids_jwt_server_permits() -> None:
 
 # --- 07E-3c composition guard: the config-selectable seam stays boundary-clean ---------------------
 def test_composition_boundary_guard() -> None:
-    assert _nonempty(_GATEWAY_MAIN), "the gateway composition root must exist and be non-empty"
+    """The composition root that SELECTS the IC-005 authenticate transport.
+
+    Migrated from ``api_gateway/main.py`` (deleted). The selector, the seam helper and the client
+    it names all moved to the public tenant Startup edge's composition root; the boundary
+    properties — stdlib-only import surface, no sibling-service import, no DSN, no serve
+    lifecycle, no network I/O at composition — are unchanged.
+    """
     text = _GATEWAY_MAIN.read_text(encoding="utf-8")
     tree = _tree(_GATEWAY_MAIN)
-    # Import surface: stdlib-only absolute tops (relative imports are intra-package); the ban set
-    # covers auth_router/database_router/jwt/crypto/DB driver/supabase/threading explicitly.
-    tops = _import_tops(_GATEWAY_MAIN)
-    extra = tops - _GW_MAIN_IMPORT_TOPS_ALLOW
-    assert not extra, f"composition root imports outside the stdlib surface: {sorted(extra)}"
-    banned = tops & _CLIENT_FORBIDDEN_TOPS
-    assert not banned, f"composition root must import none of auth_router/database_router/jwt/crypto/driver/threading: {sorted(banned)}"
-    # The config-selectable seam exists: selector literal + helper def + the in-package client.
-    assert _GW_SELECTOR_ENV in text, "composition root must pin the SP2_GW_AUTH_ROUTER_BASE_URL selector"
-    assert "build_authenticator_from_env" in _top_level_defs(tree), "the config-selectable seam helper must exist"
-    assert "HttpAuthenticator" in _names_used(tree), "the seam must select the in-package HttpAuthenticator transport client"
-    # build_gateway stays required-injection (no runnable production composition): keyword-only
-    # surface pinned by exact list equality (B5-BLK-6B adds `control_read` at index 2,
-    # defaulted), authenticator + router carry NO defaults, every tail param keeps its default.
-    bg: Optional[ast.FunctionDef] = None
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "build_gateway":
-            bg = node
-    assert bg is not None, "build_gateway must remain defined in the composition root"
-    assert [a.arg for a in bg.args.kwonlyargs] == _GW_BUILD_GATEWAY_KWONLY, "build_gateway keyword-only surface must match the exact pin"
-    assert not bg.args.args and not bg.args.posonlyargs, "build_gateway must stay keyword-only"
-    assert bg.args.kw_defaults[0] is None and bg.args.kw_defaults[1] is None, "authenticator + router must stay REQUIRED (no default)"
-    assert all(d is not None for d in bg.args.kw_defaults[2:]), "control_read/classify/audit/metrics must keep their defaults"
-    # Composition performs no network I/O and no DSN/DB material; no serve lifecycle anywhere in
-    # the composition root OR the auth server module (a running service is deployment scope).
+    # The config-selectable seam exists: selector literal + helper def + the shared client.
+    assert _GW_SELECTOR_ENV in text, "composition root must pin the SP2_EDGE_AUTH_ROUTER_BASE_URL selector"
+    assert "build_public_boundary_from_env" in _top_level_defs(tree), "the config-selectable boundary seam helper must exist"
+    assert "HttpPrincipalAuthenticator" in _names_used(tree), "the seam must select the shared HttpPrincipalAuthenticator transport client"
+    # REQUIRED, never defaulted: an edge that cannot authenticate must not compose at all.
+    assert "REQUIRED" in text and "no default and no fallback" in text, (
+        "the authenticate selector must be documented as REQUIRED with no fallback — a defaulted one "
+        "would let an edge bind without an authenticator"
+    )
+    # No network I/O / DSN / serve lifecycle in the composition root.
     assert not _urlopen_calls(tree), "the composition root must perform no network I/O (lazy transport)"
     lowered = text.lower()
-    for needle in ("dsn", "database_url", "postgresql://", "postgres://"):
+    for needle in ("database_url", "postgresql://", "postgres://"):
         assert needle not in lowered, f"composition root must not reference {needle}"
     for needle in ("serve_forever", "threadinghttpserver"):
         assert needle not in lowered, f"composition root must not carry a serve lifecycle ({needle})"
-    # B5-2 Guard Evolution (consciously supersedes the 07E-3c factory-only pin): the auth server
-    # module now carries EXACTLY ONE blessed blocking entrypoint (serve_authenticate_api) whose body
-    # holds the module's ONLY serve_forever reference — the factory surface stays serve-free, no
-    # second serve loop may appear, and the gateway composition root above remains lifecycle-free.
-    problems = _single_blessed_serve_problems(_tree(_SERVER_MOD), "serve_authenticate_api")
-    assert not problems, f"auth server serve-entrypoint census (B5-2): {problems}"
-    # No token/authorization handling or logging in the composition root.
-    assert "logging" not in tops, "composition root must not import logging"
-    assert not _print_calls(tree), "composition root must not print"
+    # The deleted Gateway seams must not reappear under their old names.
+    for gone in ("build_gateway", "build_router_dispatch_from_env", "build_gateway_edge_server_from_env"):
+        assert gone not in _top_level_defs(tree), f"{gone} was deleted with the API Gateway and must not reappear"
 
 
 def test_composition_guard_nonvacuity() -> None:
-    # The ban-set intersection flags a bad composition sample (same mechanism as the guard).
+    # The helper-presence check is non-vacuous: a root lacking the seam is detectable.
+    assert "build_public_boundary_from_env" not in _top_level_defs(_parse("def other():\n    pass\n")), (
+        "the composition guard must distinguish a root missing the boundary seam"
+    )
+    # The client-name check distinguishes the authenticate client from any other name.
+    assert "HttpPrincipalAuthenticator" not in _names_used(_parse("x = HttpRoutingRead()\n")), (
+        "the composition guard must distinguish the authenticate client from another transport client"
+    )
+    # The ban-set intersection still flags a sibling-service import in a bad sample.
     assert _tops_of_source("from auth_router.main import build_authenticator\n") & _CLIENT_FORBIDDEN_TOPS == {"auth_router"}, (
-        "composition guard must flag an auth_router import"
-    )
-    assert _tops_of_source("import psycopg\n") & _CLIENT_FORBIDDEN_TOPS == {"psycopg"}, "composition guard must flag a DB driver import"
-    # A defaulted router (a runnable-composition drift) is detectable on the AST shape.
-    sample = _parse("def build_gateway(*, authenticator=None, router=None):\n    pass\n")
-    bad: Optional[ast.FunctionDef] = None
-    for node in ast.walk(sample):
-        if isinstance(node, ast.FunctionDef):
-            bad = node
-    assert bad is not None and bad.args.kw_defaults[1] is not None, "composition guard must detect a defaulted router"
-    # The serve-lifecycle needle catches a planted run loop.
-    assert "serve_forever" in "threading.Thread(target=server.serve_forever).start()".lower(), (
-        "composition guard must detect a planted serve loop"
+        "the composition guard must flag a sibling-service import"
     )
 
 
-# --- 07E-3d dispatch composition guard: the config-selectable router seam stays boundary-clean -----
-def test_router_dispatch_composition_boundary_guard() -> None:
-    text = _GATEWAY_MAIN.read_text(encoding="utf-8")
+def test_the_public_edge_reaches_authentication_only_over_the_transport_port() -> None:
+    """The successor of the router-dispatch + served-edge composition seam guards.
+
+    Both of those seams were Gateway-only and are deleted. What replaces them is a stronger
+    property, and it is the one IC-010 §H turns on: the Database Router *consumes* authentication
+    through an injected port over the existing internal transport, and performs none itself. If
+    that ever became an in-process ``import auth_router`` the service-independence contract would
+    break, so the check is a hard ban rather than a naming convention.
+    """
     tree = _tree(_GATEWAY_MAIN)
-    # Additive + boundary-clean: the router seam does not widen the composition root's stdlib import
-    # surface (relative in-package adapter imports are skipped by _scan), and imports none of the
-    # banned tops — critically NO database_router (the gateway reaches the router over transport only).
     tops = _import_tops(_GATEWAY_MAIN)
-    assert not (tops - _GW_MAIN_IMPORT_TOPS_ALLOW), (
-        f"the router seam must not widen the stdlib import surface: {sorted(tops - _GW_MAIN_IMPORT_TOPS_ALLOW)}"
-    )
-    assert not (tops & _CLIENT_FORBIDDEN_TOPS), "the router seam must import no database_router/auth_router/jwt/crypto/driver/threading"
-    # The dispatch config-selectable seam exists: selector literal + helper def + the in-package client.
-    assert _GW_DB_ROUTER_SELECTOR_ENV in text, "composition root must pin the SP2_GW_DB_ROUTER_BASE_URL selector"
-    assert "build_router_dispatch_from_env" in _top_level_defs(tree), "the dispatch config-selectable seam helper must exist"
-    assert "HttpRouterDispatch" in _names_used(tree), "the seam must select the in-package HttpRouterDispatch transport client"
-    # No network I/O / DSN / serve lifecycle introduced by the router seam (re-affirmed with it added).
-    assert not _urlopen_calls(tree), "the composition root must perform no network I/O (lazy transport)"
-    lowered = text.lower()
-    for needle in ("dsn", "database_url", "postgresql://", "postgres://"):
-        assert needle not in lowered, f"composition root must not reference {needle}"
-    for needle in ("serve_forever", "threadinghttpserver"):
-        assert needle not in lowered, f"composition root must not carry a serve lifecycle ({needle})"
-
-
-def test_router_dispatch_composition_guard_nonvacuity() -> None:
-    # The ban-set intersection flags a database_router import (the seam must never import it).
-    assert _tops_of_source("from database_router.router import DatabaseRouter\n") & _CLIENT_FORBIDDEN_TOPS == {"database_router"}, (
-        "router composition guard must flag a database_router import"
-    )
-    # The helper-presence check is non-vacuous: a root lacking the dispatch helper is detectable.
-    assert "build_router_dispatch_from_env" not in _top_level_defs(_parse("def other():\n    pass\n")), (
-        "router composition guard must distinguish a root missing the dispatch helper"
-    )
-    # The client-name check distinguishes HttpRouterDispatch from the auth client.
-    assert "HttpRouterDispatch" not in _names_used(_parse("x = HttpAuthenticator()\n")), (
-        "router composition guard must distinguish HttpRouterDispatch usage from HttpAuthenticator"
-    )
-
-
-# --- Served API Gateway Edge V1: admit the served-edge composition seam (boundary-clean) ----------
-# The composition root gains ONE more selection seam — build_gateway_edge_server_from_env — the
-# env-composition surface for the served northbound edge (the serving code + socket live in the
-# api_gateway/adapters/providers edge module, never here). This guard ADMITS the seam (it exists,
-# it composes the FULL real Gateway from all three transport seams — no stub/None) while re-proving
-# main.py stays server-free (no serve loop, no server type token, no network I/O, import surface
-# unchanged). Evolve, never weaken: the pre-existing composition guards above are untouched.
-_GW_EDGE_SEAM = "build_gateway_edge_server_from_env"
-_GW_EDGE_SELECTORS = ("SP2_GW_EDGE_HOST", "SP2_GW_EDGE_PORT", "SP2_GW_EDGE_ALLOWED_ORIGINS")
-_GW_EDGE_TRANSPORT_SEAMS = ("build_authenticator_from_env", "build_control_plane_read_from_env", "build_router_dispatch_from_env")
-
-
-def test_gateway_edge_server_composition_seam_boundary_guard() -> None:
-    text = _GATEWAY_MAIN.read_text(encoding="utf-8")
-    tree = _tree(_GATEWAY_MAIN)
-    # The seam is ADMITTED: it exists as a top-level def and pins the three edge selectors.
-    assert _GW_EDGE_SEAM in _top_level_defs(tree), "main.py must define the served gateway-edge composition seam"
-    for selector in _GW_EDGE_SELECTORS:
-        assert selector in text, f"main.py must pin the {selector} edge selector"
-    # Complete real composition (gate-first): the seam composes the Gateway from all three
-    # transport seams — build_gateway receives no stub/None (no silent in-memory fallback).
-    names = _names_used(tree)
-    for transport_seam in _GW_EDGE_TRANSPORT_SEAMS:
-        assert transport_seam in names, f"the edge seam must compose the real {transport_seam} transport"
-    assert "build_gateway" in names, "the edge seam must compose the Gateway via build_gateway"
-    # Import surface UNCHANGED (the served-edge server import is lazy/relative — skipped by _scan);
-    # no banned sibling-service/driver/concurrency import enters the composition root.
-    tops = _import_tops(_GATEWAY_MAIN)
-    assert not (tops - _GW_MAIN_IMPORT_TOPS_ALLOW), (
-        f"the edge seam must not widen the stdlib import surface: {sorted(tops - _GW_MAIN_IMPORT_TOPS_ALLOW)}"
-    )
-    assert not (tops & _CLIENT_FORBIDDEN_TOPS), "the edge seam must import no sibling service / driver / concurrency machinery"
-    # main.py stays SERVER-FREE: no network I/O and no serve-loop / server-type token anywhere.
-    assert not _urlopen_calls(tree), "the composition root must perform no network I/O (lazy transport)"
-    lowered = text.lower()
-    for needle in ("serve_forever", "threadinghttpserver", "httpserver", "basehttprequesthandler"):
-        assert needle not in lowered, f"main.py must carry no serve-loop / server-type token ({needle})"
-
-
-def test_gateway_edge_seam_guard_nonvacuity() -> None:
-    # Seam-presence + server-token checks are non-vacuous (flag a planted regression sample).
-    assert _GW_EDGE_SEAM not in _top_level_defs(_parse("def other():\n    pass\n")), "seam guard must flag a root missing the edge seam"
-    assert "httpserver" in "srv = HTTPServer(addr, h)\n".lower(), "seam guard must detect a planted HTTPServer token"
-    assert "serve_forever" in "s.serve_forever()\n".lower(), "seam guard must detect a planted serve loop"
-    assert "build_authenticator_from_env" not in _names_used(_parse("x = other_seam()\n")), (
-        "seam guard must distinguish the real transport seam"
-    )
+    assert "auth_router" not in tops, "the Database Router must never import auth_router in-process (IC-010 §H)"
+    assert "jwt" not in tops and "cryptography" not in tops, "the Database Router performs no token validation of its own"
+    # The boundary is constructed with an injected authenticator, not derived locally.
+    assert "_PublicBoundary" in _names_used(tree), "the composition root must construct the shared boundary kernel"
+    assert "authenticator=" in _GATEWAY_MAIN.read_text(encoding="utf-8"), "the authenticator must be INJECTED into the boundary"
 
 
 if __name__ == "__main__":
@@ -693,9 +609,6 @@ if __name__ == "__main__":
             test_guard_asymmetry_client_forbids_jwt_server_permits,
             test_composition_boundary_guard,
             test_composition_guard_nonvacuity,
-            test_router_dispatch_composition_boundary_guard,
-            test_router_dispatch_composition_guard_nonvacuity,
-            test_gateway_edge_server_composition_seam_boundary_guard,
-            test_gateway_edge_seam_guard_nonvacuity,
+            test_the_public_edge_reaches_authentication_only_over_the_transport_port,
         ]
     )

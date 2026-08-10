@@ -52,10 +52,18 @@ _EMITTER = _BACKEND / "import_service" / "adapters" / "providers" / "durable_aud
 _IMPORT_MAIN = _BACKEND / "import_service" / "main.py"
 _IMPORT_EDGE = _BACKEND / "import_service" / "adapters" / "providers" / "http_import_api.py"
 _STARTUP_SOURCE = _BACKEND / "import_service" / "adapters" / "providers" / "startup_directory_source.py"
-_GATEWAY = _BACKEND / "api_gateway" / "gateway.py"
-_GW_MAIN = _BACKEND / "api_gateway" / "main.py"
-_INIT_CLIENT = _BACKEND / "api_gateway" / "adapters" / "providers" / "http_import_initiation.py"
-_PORTAL = _BACKEND / "api_gateway" / "portal.py"
+# The Gateway half of the W1a import path - its composed import branch, its initiation transport
+# client and its ImportResultDTO - was DELETED with the API Gateway. The served northbound
+# POST /import/<source_ref> route went with it, and Import stays outside the controlled local MVP
+# journey (IMPORT-A / D-3), so nothing replaced it. The Import Service side of W1a (the durable
+# copy, the lineage emission and the durable Import-audit) is UNTOUCHED and is what this guard now
+# covers end to end. This tuple records the withdrawn half so it stays visible.
+_DELETED_GATEWAY_SURFACE = (
+    "api_gateway/gateway.py",
+    "api_gateway/main.py",
+    "api_gateway/adapters/providers/http_import_initiation.py",
+    "api_gateway/portal.py",
+)
 _CP_INGEST = _BACKEND / "control_plane" / "adapters" / "providers" / "http_import_audit_api.py"
 _CP_STORE = _BACKEND / "control_plane" / "adapters" / "providers" / "postgres_store.py"
 _CP_PORT = _BACKEND / "control_plane" / "import_audit.py"
@@ -119,10 +127,6 @@ def test_w1a_file_surface_exists() -> None:
         _IMPORT_MAIN,
         _IMPORT_EDGE,
         _STARTUP_SOURCE,
-        _GATEWAY,
-        _GW_MAIN,
-        _INIT_CLIENT,
-        _PORTAL,
         _CP_INGEST,
         _CP_STORE,
         _CP_PORT,
@@ -318,26 +322,29 @@ def test_import_service_audit_policy_single_retry_no_loop() -> None:
 
 
 # --- 7. single-route + served edge + mapping + DTO -------------------------------------------------
-def test_gateway_composed_import_path_single_route_no_dispatch() -> None:
-    handle = next(n for n in ast.walk(_tree(_GATEWAY)) if isinstance(n, ast.FunctionDef) and n.name == "_handle")
-    composed_if = None
-    for node in ast.walk(handle):
-        if isinstance(node, ast.If) and "_import_initiation" in ast.dump(node.test):
-            composed_if = node
-            break
-    assert composed_if is not None, "the composed IMPORT_INITIATION branch (gated on _import_initiation) must exist"
-    dispatch_calls = [
-        n for n in ast.walk(composed_if) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "dispatch"
-    ]
-    assert dispatch_calls == [], "single-route: the executed composed import path must contain NO router dispatch call"
-    # The gateway imports no import_service and makes no start_import CALL/name (AST — a `-- comment` in an
-    # unrelated pinned string may legitimately mention the name; the ic009 guard enforces the same by AST).
-    gtree = _tree(_GATEWAY)
-    gimports = {n.module.split(".")[0] for n in ast.walk(gtree) if isinstance(n, ast.ImportFrom) and n.module}
-    gimports |= {a.name.split(".")[0] for n in ast.walk(gtree) if isinstance(n, ast.Import) for a in n.names}
-    assert "import_service" not in gimports, "the gateway must not import import_service (DAG independence)"
-    names = {n.attr for n in ast.walk(gtree) if isinstance(n, ast.Attribute)} | {n.id for n in ast.walk(gtree) if isinstance(n, ast.Name)}
-    assert "start_import" not in names, "the gateway must make no start_import call/name (import-execution ban)"
+def test_the_northbound_import_route_and_its_gateway_half_are_absent() -> None:
+    """The successor of ``test_gateway_composed_import_path_single_route_no_dispatch``.
+
+    That test pinned the Gateway's composed IMPORT_INITIATION branch: one route, no router
+    dispatch, no ``import_service`` import, no ``start_import`` call. Its whole subject was deleted
+    with the Gateway, and Import is outside the controlled local MVP journey (IMPORT-A / D-3), so
+    nothing replaced the served ``POST /import/<source_ref>`` route.
+
+    Asserting the absence keeps that distinguishable from an unguarded reintroduction: neither
+    public edge may grow an import route, and no module may name the deleted Gateway surface.
+    """
+    for rel in _DELETED_GATEWAY_SURFACE:
+        assert not (_BACKEND / rel).exists(), f"{rel} was deleted with the API Gateway and must not return"
+    for edge in (
+        _BACKEND / "database_router" / "adapters" / "providers" / "http_public_startup_edge.py",
+        _BACKEND / "control_plane" / "adapters" / "providers" / "http_public_workspace_edge.py",
+    ):
+        paths = {p for p, _m in _scan.route_registrations(_tree(edge))}
+        assert not any("import" in str(p).lower() for p in paths), f"{edge.name} must serve no import route (IMPORT-A / D-3)"
+    # The internal Import edge SURVIVES — it is Edge 9's application (D-44 / IC-012 §5) — but it has
+    # no caller in the MVP now that the Gateway's initiation client is gone. Recorded, not implied.
+    assert _IMPORT_EDGE.is_file(), "the internal Import edge survives as the deployment root's Edge 9 application"
+    assert "/internal/import/initiate" in _text(_IMPORT_EDGE), "and it keeps its single internal-only surface"
 
 
 def test_import_edge_sole_serve_entrypoint_blessed() -> None:
@@ -369,20 +376,21 @@ def test_startup_directory_source_single_record_mapping_pins() -> None:
     assert not any(isinstance(n, ast.While) for n in ast.walk(read_fn)), "the single-record mapping must not page/loop"
 
 
-def test_import_result_dto_references_only_catalogue() -> None:
-    portal = _text(_PORTAL)
-    assert "class ImportResultDTO" in portal, "ImportResultDTO must be defined in the portal catalogue"
-    for field in ("source_ref", "target_tenant_ref", "tenant_record_ref", "lineage_ref", "import_id", "outcome"):
-        assert field in portal, f"ImportResultDTO must carry the references-only field {field}"
-    assert "ImportResultDTO: (PORTAL_CONTRACT_ID, PORTAL_CONTRACT_REVISION)" in portal, "ImportResultDTO must be in APPROVED_PORTAL_DTOS"
+def test_import_result_dto_is_withdrawn_with_its_route() -> None:
+    """``ImportResultDTO`` lived in the deleted Gateway portal and had exactly one consumer: the
+    served import route. Both are gone, so the DTO is withdrawn rather than re-homed — a response
+    shape with no route is dead surface, and re-homing it would imply a capability that does not
+    exist. The IC-009 guard records the same withdrawal on its side."""
+    for owner in (_BACKEND / "control_plane" / "portal.py", _BACKEND / "database_router" / "portal.py"):
+        assert "ImportResultDTO" not in _text(owner), f"{owner.name} must not resurrect a DTO whose route does not exist"
     ic009 = _text(_BACKEND / "tests" / "architecture" / "test_ic009_portal_binding_checks.py")
-    assert "ImportResultDTO" in ic009, "the ic009 portal-binding guard must census ImportResultDTO"
+    assert "ImportResultDTO" in ic009, "the ic009 portal-binding guard must still RECORD the withdrawn shape"
 
 
 def test_no_secret_or_dsn_literal_in_w1a_sources() -> None:
     # The CP ingest edge and the served import edge are EXCLUDED here: they legitimately define the
     # secret/token/DSN-shape DETECTION markers. Every other W1a source must carry no actual secret/DSN literal.
-    for path in (_EMITTER, _INIT_CLIENT, _STARTUP_SOURCE, _CP_PORT, _DDL_014, _DDL_015, _DDL_008):
+    for path in (_EMITTER, _STARTUP_SOURCE, _CP_PORT, _DDL_014, _DDL_015, _DDL_008):
         text = _text(path)
         assert not re.search(r"postgresql://[^\s\"']", text), f"{path.name} must carry no DSN literal"
         for needle in ("password=", "eyJ", "-----BEGIN "):
@@ -390,34 +398,39 @@ def test_no_secret_or_dsn_literal_in_w1a_sources() -> None:
 
 
 # --- 8. MANUAL_ONLY disposable proof ---------------------------------------------------------------
-def test_proof_stop_before_connect_and_apply_order() -> None:
-    text = _text(_PROOF)
-    assert "_verify_reviewed_blobs()" in text and "STOP before connect/apply" in text
-    verify = text.index("_verify_reviewed_blobs()")
-    assert verify < text.index("_DDL_014.read_text"), "the blob STOP must precede any DDL apply"
-    assert text.count("_DDL_014.read_text") == 1 and text.count("_DDL_015.read_text") == 1, "each control DDL file is applied exactly once"
-    assert text.index("_DDL_014.read_text") < text.index("_DDL_015.read_text"), "014 must be applied before 015"
-    assert '_DDL_014 = _CONTROL / "014_import_operational_audit.sql"' in text, "014 must be addressed by its exact repo path"
-    assert '_DDL_015 = _CONTROL / "015_import_operational_audit_append_only.sql"' in text, "015 must be addressed by its exact repo path"
-    for banned in ("glob(", "rglob(", "listdir", "iterdir", "*.sql"):
-        assert banned not in text, f"the proof must never wildcard/scan for DDL ({banned!r})"
-    for copied in ("CREATE TABLE control_import_audit", "CREATE TRIGGER control_import_audit"):
-        assert copied not in text, f"the proof must apply the repo files, never copied DDL bytes ({copied!r})"
+def test_the_w1a_live_proof_is_WITHDRAWN_with_the_gateway_topology() -> None:
+    """Replaces the two proof-shape pins (blob-STOP/apply order, disposable teardown).
 
+    Both asserted the SHAPE of an exercise that composed the API Gateway and drove
+    ``Gateway import route -> internal Import edge -> ImportService.start_import -> durable Import
+    audit``. The Gateway is deleted and no served import route replaced it (IMPORT-A / D-3), so the
+    exercise no longer exists and a guard asserting its old shape would only be asserting that
+    someone rewrote it silently.
 
-def test_proof_disposable_ownership_teardown_three_databases() -> None:
-    text = _text(_PROOF)
-    for db in ("sp2_w1a_import_proof_control", "sp2_w1a_import_proof_t1", "sp2_w1a_import_proof_t2"):
-        assert db in text, f"the proof must name the disposable proof database {db}"
-    assert "DROP DATABASE IF EXISTS" in text, "the proof must drop its disposable databases"
-    # Guaranteed teardown: the three names are iterated in a drop loop and zero retention is asserted.
-    assert "must be removed after the proof" in text, "the proof must assert zero retained proof databases"
-    assert "os.environ" not in text, "the DSN reaches the proof only through _pg (SNACKPORTAL_TEST_DSN by name)"
-    assert not re.search(r"postgresql://[^\"\s]", text), "no DSN literal may appear in the proof"
-    for standing in ("sp2_b3a_control", "snackportal2_control_local", "sp2_tenant_b5_standing", "sp2_gateway_audit_v1a_proof"):
-        assert standing not in text, f"the proof must never name another target ({standing!r})"
-    assert '"infrastructure" / "db" / "control"' in text, "the proof must build the control DDL path from the canonical segments"
-    assert "_REVIEWED_014_BLOB" in text and "_REVIEWED_015_BLOB" in text, "the proof must pin the reviewed 014/015 blobs"
+    What replaces them is stricter about what now matters: the proof must be STRUCTURALLY incapable
+    of touching a database or emitting evidence. It must refuse, say why, and not have kept a
+    connection, a DDL apply or an evidence write on the way to refusing.
+    """
+    src = _text(_PROOF)
+    assert "WITHDRAWN" in src, "the refusal must name itself"
+    assert "API Gateway" in src, "the refusal must state WHY (its topology was deleted)"
+    assert "successor must be authored" in src, "the refusal must name the outstanding work"
+    exercise = src[src.index("def test_w1a_import_copy_durable_live_proof") :]
+    for capability in ("psycopg", "CREATE DATABASE", "DROP DATABASE", "read_text()", "json.dump"):
+        assert capability not in exercise, f"the withdrawn proof must not retain {capability} — it must refuse before anything"
+    # Counted on the AST, not on the text: the explanatory comment above the refusal legitimately
+    # contains the word "raises", and a substring count would have been satisfied by prose alone.
+    fn = next(n for n in ast.walk(_tree(_PROOF)) if isinstance(n, ast.FunctionDef) and n.name == "test_w1a_import_copy_durable_live_proof")
+    raises = [n for n in ast.walk(fn) if isinstance(n, ast.Raise)]
+    assert len(raises) == 1, f"exactly one refusal, and no path around it; found {len(raises)}"
+    assert isinstance(fn.body[-1], ast.Raise), "the refusal must be the LAST statement — nothing may run after it"
+    # A withdrawal, not a rename: the deleted subject must really be gone.
+    for rel in _DELETED_GATEWAY_SURFACE:
+        assert not (_BACKEND / rel).exists(), f"{rel} must be deleted"
+    # The DDL blob pins this proof used to enforce are NOT lost: the default-suite guard above
+    # (test_ddl_014_015_blob_pins_match_committed) reads the same bytes without a database.
+    assert _git_blob_sha1(_DDL_014) == _REVIEWED_014_BLOB, "the DDL blob pin must still hold in the default suite"
+    assert _git_blob_sha1(_DDL_015) == _REVIEWED_015_BLOB, "the DDL blob pin must still hold in the default suite"
 
 
 def test_proof_registered_manual_only_no_hosted_enrollment() -> None:
@@ -468,13 +481,12 @@ if __name__ == "__main__":
             test_cp_import_audit_store_on_conflict_audit_id_append_only_surface,
             test_cp_import_audit_composition_seam_loopback_failclosed,
             test_import_service_audit_policy_single_retry_no_loop,
-            test_gateway_composed_import_path_single_route_no_dispatch,
+            test_the_northbound_import_route_and_its_gateway_half_are_absent,
             test_import_edge_sole_serve_entrypoint_blessed,
             test_startup_directory_source_single_record_mapping_pins,
-            test_import_result_dto_references_only_catalogue,
+            test_import_result_dto_is_withdrawn_with_its_route,
             test_no_secret_or_dsn_literal_in_w1a_sources,
-            test_proof_stop_before_connect_and_apply_order,
-            test_proof_disposable_ownership_teardown_three_databases,
+            test_the_w1a_live_proof_is_WITHDRAWN_with_the_gateway_topology,
             test_proof_registered_manual_only_no_hosted_enrollment,
             test_boundary_detectors_are_non_vacuous,
         ]

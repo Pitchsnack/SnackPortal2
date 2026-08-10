@@ -25,7 +25,7 @@ Placement in ``shared`` is lawful and load-bearing: this module cannot import an
 it can hold no service-specific knowledge beyond a base URL and a wire envelope.
 
 **Known constraint, not hidden.** The Control-DB store constant for this table is the literal
-``api_gateway`` (``control_plane.gateway_audit.GATEWAY_AUDIT_SOURCE_SERVICE``, mirroring the
+``api_gateway`` (``control_plane.gateway_audit.EDGE_AUDIT_SOURCE_SERVICE``, mirroring the
 DDL 012 ``source_service`` CHECK). It is a store-side producer constant and is never a wire
 field, so nothing here sends it — but adopting the Gateway-free architecture for real would
 need that CHECK widened to name the route-owning edges. No DDL is applied or altered here.

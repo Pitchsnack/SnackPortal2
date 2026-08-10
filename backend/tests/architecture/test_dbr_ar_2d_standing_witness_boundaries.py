@@ -534,20 +534,45 @@ def test_v3_stage_machine_behavioral() -> None:
     assert ops.classify_stage(broken, rows) == ops.STAGE_ANOMALOUS
 
 
-def test_v3_rerun_refusal_pinned() -> None:
-    source = _text(_OPS)
-    run_seg = _func_segment(source, "cmd_run")
-    assert "stage != STAGE_APPLIED_NO_EVIDENCE" in run_seg, "run must refuse every stage except APPLIED_NO_EVIDENCE"
-    assert "a second evidence-generating run is REFUSED" in run_seg, "the rerun refusal must be explicit"
-    assert run_seg.index("RUN REFUSED") < run_seg.index("_snapshot_state()"), "the refusal precedes the snapshot/composition"
-    apply_seg = _func_segment(source, "cmd_apply")
-    assert "the V3 evidence is exactly-once" in apply_seg, "apply must refuse when any evidence row exists"
-    assert "apply is exactly-once" in apply_seg, "apply must refuse when the complete schema already exists"
-    wrapper = _text(_WRAPPER)
-    assert '_run(["run"])' in wrapper and "a second evidence-generating run must be REFUSED" in wrapper, (
-        "the wrapper must prove the live run refusal"
+def test_v3_run_command_is_WITHDRAWN_with_the_gateway_topology() -> None:
+    """Replaces four content pins on ``cmd_run``: the re-run refusal, the isolation witnesses, the
+    loopback/finally discipline and the durable-composition pin.
+
+    Every one of them asserted the SHAPE of an exercise that drove
+    ``Gateway -> internal dispatch edge -> DatabaseRouter.route() -> durable routing audit``. The
+    Gateway and the dispatch edge were both deleted, so ``cmd_run`` no longer contains that
+    exercise — it raises instead, and a guard asserting the old shape would only be asserting that
+    someone had rewritten it without saying so.
+
+    What replaces them is stricter about the thing that now matters: the run path must be
+    STRUCTURALLY incapable of emitting evidence. It must raise, it must say why, and it must not
+    have quietly kept a database connection, a service composition or an evidence write on the way
+    to raising.
+    """
+    src = _func_segment(_text(_OPS), "cmd_run")
+    assert "raise" in src, "cmd_run must refuse — a withdrawn live proof may not fall through"
+    assert "WITHDRAWN" in src, "the refusal must name itself, so a reader is never left guessing"
+    assert "API Gateway" in src, "the refusal must state WHY (its topology was deleted)"
+    assert "successor must be authored" in src, "the refusal must name the outstanding work"
+    # It cannot reach a database, compose a service, or write evidence on the way to raising.
+    withdrawn_capabilities = (
+        "_connect(",
+        "psycopg",
+        "build_read_server_from_env",
+        "build_routing_audit_server_from_env",
+        "json.dump",
+        "write_text",
     )
-    assert '_run(["apply", "--backup-dir", tmp])' in wrapper, "the wrapper must prove the live apply refusal"
+    for capability in withdrawn_capabilities:
+        assert capability not in src, f"the withdrawn run path must not retain {capability} — it must refuse before anything"
+    # And the deleted subject must really be gone (so this is a withdrawal, not a rename).
+    assert not (_scan.BACKEND_ROOT / "api_gateway").exists(), "the API Gateway package must be deleted"
+    assert not (_scan.BACKEND_ROOT / "database_router" / "adapters" / "providers" / "http_dispatch_api.py").exists(), (
+        "the internal dispatch edge must be deleted"
+    )
+    # The read-only commands are untouched: plan/apply/status still work and are still pinned above.
+    for survivor in ("cmd_plan", "cmd_status"):
+        assert f"def {survivor}" in _text(_OPS), f"{survivor} must survive — only the run exercise was withdrawn"
 
 
 def test_v3_allowed_delta_behavioral() -> None:
@@ -582,63 +607,6 @@ def test_v3_snapshot_families_nonvacuity() -> None:
 # ---------------------------------------------------------------------------
 # 9. One request → one tenant → one DB; dormant absences; loopback/finally discipline
 # ---------------------------------------------------------------------------
-def test_v3_isolation_witnesses_pinned() -> None:
-    run_seg = _func_segment(_text(_OPS), "cmd_run")
-    assert "routed_database_identity(" in run_seg, "the pooled-connection identity readback must exist"
-    assert "one request/one tenant/one DB" in run_seg, "the one-request→one-tenant→one-DB witness must be asserted"
-    assert "other_pool_delta" in run_seg, "the other-tenant non-touch witness must exist"
-    assert "durable row(s) for" in run_seg, "the exactly-one-durable-Route-row witness must exist (S1/S2)"
-    assert "expected exactly one durable RouteDenied(not_ready) row" in run_seg, "the S4 exactly-one-row witness must exist"
-    assert "expected exactly one durable IsolationAnomaly row" in run_seg, "the S5 exactly-one-row witness must exist"
-    assert "added routing-audit row(s) — must be ZERO" in run_seg, "the RUN-scoped S3 zero-delta witness must exist"
-    assert "the OTHER tenant's pool changed during a success row" in run_seg, "the enforcing other-pool witness must exist"
-    assert "a tenant-binding fault must be denied" in run_seg, "S5 must refuse a route success outright"
-    assert "the misbound connection must be discarded and closed" in run_seg, "the S5 discard witness must exist"
-    assert '"routing_isolation_fault"' in run_seg, "the S5 denial code must be asserted"
-    assert "_dormant_absence_problem(" in run_seg, "the dormant no-secret/no-DB/no-schema probe must run inside the witness"
-    ops_source = _text(_OPS)
-    dormant_seg = _func_segment(ops_source, "_dormant_absence_problem")
-    for needle in ("secret file exists", "resolves the dormant reference", "dormant database EXISTS"):
-        assert needle in dormant_seg, f"the dormant probe must check {needle!r}"
-
-
-def test_v3_loopback_and_finally_discipline() -> None:
-    source = _text(_OPS)
-    assert 'LOOPBACK_HOST = "127.0.0.1"' in source, "the loopback host is pinned"
-    unset = _module_literal(source, "_ENV_UNSET_KEYS")
-    for key in ("SP2_CP_READ_PORT", "SP2_CP_ROUTING_AUDIT_PORT", "SP2_AR_AUTHENTICATE_PORT", "SP2_DBR_DISPATCH_PORT"):
-        assert key in unset, f"{key} must be explicitly UNSET for the run (ephemeral ports only)"
-    run_seg = _func_segment(source, "cmd_run")
-    assert re.search(r'patch\.set\("SP2_CP_READ_HOST", LOOPBACK_HOST\)', run_seg), "the read edge binds the loopback host"
-    assert re.search(r'patch\.set\("SP2_CP_ROUTING_AUDIT_HOST", LOOPBACK_HOST\)', run_seg), "the ingest edge binds the loopback host"
-    assert "    finally:\n        problems = _stop_all()" in run_seg and "patch.restore()" in run_seg, (
-        "run must stop every server and restore the environment in ITS OWN finally block (not an else/except)"
-    )
-    ops = _load_ops()
-    patch = ops._EnvPatch()
-    try:
-        patch.set("SP2_ROGUE_KEY", "x")
-        raise AssertionError("an out-of-census env write must be refused")
-    except ops.OpsConfigError:
-        pass
-    assert ops._port_refused("http://127.0.0.1:1"), "the port-release probe must report a refused port"
-
-
-def test_v3_durable_composition_pinned() -> None:
-    run_seg = _func_segment(_text(_OPS), "cmd_run")
-    assert "build_routing_audit_server_from_env" in run_seg, "the REAL CP ingest seam must be composed"
-    assert "build_dispatch_server_from_env" in run_seg, "the REAL DBR dispatch seam must be composed"
-    assert "build_authenticate_server_from_env" in run_seg, "the REAL Auth Router seam must be composed"
-    assert "build_read_server_from_env" in run_seg, "the REAL CP read seam must be composed"
-    assert "build_gateway(" in run_seg, "the REAL gateway must be composed in-process"
-    assert 'patch.set("SP2_DBR_ROUTING_AUDIT_BASE_URL", ingest_url)' in run_seg, "the durable audit opt-in must target the ingest edge"
-    assert '"BoundedRoutingAuditPolicy"' in run_seg, "the composed router must hold the DURABLE routing-audit policy (proof 8)"
-    assert "InMemoryAuditSink" not in _text(_OPS), "the standing witness must never touch the in-memory routing sink"
-
-
-# ---------------------------------------------------------------------------
-# 10. No status overclaim; hosted loop unchanged at 14; the manual-only exception
-# ---------------------------------------------------------------------------
 def test_v3_no_status_overclaim() -> None:
     source = _text(_OPS)
     status_seg = _func_segment(source, "cmd_status")
@@ -670,9 +638,16 @@ def test_v3_hosted_loop_unchanged_and_manual_only() -> None:
         "tests/control_plane/requires_pg/test_b3a_multi_database_topology.py",
         "tests/control_plane/requires_pg/test_pg_b5_standing_topology.py",
         "tests/control_plane/requires_pg/test_pg_b5_standing_auth_fixture.py",
-        "tests/control_plane/requires_pg/test_pg_smoke_c_integrated_live_proof.py",
     ):
         assert preserved in mapping, f"a pre-existing MANUAL_ONLY exception was dropped: {preserved}"
+    # The Smoke C V2 integrated live proof was a pre-existing exception until the API Gateway was
+    # deleted. Its harness drove `browser -> Gateway 8820 -> ... -> tenant DB`, so it went with the
+    # topology it proved, and INV-C fails on an exception naming a file that is not on disk.
+    # Asserting the PAIR keeps a genuine removal distinguishable from an exception silently dropped
+    # while its harness still exists.
+    smoke_c = "tests/control_plane/requires_pg/test_pg_smoke_c_integrated_live_proof.py"
+    assert not (_scan.BACKEND_ROOT / smoke_c).exists(), "the Smoke C V2 harness was deleted with the Gateway topology"
+    assert smoke_c not in mapping, "an exception may not outlive the harness it exempts"
 
 
 def test_v3_hosted_loop_nonvacuity() -> None:
@@ -859,13 +834,10 @@ if __name__ == "__main__":
             test_v3_leak_scan_behavioral,
             test_v3_schema_evaluator_behavioral,
             test_v3_stage_machine_behavioral,
-            test_v3_rerun_refusal_pinned,
+            test_v3_run_command_is_WITHDRAWN_with_the_gateway_topology,
             test_v3_allowed_delta_behavioral,
             test_v3_snapshot_families_complete,
             test_v3_snapshot_families_nonvacuity,
-            test_v3_isolation_witnesses_pinned,
-            test_v3_loopback_and_finally_discipline,
-            test_v3_durable_composition_pinned,
             test_v3_no_status_overclaim,
             test_v3_hosted_loop_unchanged_and_manual_only,
             test_v3_hosted_loop_nonvacuity,

@@ -3,7 +3,7 @@
 This is the Gateway-free MVP's tenant data-plane boundary. It replaces two runtime hops with
 one process: where the previous architecture ran
 
-    browser -> API Gateway (8820) -> [HTTP] -> internal tenant Startup API (8004) -> executor
+    browser -> API Gateway (8820) -> [HTTP] -> internal tenant Startup API (8004) -> executor   (before, both now deleted)
 
 this edge is
 

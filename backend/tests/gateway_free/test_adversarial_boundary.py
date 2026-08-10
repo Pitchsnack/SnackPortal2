@@ -21,6 +21,12 @@ import sys
 # EMPTY stubs win over the production packages, which silently blinds any sys.modules census.
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
+# Module-level, deliberately: this file carries ``from __future__ import annotations``, so a
+# handler's ``request: Request`` annotation is a STRING that FastAPI resolves against MODULE
+# globals. Importing Request inside a test function leaves it unresolvable, and FastAPI then
+# treats the parameter as a request-body field and answers 422 — which is how the A20b positive
+# control silently stopped being a positive control the first time it was written that way.
+from fastapi import FastAPI, Request  # noqa: E402
 from gateway_free._fakes import (  # noqa: E402
     ACME,
     ACME_BEARER,
@@ -47,7 +53,6 @@ from control_plane.adapters.providers.in_memory_store import InMemoryControlStor
 from control_plane.membership import MembershipRegistry  # noqa: E402
 from control_plane.records import Role  # noqa: E402
 from database_router.adapters.providers.http_public_startup_edge import build_public_startup_edge_server  # noqa: E402
-from database_router.adapters.providers.http_tenant_startup_api import build_tenant_startup_server  # noqa: E402
 from database_router.tenant_startup_ops import TenantStartupOperations  # noqa: E402
 from shared.adapters.providers.edge_audit import EdgeAuditTransportError  # noqa: E402
 
@@ -641,40 +646,69 @@ def test_a20_the_public_edge_never_reaches_the_internal_envelope_edge() -> None:
     assert "build_tenant_startup_server" not in called, "the public edge must not construct the internal edge"
 
 
-def test_a20d_KNOWN_RESIDUAL_the_internal_envelope_edge_still_composes_under_mvp_env(monkeypatch) -> None:
-    """A deliberately UNCOMFORTABLE test: it pins what is NOT true, so no one can claim it is.
+def test_a20d_the_internal_envelope_edge_IS_DELETED_not_merely_unlaunched() -> None:
+    """The successor to ``test_a20d_KNOWN_RESIDUAL_...``, and the reason it no longer exists.
 
-    The MVP topology does not *launch* the internal envelope edge — but the module, its
-    application factory and its serve entrypoint all remain, and its composition gate is the
-    SAME variable (``SP2_DBR_ROUTING_READ_BASE_URL``) the public edge itself requires. So under
-    exactly the Gateway-free MVP environment it composes perfectly well, and the standing
-    launcher still starts it on 8004.
+    That test pinned an uncomfortable truth: the MVP topology did not *launch* the internal
+    envelope edge, but the module, its application factory and its serve entrypoint all
+    remained, its composition gate was the SAME variable the public edge requires, and the
+    standing launcher still started it on 8004. "Not launched" was a topology choice, not a
+    structural guarantee.
 
-    "The hazard is deleted" would therefore be false; "the hazard is not launched" is true. The
-    difference is a topology choice, not a structural guarantee, and closing it for real needs
-    the later cleanup PR that deletes the module. This test exists so that distinction cannot
-    quietly rot into the stronger claim.
+    The complete-removal task deleted the module. This test asserts the STRONGER claim the old
+    one refused to make, on three independent oracles so a partial deletion cannot pass:
+    the source file is gone, the import system cannot find the module, and the composition root
+    exposes no builder for it. The executor itself survives — it is what the public edge holds
+    in-process — so the test also pins that the surviving seam is the executor one.
     """
+    import importlib.util
+
     import database_router.main as dbr_main
 
-    monkeypatch.setenv(dbr_main.SP2_EDGE_AUTH_ROUTER_BASE_URL, "http://auth.invalid")
-    monkeypatch.setenv(dbr_main.SP2_DBR_ROUTING_READ_BASE_URL, "http://routing.invalid")
-    # Socket-inert on purpose: this proves composability without binding a listener.
-    assert dbr_main.build_tenant_startup_ops_from_env() is not None, (
-        "KNOWN RESIDUAL: the internal envelope edge's executor composes under the MVP environment"
-    )
-    assert dbr_main.build_public_startup_edge_deps_from_env() is not None, "and so does the public edge, from the same gate"
+    providers = pathlib.Path(dbr_main.__file__).parent / "adapters" / "providers"
+    assert not (providers / "http_tenant_startup_api.py").exists(), "the internal envelope edge module must be DELETED"
+    assert not (providers / "http_dispatch_api.py").exists(), "the Gateway-only dispatch edge module must be DELETED"
+    for gone in ("database_router.adapters.providers.http_tenant_startup_api", "database_router.adapters.providers.http_dispatch_api"):
+        try:
+            found = importlib.util.find_spec(gone)
+        except ModuleNotFoundError:
+            found = None
+        assert found is None, f"{gone} must not be importable"
+    for seam in ("build_tenant_startup_server_from_env", "build_dispatch_server_from_env"):
+        assert not hasattr(dbr_main, seam), f"database_router.main must expose no {seam} (the seam went with the edge)"
+    assert hasattr(dbr_main, "build_tenant_startup_ops_from_env"), "the EXECUTOR seam survives — the public edge composes through it"
 
 
-def test_a20b_positive_control_the_internal_edge_really_is_unauthenticated() -> None:
-    # The positive control that makes A20 non-vacuous: the internal envelope edge, run here in
-    # isolation, genuinely answers an ANONYMOUS caller and lets that caller name both the
-    # tenant and the recorded actor. That is exactly the hazard the Gateway-free MVP topology
-    # removes by not running this edge at all — and exactly why "just expose the internal API"
-    # was never a lawful option.
+def test_a20b_positive_control_an_unauthenticated_envelope_edge_really_would_leak() -> None:
+    """The counterfactual that keeps A20 non-vacuous, rebuilt without the deleted module.
+
+    The original positive control served the REAL internal envelope edge and showed it answering
+    an anonymous caller who chose both the tenant and the recorded actor. That module is now
+    deleted, so the control is reconstructed here from the same parts: the REAL executor and the
+    REAL two-tenant provider behind a minimal route that reads the tenant and actor FROM THE
+    REQUEST BODY — exactly the shape the deleted edge had.
+
+    It proves the hazard was real (so "we removed nothing that mattered" is refuted) and that
+    ``provider.opened`` is a live detector of it (so A20c's silence is meaningful).
+    """
+    from shared.adapters.providers.asgi_runtime import build_asgi_server
+
     provider = TwoTenantProvider()
-    server, base_url = build_tenant_startup_server(TenantStartupOperations(provider), "127.0.0.1", 0)
-    internal = HostedEdge(server, base_url)
+    ops = TenantStartupOperations(provider)
+    app = FastAPI()
+
+    @app.post("/internal/tenant/startups/read")
+    async def _read(request: Request):  # the deleted edge's shape: authority comes from the BODY
+        envelope = decode(await request.body())
+        record = ops.read(
+            tenant_ref=envelope["target_tenant_ref"],
+            startup_ref=envelope["startup_ref"],
+            correlation_id=envelope["correlation_id"],
+            actor_ref=envelope["actor_ref"],
+        )
+        return {"version": 1, "record": {"display_name": record.display_name}}
+
+    server, base_url = build_asgi_server(app, host="127.0.0.1", port=0)
     envelope = (
         b'{"v":1,"startup_ref":"'
         + ACME_REF.encode()
@@ -682,14 +716,14 @@ def test_a20b_positive_control_the_internal_edge_really_is_unauthenticated() -> 
         + ACME.encode()
         + b'","correlation_id":"corr-anon","actor_ref":"anyone-at-all"}'
     )
-    with internal:
+    with HostedEdge(server, base_url) as internal:
         status, body, _headers = internal.request(
             "POST",
             "/internal/tenant/startups/read",
             headers={"Content-Type": "application/json"},
             body=envelope,
         )
-    assert status == 200, "the internal edge answers an unauthenticated caller (the pre-existing hazard)"
+    assert status == 200, "an unauthenticated envelope edge answers an anonymous caller (the pre-existing hazard)"
     assert decode(body)["record"]["display_name"] == ACME_SECRET_NAME
     assert provider.opened == [(ACME, "anyone-at-all")], "the anonymous caller chose BOTH the tenant and the recorded actor"
 

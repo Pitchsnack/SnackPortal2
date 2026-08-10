@@ -31,7 +31,7 @@ def _imports(pkg: str):
 def test_import_service_imports_no_other_service() -> None:
     for f, mod in _imports("import_service"):
         top = mod.split(".")[0]
-        assert top not in {"database_router", "control_plane", "lineage_service", "auth_router", "api_gateway"}, (
+        assert top not in {"database_router", "control_plane", "lineage_service", "auth_router"}, (
             f"{_scan.relposix(f)} imports another service '{mod}' — shared ports/transport only (PRD-P5-R2 B/D/E)"
         )
 
@@ -39,7 +39,7 @@ def test_import_service_imports_no_other_service() -> None:
 def test_lineage_service_imports_no_router_or_import() -> None:
     for f, mod in _imports("lineage_service"):
         top = mod.split(".")[0]
-        assert top not in {"database_router", "import_service", "auth_router", "control_plane", "api_gateway"}, (
+        assert top not in {"database_router", "import_service", "auth_router", "control_plane"}, (
             f"{_scan.relposix(f)} imports another service '{mod}' — lineage runs on the injected session (Standard D)"
         )
 

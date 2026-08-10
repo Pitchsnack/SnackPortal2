@@ -14,7 +14,7 @@ validation stack (``JwtValidator`` + ``PyJwtSignatureVerifier`` + ``Authenticato
   fail-closed 403 with the consistent no-existence-leak semantic (the CLM ZETA denial);
 * the composition boundary refuses any symmetric ``allowed_algs`` entry (fail closed).
 
-RS256 minting comes ONLY from ``tests/api_gateway/crypto_fixture.py`` (vendor containment);
+RS256 minting comes ONLY from ``tests/shared/crypto_fixture.py`` (vendor containment);
 the HS256/none negative tokens are stdlib-crafted (no jwt import here).
 """
 
@@ -49,7 +49,7 @@ _ACME = "tenant-acme"
 _ZETA = "tenant-zeta"
 _SUPABASE_ISSUER = "https://xyzcompany.supabase.co/auth/v1"
 
-_CRYPTO_FIXTURE = pathlib.Path(__file__).resolve().parents[1] / "api_gateway" / "crypto_fixture.py"
+_CRYPTO_FIXTURE = pathlib.Path(__file__).resolve().parents[1] / "shared" / "crypto_fixture.py"
 
 
 def _fixture() -> Any:

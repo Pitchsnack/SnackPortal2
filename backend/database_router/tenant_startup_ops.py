@@ -35,7 +35,7 @@ _STARTUPS_TABLE = "startups"
 _REF_COLUMN = "global_startup_id"
 _LINEAGE_TABLE = "lineage"
 
-# IC-010 CLM bounds (defense-in-depth: the gateway validated these fail-closed already).
+# IC-010 CLM bounds (SOLE enforcement since the API Gateway was deleted: nothing upstream re-validates them).
 _MAX_REF_BYTES = 512
 _MAX_SHORT_DESCRIPTION_CHARS = 500
 

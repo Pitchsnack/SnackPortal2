@@ -14,15 +14,15 @@ What is checked, and why each check exists:
 * **The five canonical flags, on one template.** The launcher composes every standing edge through a
   single `Get-StandingUvicornCommand`, so a flag cannot be complete on five edges and short on the
   sixth. The guard asserts the flag census AND that the template is the only uvicorn invocation.
-* **The governed standing port map** — 8001 / 8002 / 8003 / 8004 / 8005 / 8820 — bound to the right
-  module, with the Gateway on 8820 and **never** 8080. `8080-8088` is the ISOLATED SMOKE /
+* **The governed standing port map** — 8001 / 8003 / 8005 / 8830 / 8831 — bound to the right
+  module, with the two PUBLIC edges on 8830 / 8831 and **never** 8080. `8080-8088` is the ISOLATED SMOKE /
   VERIFICATION map (`tests/deployment/native_uvicorn_process_smoke.py`); a standing edge in that
   range means two topologies are live and nothing would say so.
-* **The three selectors that must stay UNSET** (V7 §24 / E60): `SP2_GW_IMPORT_BASE_URL`,
+* **The three selectors that must stay UNSET** (V7 §24 / E60): `SP2_IMPORT_DIRECTORY_READ_BASE_URL`,
   `SP2_DBR_ROUTING_AUDIT_BASE_URL`, `SP2_IMPORT_AUDIT_SINK_BASE_URL`. Never assigned — and, stronger,
   swept out of every child so an inherited shell value cannot activate them either.
 * **The four activation selectors are never active defaults.** `SP2_CP_CONTROL_STORE`,
-  `SP2_CP_CONTROL_STORE_DSN_REF`, `SP2_GW_AUDIT_SINK_BASE_URL`, `SP2_GW_TENANT_STARTUP_BASE_URL` may
+  `SP2_CP_CONTROL_STORE_DSN_REF`, `SP2_EDGE_AUDIT_SINK_BASE_URL` may
   be *present* in the launcher — that is the point, the governed values are pinned so activation is a
   reviewed flip — but each assignment must sit inside an explicit `-Enable*` opt-in block. Running
   with any of them on produces persistent standing state and is Gate-B work.
@@ -47,17 +47,31 @@ import _scan  # noqa: E402
 
 LAUNCHER = _scan.BACKEND_ROOT / "tools" / "local" / "start-sp2-local.ps1"
 
-# The governed STANDING map. CLM-SS-1 decision "D-1 gateway port 8820" (that register's D-1 — not
-# the repository ADR register's D-01 "Bootstrap Cycle Resolution", a different decision with a
-# colliding short identifier).
+# The governed STANDING map, Gateway-free. CLM-SS-1 decision "D-1 gateway port 8820" assigned the
+# single northbound Gateway surface; that component was deleted, so 8820 is RETIRED — together with
+# 8002 (the Database Router dispatch edge) and 8004 (the internal tenant-Startup envelope edge),
+# both of which existed only to carry a Gateway request into a service.
 GOVERNED_STANDING_MAP: Dict[str, int] = {
     "auth_router.adapters.providers.http_authenticate_api": 8001,
-    "database_router.adapters.providers.http_dispatch_api": 8002,
     "control_plane.adapters.providers.http_read_api": 8003,
-    "database_router.adapters.providers.http_tenant_startup_api": 8004,
     "control_plane.adapters.providers.http_gateway_audit_api": 8005,
-    "api_gateway.adapters.providers.http_gateway_edge": 8820,
+    "database_router.adapters.providers.http_public_startup_edge": 8830,
+    "control_plane.adapters.providers.http_public_workspace_edge": 8831,
 }
+
+# The two PUBLIC surfaces. Everything else in the map is internal-only (IC-010 §R, re-homed to the
+# owning edges). Kept as its own set so "which ports face a browser" is a single reviewable fact.
+PUBLIC_EDGE_PORTS = {8830, 8831}
+
+# Ports the deleted components used. None may be bound by this launcher, and the module names must
+# not appear in it at all — a launcher that still starts a deleted module is the exact residue this
+# guard exists to catch.
+RETIRED_PORTS = (8820, 8002, 8004)
+RETIRED_MODULES = (
+    "api_gateway.adapters.providers.http_gateway_edge",
+    "database_router.adapters.providers.http_dispatch_api",
+    "database_router.adapters.providers.http_tenant_startup_api",
+)
 
 # The five flags that make the native path safe. `--factory` is the application-shape flag; the other
 # four are the ONLY thing standing between the standing topology and uvicorn's defaults
@@ -67,18 +81,23 @@ REQUIRED_FLAGS = ("--factory", "--workers 1", "--no-access-log", "--no-server-he
 # V7 §24 / E60: these must remain UNSET for the controlled local MVP journey. Import is outside it
 # (IMPORT-A / D-3), and neither the routing-audit nor the import-audit durable sink is in scope.
 MUST_REMAIN_UNSET = (
-    "SP2_GW_IMPORT_BASE_URL",
     "SP2_DBR_ROUTING_AUDIT_BASE_URL",
     "SP2_IMPORT_AUDIT_SINK_BASE_URL",
+    "SP2_IMPORT_DIRECTORY_READ_BASE_URL",
 )
+
+# Every Gateway environment selector was defined inside the deleted `api_gateway` package, so a
+# surviving `SP2_GW_*` reference in launcher CODE could only be configuring something that no
+# longer exists. The prefix is banned outright rather than enumerated: an enumeration would go
+# stale, and the point is that the whole family is gone.
+FORBIDDEN_ENV_PREFIX = "SP2_GW_"
 
 # Present-but-gated. Each is a Gate-B act the moment a process runs with it active
 # (M12 durable reads / M12 ref binding / M11 durable audit rows / M14 tenant writes).
 GATED_ACTIVATION_SELECTORS = (
     "SP2_CP_CONTROL_STORE",
     "SP2_CP_CONTROL_STORE_DSN_REF",
-    "SP2_GW_AUDIT_SINK_BASE_URL",
-    "SP2_GW_TENANT_STARTUP_BASE_URL",
+    "SP2_EDGE_AUDIT_SINK_BASE_URL",
 )
 
 # The isolated smoke / verification map. No standing edge may live here.
@@ -186,10 +205,13 @@ def test_standing_port_map_is_the_governed_map() -> None:
     )
 
 
-def test_gateway_is_8820_and_no_standing_edge_lands_in_the_smoke_range() -> None:
+def test_public_edges_are_8830_8831_and_no_standing_edge_lands_in_the_smoke_range() -> None:
     edges = _standing_edges(_text())
-    gateway = edges["api_gateway.adapters.providers.http_gateway_edge"]
-    assert gateway == 8820, f"the standing API Gateway must bind 8820, found {gateway}"
+    assert edges["database_router.adapters.providers.http_public_startup_edge"] == 8830
+    assert edges["control_plane.adapters.providers.http_public_workspace_edge"] == 8831
+    assert {port for module, port in edges.items() if port in PUBLIC_EDGE_PORTS} == PUBLIC_EDGE_PORTS, (
+        "exactly the two public edges may occupy the public port pair"
+    )
     for module, port in edges.items():
         assert port not in SMOKE_ONLY_PORT_RANGE, (
             f"{module} is assigned standing port {port}, which is inside the ISOLATED SMOKE / VERIFICATION "
@@ -198,6 +220,35 @@ def test_gateway_is_8820_and_no_standing_edge_lands_in_the_smoke_range() -> None
     consts = _port_constants(_text())
     for name, value in consts.items():
         assert value not in SMOKE_ONLY_PORT_RANGE, f"${name} = {value} collides with the isolated smoke map"
+
+
+def test_no_retired_gateway_port_or_module_is_started() -> None:
+    """Zero-residual: the launcher must neither bind a retired port nor name a deleted module.
+
+    The `$COLLISION_ADVISORY_PORTS` precheck deliberately *looks at* 8820 / 8002 / 8004 to warn
+    about a stale pre-removal process, so the check below reads the composed (module -> port)
+    census and the `Start-StandingEdge` module arguments — not raw text, which the advisory list
+    would trip.
+    """
+    text = _text()
+    edges = _standing_edges(text)
+    for module, port in edges.items():
+        assert port not in RETIRED_PORTS, f"{module} is assigned RETIRED port {port} — that component was deleted"
+        assert module not in RETIRED_MODULES, f"{module} was deleted with the API Gateway and must not be started"
+    for module in RETIRED_MODULES:
+        assert f'-Module "{module}"' not in text, f"the launcher must not name the deleted module {module}"
+    consts = _port_constants(text)
+    for name, value in consts.items():
+        assert value not in RETIRED_PORTS, f"${name} = {value} is a retired port constant"
+
+
+def test_no_gateway_environment_selector_survives_in_launcher_code() -> None:
+    for line_no, line in _code_lines(_text()):
+        assert FORBIDDEN_ENV_PREFIX not in line, (
+            f"{LAUNCHER.name}:{line_no} references a {FORBIDDEN_ENV_PREFIX}* selector in code. Every one of them was "
+            "defined inside the deleted api_gateway package, so it can only be configuring something that no "
+            "longer exists."
+        )
 
 
 def test_no_unauthorized_serving_mode_in_the_launcher() -> None:
@@ -243,7 +294,7 @@ def test_inherited_environment_is_scrubbed_in_every_child() -> None:
 def test_activation_selectors_are_gated_behind_an_explicit_opt_in() -> None:
     """Present is fine. Active-by-default is not."""
     text = _text()
-    for switch in ("EnableDurableControlStore", "EnableDurableGatewayAudit", "EnableTenantDataPlane"):
+    for switch in ("EnableDurableControlStore", "EnableDurableEdgeAudit", "EnableTenantDataPlane"):
         assert re.search(rf"\[switch\]\${switch}\b", text), f"the launcher must expose -{switch} as an off-by-default switch"
         assert not re.search(rf"\[switch\]\${switch}\s*=", text), f"-{switch} must have no default value — a switch defaults to off"
 
@@ -292,7 +343,7 @@ def test_aw1_start_gate_precedes_the_ingest_edge() -> None:
     code = "\n".join(line for _n, line in _code_lines(_text()))
     assert "aw1_gateway_audit_writer.py" in code, "the launcher must know the AW-1 operator tool's path"
     assert "$LASTEXITCODE -ne 0" in code, "a red AW-1 status must be observed, not merely printed"
-    assert "refusing to start the Gateway-audit ingest edge" in code, (
+    assert "refusing to start the operational-audit ingest edge" in code, (
         "a failed AW-1 start gate must REFUSE to start the ingest edge — starting anyway is how an ungoverned "
         "identity ends up writing durable audit rows"
     )
@@ -312,7 +363,7 @@ def test_blank_writer_material_refuses_before_the_ingest_edge_starts() -> None:
     """
     code_lines = _code_lines(_text())
     code = "\n".join(line for _n, line in code_lines)
-    assert "IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($GatewayAuditWriterSecretVar))" in code, (
+    assert "IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($EdgeAuditWriterSecretVar))" in code, (
         "the launcher must refuse when the SELECTED writer secret-material variable is unset, empty, OR "
         "whitespace-only after stripping. Reading it through the parameter (not a hard-coded name) is what keeps the "
         "check aimed at the variable the launcher actually keeps in the ingest window."
@@ -325,16 +376,16 @@ def test_blank_writer_material_refuses_before_the_ingest_edge_starts() -> None:
                 return number
         raise AssertionError(f"expected {needle!r} in the launcher's code")
 
-    gate_line = _line_of("IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($GatewayAuditWriterSecretVar))")
-    opt_in_line = _line_of("if ($EnableDurableGatewayAudit) {")
-    keep_line = _line_of("$ingestKeep = @($GatewayAuditWriterSecretVar)")
-    start_line = _line_of('-Title "gateway_audit $PORT_GATEWAY_AUDIT"')
+    gate_line = _line_of("IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($EdgeAuditWriterSecretVar))")
+    opt_in_line = _line_of("if ($EnableDurableEdgeAudit) {")
+    keep_line = _line_of("$ingestKeep = @($EdgeAuditWriterSecretVar)")
+    start_line = _line_of('-Title "edge_audit $PORT_EDGE_AUDIT"')
     assert opt_in_line < gate_line < keep_line < start_line, (
-        "the blank-material refusal must sit inside the -EnableDurableGatewayAudit opt-in block and run BEFORE the "
+        "the blank-material refusal must sit inside the -EnableDurableEdgeAudit opt-in block and run BEFORE the "
         f"ingest edge is started (opt-in@{opt_in_line} check@{gate_line} keep@{keep_line} start@{start_line})"
     )
     # Presence only: the value must never be captured, printed, or relayed.
-    assert not re.search(r"\$\w+\s*=\s*\[Environment\]::GetEnvironmentVariable\(\$GatewayAuditWriterSecretVar\)", code), (
+    assert not re.search(r"\$\w+\s*=\s*\[Environment\]::GetEnvironmentVariable\(\$EdgeAuditWriterSecretVar\)", code), (
         "the writer material must be tested for blankness IN PLACE. Capturing it into a variable is the first step "
         "toward printing or relaying a credential the launcher has no reason to hold."
     )
@@ -362,7 +413,7 @@ def test_guard_is_non_vacuous() -> None:
     # The comment stripper must not hide code, and must hide comments.
     stripped = "\n".join(line for _n, line in _code_lines("# SP2_GW_IMPORT_BASE_URL is forbidden\n$x = 1\n"))
     assert "SP2_GW_IMPORT_BASE_URL" not in stripped and "$x = 1" in stripped
-    assert len(GOVERNED_STANDING_MAP) == 6, "the standing census must cover exactly the six standing edges"
+    assert len(GOVERNED_STANDING_MAP) == 5, "the standing census must cover exactly the five standing edges"
 
 
 if __name__ == "__main__":
@@ -372,7 +423,9 @@ if __name__ == "__main__":
             test_canonical_flag_census_is_exactly_the_five,
             test_one_uvicorn_command_template_carrying_every_flag,
             test_standing_port_map_is_the_governed_map,
-            test_gateway_is_8820_and_no_standing_edge_lands_in_the_smoke_range,
+            test_public_edges_are_8830_8831_and_no_standing_edge_lands_in_the_smoke_range,
+            test_no_retired_gateway_port_or_module_is_started,
+            test_no_gateway_environment_selector_survives_in_launcher_code,
             test_no_unauthorized_serving_mode_in_the_launcher,
             test_the_three_e60_selectors_are_never_set,
             test_inherited_environment_is_scrubbed_in_every_child,

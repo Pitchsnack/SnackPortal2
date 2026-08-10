@@ -56,7 +56,6 @@ _BUILD_AUTHENTICATOR_KWONLY = ["verifier", "read", "issuers", "audit", "cache_tt
 # HTTP-server/socket surface, and any concurrency machinery.
 _FORBIDDEN_TOPS = frozenset(
     {
-        "api_gateway",
         "database_router",
         "control_plane",
         "import_service",
@@ -210,8 +209,11 @@ def test_auth_router_composition_guard_nonvacuity() -> None:
     assert _tops_of_source("from database_router.main import build_router\n") & _FORBIDDEN_TOPS == {"database_router"}, (
         "composition guard must flag a database_router import"
     )
-    assert _tops_of_source("from api_gateway.main import build_gateway\n") & _FORBIDDEN_TOPS == {"api_gateway"}, (
-        "composition guard must flag an api_gateway import"
+    # The probe must name a package that EXISTS: after the API Gateway was deleted, a planted
+    # `import api_gateway` would be flagged for the wrong reason (unresolvable), so the sample is
+    # a live sibling service instead.
+    assert _tops_of_source("from database_router.main import build_router\n") & _FORBIDDEN_TOPS == {"database_router"}, (
+        "composition guard must flag a sibling-service import"
     )
     assert _tops_of_source("import jwt\n") & _FORBIDDEN_TOPS == {"jwt"}, "composition guard must flag a top-level PyJWT import"
     assert _tops_of_source("from cryptography.hazmat.primitives import serialization\n") & _FORBIDDEN_TOPS == {"cryptography"}, (

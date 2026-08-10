@@ -37,11 +37,11 @@ on:
       - "backend/control_plane/main.py"
       - "backend/control_plane/adapters/providers/control_store_factory.py"
       - "backend/control_plane/adapters/providers/postgres_store.py"
-      # PRD D-15-T1b: the runtime gateway<->router dispatch transport pair proven by DT-1..DT-8 (folded
-      # into test_pg_composition_onboarding_07d.py). A change to these modules alters the dispatch
-      # behaviour the live-PG proof exercises. Trigger-only: this does NOT add a harness run-loop entry.
-      - "backend/database_router/adapters/providers/http_dispatch_api.py"
-      - "backend/api_gateway/adapters/providers/http_router_dispatch.py"
+      # PRD D-15-T1b's gateway<->router dispatch transport pair was REMOVED with the API Gateway:
+      # both ends (the Gateway's HttpRouterDispatch client and the internal dispatch edge) are
+      # deleted, and the DT-1..DT-8 section of test_pg_composition_onboarding_07d.py went with them.
+      # The two path triggers that named those modules are removed here — a trigger on a file that
+      # cannot exist never fires, and leaving it would advertise coverage that is gone.
   pull_request:
     paths:
       - "infrastructure/db/**"
@@ -53,11 +53,11 @@ on:
       - "backend/control_plane/main.py"
       - "backend/control_plane/adapters/providers/control_store_factory.py"
       - "backend/control_plane/adapters/providers/postgres_store.py"
-      # PRD D-15-T1b: the runtime gateway<->router dispatch transport pair proven by DT-1..DT-8 (folded
-      # into test_pg_composition_onboarding_07d.py). A change to these modules alters the dispatch
-      # behaviour the live-PG proof exercises. Trigger-only: this does NOT add a harness run-loop entry.
-      - "backend/database_router/adapters/providers/http_dispatch_api.py"
-      - "backend/api_gateway/adapters/providers/http_router_dispatch.py"
+      # PRD D-15-T1b's gateway<->router dispatch transport pair was REMOVED with the API Gateway:
+      # both ends (the Gateway's HttpRouterDispatch client and the internal dispatch edge) are
+      # deleted, and the DT-1..DT-8 section of test_pg_composition_onboarding_07d.py went with them.
+      # The two path triggers that named those modules are removed here — a trigger on a file that
+      # cannot exist never fires, and leaving it would advertise coverage that is gone.
 
 # Own least-privilege floor (a new workflow does not inherit ci.yml's top-level default).
 permissions:

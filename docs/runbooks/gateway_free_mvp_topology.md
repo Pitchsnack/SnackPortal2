@@ -1,10 +1,14 @@
 # Gateway-free MVP topology (EXPERIMENT BRANCH ONLY)
 
 > **Status: experimental.** This topology exists only on `experiment/complete-api-gateway-removal-mvp`.
-> It is **not** the standing topology, it is **not** authorized to run against the standing
-> PostgreSQL / Keycloak environment, and it closes no blocker. The governed standing map in
-> `backend_service_startup_fastapi.md` is unchanged and remains authoritative for anything that
-> actually runs. Production remains **NOT READY / DO-NOT-ACTIVATE**.
+> It is **not the standing topology** on `main`, it is **not** authorized to run against the
+> standing PostgreSQL / Keycloak environment, and it closes no blocker. Production remains **NOT READY / DO-NOT-ACTIVATE**.
+>
+> **What changed since this document was first written.** The API Gateway package, the Database
+> Router dispatch edge and the internal tenant-Startup envelope edge have now been **DELETED** from
+> this branch, and `backend_service_startup_fastapi.md` §2.1 has been rewritten to this map — so on
+> this branch the two documents agree, and neither describes a Gateway. On `main` the Gateway is
+> untouched.
 
 ## 1. What changed
 
@@ -44,7 +48,7 @@ AFTER (Gateway-free MVP, 5 edges, 2 public surfaces)
 | Removed | Standing port | Why it is not needed |
 |---|---:|---|
 | API Gateway | 8820 | No component dispatches across services any more. Each route family is served by its owner. |
-| Tenant Startup API (internal envelope edge) | 8004 | The public tenant Startup edge holds `TenantStartupOperations` **in-process**, so nothing needs the envelope edge. ⚠️ **Not launched ≠ deleted:** the module and its factory remain, its composition gate is the *same* variable the public edge requires, and the standing launcher still starts it on 8004. Closing this for real needs the later cleanup PR. |
+| Tenant Startup API (internal envelope edge) | 8004 | The public tenant Startup edge holds `TenantStartupOperations` **in-process**, so nothing needs the envelope edge. ✅ **DELETED, not merely unlaunched** — the module, its factory and its serve entrypoint are gone, and the launcher no longer names it. The earlier revision of this row said *"not launched ≠ deleted"*; that residual is now closed, and `tests/gateway_free/test_adversarial_boundary.py::test_a20d_the_internal_envelope_edge_IS_DELETED_not_merely_unlaunched` asserts the stronger claim on three independent oracles. |
 | Database Router dispatch | 8002 | Only the Gateway's `RouterDispatchPort` consumed it, and no served Gateway route ever reached that fall-through. It is dead weight in the MVP. |
 
 ## 3. Environment selectors

@@ -11,12 +11,32 @@ uvicorn <module>:create_app_from_env --factory --host <host> --port <port> \
   --workers 1 --no-access-log --no-server-header --no-proxy-headers
 ```
 
-All **nine** HTTP edges start this way. Normal standing operation no longer requires
+All **eight** HTTP edges start this way. Normal standing operation no longer requires
 `python -c "from ... import serve_*; serve_*()"`.
 
+> ## ⚠️ THE API GATEWAY HAS BEEN DELETED
+>
+> There is no `api_gateway` package, no port **8820**, and no `SP2_GW_*` selector. The Database
+> Router dispatch edge (**8002**) and the internal tenant-Startup envelope edge (**8004**) went with
+> it — both existed only to carry a Gateway request into a service.
+>
+> Each MVP route family is now served by the service that owns its records, behind the shared
+> `shared.public_edge` boundary linked **in-process**:
+>
+> ```text
+> browser ─┬─▶ tenant Startup edge  8830   (database_router)  ──▶ one tenant database
+>          └─▶ Workspace edge       8831   (control_plane)    ──▶ the Control database
+> ```
+>
+> **There are now TWO public surfaces, not one.** The reverse proxy needs two upstreams and two TLS
+> bindings, and the same exact-origin CORS allowlist must be set on both. If you find something
+> listening on 8820, 8080, 8002 or 8004, it is a **stale process from a pre-removal worktree** — the
+> governed launcher warns about exactly this.
+
 **Supersedes** `docs/runbooks/b5_service_startup_order.md` for the served topology (that document
-predates the served Gateway edge, the tenant-Startup edge, and the FastAPI migration, and describes
-the services as plain `HTTPServer`). Its startup *order* still holds; its runtime description does not.
+predates the FastAPI migration and describes the services as plain `HTTPServer`, and it still
+instructs an operator to start the deleted API Gateway). Its startup *order* still holds for the
+edges that survive; its runtime description and its Gateway step do not.
 
 ---
 
@@ -45,7 +65,7 @@ continuation; in bash use a backslash (`\`).
 > directory:
 >
 > ```bash
-> cd / && python -c "import api_gateway, control_plane, deployment; print(api_gateway.__file__)"
+> cd / && python -c "import database_router, control_plane, deployment; print(control_plane.__file__)"
 > ```
 >
 > If that path is not the worktree you intend to serve, re-run `pip install -e ".[dev]"` **from that
@@ -59,55 +79,66 @@ continuation; in bash use a backslash (`\`).
 
 There are two port assignments in this repository and they are **not** interchangeable. Confusing them
 is the single most likely operator error on this runbook, and nothing at runtime would reveal it: two
-Gateways can be listening at once, the frontend talks to one, and no log line mentions the other.
+copies of an edge can be listening at once, the frontend talks to one, and no log line mentions the
+other.
 
 ### 2.1 STANDING LOCAL MVP map — the one a running local environment uses
 
-Six edges. Started by the governed launcher `backend/tools/local/start-sp2-local.ps1`, which pins
-these ports and the canonical flags. CLM-SS-1 decision **D-1 (gateway port 8820)** — that register's
-D-1, **not** the repository ADR register's `D-01 — Bootstrap Cycle Resolution`, which is a different
-decision with a colliding short identifier.
+Five edges. Started by the governed launcher `backend/tools/local/start-sp2-local.ps1`, which pins
+these ports and the canonical flags.
 
-| Port | Edge | Module target |
-|---:|---|---|
-| 8001 | Auth Router | `auth_router.adapters.providers.http_authenticate_api:create_app_from_env` |
-| 8002 | Database Router Dispatch | `database_router.adapters.providers.http_dispatch_api:create_app_from_env` |
-| 8003 | Control Plane Read | `control_plane.adapters.providers.http_read_api:create_app_from_env` |
-| 8004 | Tenant Startup API | `database_router.adapters.providers.http_tenant_startup_api:create_app_from_env` |
-| 8005 | Gateway Audit ingest | `control_plane.adapters.providers.http_gateway_audit_api:create_app_from_env` |
-| **8820** | **API Gateway** (only northbound surface) | `api_gateway.adapters.providers.http_gateway_edge:create_app_from_env` |
+| Port | Edge | Reachability | Module target |
+|---:|---|---|---|
+| 8001 | Auth Router | internal | `auth_router.adapters.providers.http_authenticate_api:create_app_from_env` |
+| 8003 | Control Plane Read | internal | `control_plane.adapters.providers.http_read_api:create_app_from_env` |
+| 8005 | Operational audit ingest | internal | `control_plane.adapters.providers.http_gateway_audit_api:create_app_from_env` |
+| **8830** | **tenant Startup edge** | **PUBLIC** | `database_router.adapters.providers.http_public_startup_edge:create_app_from_env` |
+| **8831** | **Workspace edge** | **PUBLIC** | `control_plane.adapters.providers.http_public_workspace_edge:create_app_from_env` |
+
+**Retired ports — never bind these.** `8820` (API Gateway), `8002` (Database Router dispatch) and
+`8004` (internal tenant-Startup envelope) belonged to deleted modules. A listener on any of them is a
+stale pre-removal process; 8004 in particular served an **unauthenticated** envelope edge.
+
+The 8005 ingest edge keeps its `http_gateway_audit_api` module name because it writes the Control-DB
+table `control_gateway_audit` (DDL 012/013), whose name and `source_service = 'api_gateway'` CHECK are
+**frozen and separately governed** — renaming the module without the DDL would only create drift.
 
 Three edges are deliberately **absent** from the standing topology: Import Service, Import Audit
 ingest, and Routing Audit ingest. Import is outside the controlled local MVP journey (IMPORT-A / D-3),
-and `SP2_GW_IMPORT_BASE_URL`, `SP2_IMPORT_AUDIT_SINK_BASE_URL` and `SP2_DBR_ROUTING_AUDIT_BASE_URL`
-must all remain **UNSET** for it.
+and `SP2_IMPORT_AUDIT_SINK_BASE_URL` and `SP2_DBR_ROUTING_AUDIT_BASE_URL` must remain **UNSET** for it.
 
-### 2.2 ISOLATED SMOKE / VERIFICATION map — 8080–8088, never standing
+**The public Startup edge is the tenant data plane.** It holds `TenantStartupOperations` in-process,
+so there is no "started but unwired" posture for it the way `SP2_GW_TENANT_STARTUP_BASE_URL` used to
+provide. The launcher therefore gates whether that edge starts at all behind `-EnableTenantDataPlane`
+(off by default, Gate-B class M14).
 
-Nine edges. This map exists for exactly one thing: the standalone nine-edge process smoke
+### 2.2 ISOLATED SMOKE / VERIFICATION map — 8081–8088, never standing
+
+Eight edges. This map exists for exactly one thing: the standalone eight-edge process smoke
 (`backend/tests/deployment/native_uvicorn_process_smoke.py`, which hard-codes it). It starts every
 edge, probes it, terminates it, and checks for orphans. **No standing environment uses these ports.**
 
 | Port | Edge | Module target |
 |---:|---|---|
-| 8080 | API Gateway | `api_gateway.adapters.providers.http_gateway_edge:create_app_from_env` |
 | 8081 | Control Plane Read | `control_plane.adapters.providers.http_read_api:create_app_from_env` |
 | 8082 | Auth Router | `auth_router.adapters.providers.http_authenticate_api:create_app_from_env` |
-| 8083 | Database Router Dispatch | `database_router.adapters.providers.http_dispatch_api:create_app_from_env` |
-| 8084 | Tenant Startup API | `database_router.adapters.providers.http_tenant_startup_api:create_app_from_env` |
-| 8085 | Gateway Audit ingest | `control_plane.adapters.providers.http_gateway_audit_api:create_app_from_env` |
+| 8083 | Public tenant Startup edge | `database_router.adapters.providers.http_public_startup_edge:create_app_from_env` |
+| 8084 | Public Workspace edge | `control_plane.adapters.providers.http_public_workspace_edge:create_app_from_env` |
+| 8085 | Operational audit ingest | `control_plane.adapters.providers.http_gateway_audit_api:create_app_from_env` |
 | 8086 | Import Audit ingest | `control_plane.adapters.providers.http_import_audit_api:create_app_from_env` |
 | 8087 | Routing Audit ingest | `control_plane.adapters.providers.http_routing_audit_api:create_app_from_env` |
 | 8088 | Import Service | `deployment.import_edge:create_app_from_env` |
 
-> ⚠️ **8080 is not a Gateway port for standing use.** Earlier revisions of this runbook presented the
-> 8080–8088 map as *the* port map, ended their standing startup order at `API Gateway :8080`, and
-> probed `127.0.0.1:8080` in the shutdown section — while the actual standing Gateway ran on 8820. An
-> operator following that verbatim starts a **second** Gateway. The governed launcher's precheck now
-> looks at 8080 and warns for exactly this reason.
+> ⚠️ **8080 is deliberately left empty.** Earlier revisions of this runbook presented the 8080–8088
+> map as *the* port map and ended their standing startup order at `API Gateway :8080`, while the
+> actual standing Gateway ran on 8820 — an operator following that verbatim started a **second**
+> Gateway. Both ports are now retired, 8080 is assigned to nothing, and the governed launcher's
+> precheck warns about a listener on either.
 
-Every edge except the API Gateway is **internal-only** and must bind loopback. The API Gateway is the
-only surface a frontend may reach, and TLS terminates at a reverse proxy (deployment scope).
+Six of the eight edges are **internal-only** and must bind loopback. The two PUBLIC edges (the tenant
+Startup edge and the Workspace edge) are the only surfaces a frontend may reach; they also bind
+loopback by default, and exposure plus TLS termination is a deliberate act at a reverse proxy
+(deployment scope).
 
 ### Why the Import Service target lives under `deployment`
 
@@ -188,7 +219,7 @@ reader auditing only one of them will draw the wrong conclusion about the other.
 
 | Behaviour | Edges |
 |---|---|
-| **Refuse to start** when their activation selector is absent | API Gateway, Auth Router, Dispatch, Tenant Startup, Import Service |
+| **Refuse to start** when their activation selector is absent | both PUBLIC edges, Auth Router, Import Service |
 | **Start, then fail closed on first request** if the store cannot be resolved | Control Plane Read, all three audit ingest edges |
 
 The second group binds a reference-only secret and resolves it lazily at first store use (never at
@@ -211,7 +242,7 @@ smoke checks in §7 after starting them.
 | `SP2_DBR_ROUTING_AUDIT_BASE_URL` | no | `http://127.0.0.1:8087` — durable routing audit; unset keeps the in-memory sink |
 | `SP2_DBR_ROUTING_AUDIT_TIMEOUT_SECONDS` | no | Bounded transport timeout |
 
-### Audit ingest edges (standing: Gateway Audit **8005** only / smoke: 8085 / 8086 / 8087)
+### Audit ingest edges (standing: operational audit **8005** only / smoke: 8085 / 8086 / 8087)
 
 Control DB posture only. These edges are **durable by construction**: their store composition has no
 in-memory branch and never consults `SP2_CP_CONTROL_STORE`.
@@ -248,37 +279,36 @@ in-memory branch and never consults `SP2_CP_CONTROL_STORE`.
 > startup. An unresolved reference fails closed at first use, not at composition — so a listening
 > Import edge is not proof its tenant credentials resolve. Run the §7 checks.
 
-### API Gateway (standing **8820** / smoke 8080)
+### The two PUBLIC edges (standing **8830** / **8831**; smoke 8083 / 8084)
 
-Base URLs below are given in the **standing** map (§2.1). On the isolated smoke map they are the
-8081–8088 equivalents.
+Base URLs below are given in the **standing** map (§2.1). Both edges consume the SAME authentication
+and CORS selectors — deliberately one name for one thing.
 
 | Variable | Required | Meaning |
 |---|---|---|
-| `SP2_GW_AUTH_ROUTER_BASE_URL` | **yes** | `http://127.0.0.1:8001` |
-| `SP2_GW_CONTROL_READ_BASE_URL` | **yes** | `http://127.0.0.1:8003` |
-| `SP2_GW_DB_ROUTER_BASE_URL` | **yes** | `http://127.0.0.1:8002` |
-| `SP2_GW_EDGE_ALLOWED_ORIGINS` | **yes for any browser client** | Comma-separated **exact** origins (`http://127.0.0.1:5173`). Unset ⇒ empty allowlist ⇒ every cross-origin request denied, **silently**: the preflight `OPTIONS` answers `204`, the browser never sends the real request, and no server log records anything. The `localhost` spelling does not match a `127.0.0.1` origin. |
-| `SP2_GW_TENANT_STARTUP_BASE_URL` | **required for the CLM tenant data plane** | `http://127.0.0.1:8004`. Unset ⇒ `build_tenant_startup_from_env` returns `None` ⇒ every `TENANT_OPERATION` keeps the **pre-CLM router handoff**. The tenant-Startup edge is up on 8004 and the Gateway never routes to it. |
-| `SP2_GW_AUDIT_SINK_BASE_URL` | **REQUIRED for standing operation** | `http://127.0.0.1:8005`. Unset ⇒ `build_audit_emitter_from_env` returns `None` ⇒ `InMemoryAuditEmitter` ⇒ **no durable audit row is ever written**, silently. See the correction note below. |
-| `SP2_GW_IMPORT_BASE_URL` | **must remain UNSET** | Import is outside the controlled local MVP journey (IMPORT-A / D-3). Unset keeps the accepted-initiation envelope. |
+| `SP2_EDGE_AUTH_ROUTER_BASE_URL` | **yes, both edges** | `http://127.0.0.1:8001`. The IC-005 authenticate base URL. Unset ⇒ no boundary composes ⇒ **no public edge composes at all** (a hard `RuntimeError`, never a silent unauthenticated edge). Malformed ⇒ `ValueError` before any socket. |
+| `SP2_EDGE_ALLOWED_ORIGINS` | **yes for any browser client** | Comma-separated **exact** origins (`http://127.0.0.1:5173`). Unset ⇒ empty allowlist ⇒ every cross-origin request denied, **silently**: the preflight `OPTIONS` answers `204`, the browser never sends the real request, and no server log records anything. The `localhost` spelling does not match a `127.0.0.1` origin. **Set it on BOTH edges** — that is the new failure mode two public surfaces introduce. |
+| `SP2_EDGE_AUDIT_SINK_BASE_URL` | **REQUIRED for standing operation** | `http://127.0.0.1:8005`. Unset ⇒ the in-memory no-sink emitter ⇒ **no durable audit row is ever written**, silently. There is deliberately no loopback default. See the note below. |
+| `SP2_DBR_ROUTING_READ_BASE_URL` | **yes, Startup edge** | `http://127.0.0.1:8003`. Unchanged — the routing-association read the Database Router already required. It is also the ROUTER gate: with it set, the edge composes `TenantStartupOperations` in-process, which **is** the tenant data plane. |
+| `SP2_DBR_PUBLIC_STARTUP_HOST` / `_PORT` | no | Startup-edge bind knobs; defaults `127.0.0.1` / ephemeral. Ignored on the native path (the CLI supplies both). |
+| `SP2_CP_PUBLIC_WORKSPACE_HOST` / `_PORT` | no | Workspace-edge bind knobs; same defaults, same native-path caveat. |
+| `SP2_CP_CONTROL_STORE` (+ `_DSN_REF`) | for durable | Unchanged Control-Plane posture, and it governs the Workspace edge too. **Unset still composes the in-memory test-only store** — a listening Workspace edge is not by itself evidence that the physical Control database is behind it. |
 
-All three required Gateway transports must be set together: a partial composition never activates.
-
-> **Correction: `SP2_GW_AUDIT_SINK_BASE_URL` was previously listed as "Required: no".** For the
-> controlled local MVP that is wrong — durable Gateway operational audit is *in* the journey, and the
-> acceptance criteria call for it. Two distinct behaviours must not be conflated:
+> **`SP2_EDGE_AUDIT_SINK_BASE_URL` is required for the controlled local MVP.** Durable operational
+> audit is *in* the journey. Two distinct behaviours must not be conflated:
 >
-> * **Unset** is **silent**. The Gateway composes an in-memory emitter, serves normally, and writes
+> * **Unset** is **silent**. The edge composes an in-memory emitter, serves normally, and writes
 >   nothing durable. Nothing anywhere reports a degraded posture.
 > * **Set but unreachable** is **loud**. Refused / unreachable / timed-out ⇒
->   `DurableAuditTransportError("unavailable")` ⇒ exactly one bounded retry ⇒ re-raise ⇒ typed `503`.
+>   `EdgeAuditTransportError("unavailable")` ⇒ exactly one bounded retry ⇒ re-raise ⇒ typed `503`.
 >   This is audit-before-hand-back and it is deliberate: a served success is never handed back without
 >   durable persistence confirmation. **Do not "fix" it into a fallback.**
 >
-> Scope, so no acceptance wording overclaims: durable coverage is the **five** `_CLM_DURABLE_ACTIONS`
-> classes only. `ISOLATION_ANOMALY` and its siblings stay in-memory **by design**. "All Gateway audit
-> is durable" is false and must not be written into any evidence artifact.
+> Scope, so no acceptance wording overclaims: durable coverage is the **five**
+> `DURABLE_EDGE_AUDIT_ACTIONS` classes only. `IsolationAnomaly` and `CarrierOnControlAnomaly` stay
+> in-memory **by design**. "All public-edge audit is durable" is false and must not be written into
+> any evidence artifact. The emitter moved from the Gateway to the route-owning edge; not one action
+> string changed, which is what keeps DDL 012's frozen CHECK satisfied without a schema migration.
 >
 > **Activating this selector produces persistent standing state (Gate-B class M11).** The governed
 > launcher carries the value behind an explicit opt-in switch and ships it off by default.
@@ -290,9 +320,9 @@ the degraded behaviour is indistinguishable from the healthy one without an expl
 
 | Absent selector | Silent consequence |
 |---|---|
-| `SP2_GW_TENANT_STARTUP_BASE_URL` | The CLM tenant route falls through to the pre-CLM router handoff. The tenant **data plane is inactive** — and a witness that does not assert this precondition first will collect a non-CLM answer that looks exactly like the data plane was exercised. |
+| `SP2_EDGE_ALLOWED_ORIGINS` **on one of the two edges** | That edge denies every cross-origin request while the other works. The frontend shows a half-broken workspace with no server-side trace — the failure mode two public surfaces added. |
 | `SP2_CP_CONTROL_STORE` | The Control Plane serves from the non-durable in-memory store. `/memberships` answers `200` with a set that never touched the Control database. |
-| `SP2_GW_AUDIT_SINK_BASE_URL` | No durable audit row is written for any action class. |
+| `SP2_EDGE_AUDIT_SINK_BASE_URL` | No durable audit row is written for any action class. |
 | `SNACKPORTAL_TENANT_SECRET_DIR` | Tenant DSNs resolve only from process environment variables; the file form is unavailable. Unresolved references fail at first routed request, not at startup. |
 
 ### Legacy bind selectors
@@ -308,44 +338,41 @@ port from the Uvicorn command line and ignores them. Do not set them for standin
 A service's bound URL becomes the next service's selector value. Starting out of order is not fatal
 — the socket binds — but downstream calls answer a bounded `503` until the dependency is up.
 
-### 5.1 STANDING order (six edges) — what the governed launcher does
+### 5.1 STANDING order (five edges) — what the governed launcher does
 
 ```text
 1. PostgreSQL topology (Control 5540 + tenant DBs 5541/5542/5543) + Keycloak 8814
-2. Control Plane Read       :8003   ─┬─> feeds 8001, 8002, 8004
-3. Gateway Audit ingest     :8005   ──  durable sink; start before its producer
-4. Database Router Dispatch :8002
-5. Tenant Startup API       :8004
-6. Auth Router              :8001
-7. API Gateway              :8820   (last — needs 8001 + 8002 + 8003)
-8. Frontend                 :5173
+2. Control Plane Read        :8003   ─┬─> feeds 8001 and 8830
+3. Operational audit ingest  :8005   ──  durable sink; start before its producers
+4. Auth Router               :8001   ──  feeds BOTH public edges
+5. Workspace edge     PUBLIC :8831   (needs 8001; 8003 posture for durable reads)
+6. tenant Startup edge PUBLIC:8830   (needs 8001 + 8003; only with -EnableTenantDataPlane)
+7. Frontend                  :5173
 ```
 
 Import Service, Import Audit ingest, and Routing Audit ingest are **not** started (§2.1).
 
-### 5.2 ISOLATED SMOKE order (nine edges, 8080–8088)
+### 5.2 ISOLATED SMOKE order (eight edges, 8081–8088)
 
 ```text
 1.  PostgreSQL topology (Control 5540 + tenant DBs)
 2.  Control Plane Read      :8081   ─┬─> feeds 8082, 8083, 8084, 8088
-3.  Gateway Audit           :8085   ─┐
+3.  Operational audit       :8085   ─┐
 4.  Import Audit            :8086   ─┼─ durable sinks; start before their producers
 5.  Routing Audit           :8087   ─┘
-6.  Auth Router             :8082
-7.  Database Router Dispatch:8083
-8.  Tenant Startup API      :8084
-9.  Import Service          :8088
-10. API Gateway             :8080   (last — needs 8082 + 8081 + 8083)
+6.  Auth Router             :8082   ──  feeds BOTH public edges
+7.  Import Service          :8088
+8.  Public Startup edge     :8083   (needs 8082 + 8081)
+9.  Public Workspace edge   :8084   (needs 8082)
 ```
 
-**This order ends on 8080 and that is correct for the smoke map only.** It is not a standing startup
-instruction; the standing Gateway is 8820 (§5.1).
+**This is not a standing startup instruction** — the standing public edges are 8830 / 8831 (§5.1).
 
 The three audit edges depend only on the Control DB, so they may start any time after step 1; they
 are placed before their producers so no durable event is emitted at a sink that is not yet listening.
 
-The Import Service composes its **own** in-process Database Router (it does not call `:8083`); its
-HTTP dependency is the Control Plane Read edge for routing and directory reads.
+The Import Service composes its **own** in-process Database Router; its HTTP dependency is the
+Control Plane Read edge for routing and directory reads.
 
 ---
 
@@ -359,7 +386,7 @@ environment set. PowerShell syntax; substitute a backslash for the backtick on b
 > it scrubs `UVICORN_*` / `SP2_*` out of each child window (see §6.3). §6.1 is what it emits — recorded
 > here so an operator can start one edge by hand and match the governed posture exactly.
 
-### 6.1 STANDING LOCAL MVP — six commands
+### 6.1 STANDING LOCAL MVP — five commands
 
 **S1 — Control Plane Read (8003)**
 
@@ -369,7 +396,7 @@ uvicorn control_plane.adapters.providers.http_read_api:create_app_from_env `
   --workers 1 --no-access-log --no-server-header --no-proxy-headers
 ```
 
-**S2 — Gateway Audit ingest (8005)**
+**S2 — Operational audit ingest (8005)**
 
 ```powershell
 uvicorn control_plane.adapters.providers.http_gateway_audit_api:create_app_from_env `
@@ -377,23 +404,7 @@ uvicorn control_plane.adapters.providers.http_gateway_audit_api:create_app_from_
   --workers 1 --no-access-log --no-server-header --no-proxy-headers
 ```
 
-**S3 — Database Router Dispatch (8002)**
-
-```powershell
-uvicorn database_router.adapters.providers.http_dispatch_api:create_app_from_env `
-  --factory --host 127.0.0.1 --port 8002 `
-  --workers 1 --no-access-log --no-server-header --no-proxy-headers
-```
-
-**S4 — Tenant Startup API (8004)**
-
-```powershell
-uvicorn database_router.adapters.providers.http_tenant_startup_api:create_app_from_env `
-  --factory --host 127.0.0.1 --port 8004 `
-  --workers 1 --no-access-log --no-server-header --no-proxy-headers
-```
-
-**S5 — Auth Router (8001)**
+**S3 — Auth Router (8001)**
 
 ```powershell
 uvicorn auth_router.adapters.providers.http_authenticate_api:create_app_from_env `
@@ -401,19 +412,32 @@ uvicorn auth_router.adapters.providers.http_authenticate_api:create_app_from_env
   --workers 1 --no-access-log --no-server-header --no-proxy-headers
 ```
 
-**S6 — API Gateway (8820)**
+**S4 — Workspace edge (8831) — PUBLIC**
 
 ```powershell
-uvicorn api_gateway.adapters.providers.http_gateway_edge:create_app_from_env `
-  --factory --host 127.0.0.1 --port 8820 `
+uvicorn control_plane.adapters.providers.http_public_workspace_edge:create_app_from_env `
+  --factory --host 127.0.0.1 --port 8831 `
   --workers 1 --no-access-log --no-server-header --no-proxy-headers
 ```
 
-### 6.2 ISOLATED SMOKE / VERIFICATION — the nine 8080–8088 commands
+**S5 — tenant Startup edge (8830) — PUBLIC**
 
-**These are not standing commands.** Command 9 binds the Gateway on **8080**, which is the smoke map,
-not the standing map. The whole set is normally run for you by
-`python tests/deployment/native_uvicorn_process_smoke.py`.
+```powershell
+uvicorn database_router.adapters.providers.http_public_startup_edge:create_app_from_env `
+  --factory --host 127.0.0.1 --port 8830 `
+  --workers 1 --no-access-log --no-server-header --no-proxy-headers
+```
+
+> The four non-`--factory` flags matter more on these two edges than anywhere else in the system:
+> they terminate requests from a browser, and on the native path the command line is the **only**
+> place `--no-proxy-headers` / `--no-server-header` / `--no-access-log` / `--host 127.0.0.1` are
+> enforced. Starting a public edge without them silently restores uvicorn's defaults
+> (`proxy_headers=True`, `server_header=True`, `access_log=True`).
+
+### 6.2 ISOLATED SMOKE / VERIFICATION — the eight 8081–8088 commands
+
+**These are not standing commands** — the standing public edges are 8830 / 8831. The whole set is
+normally run for you by `python tests/deployment/native_uvicorn_process_smoke.py`.
 
 **1 — Control Plane Read (8081)**
 
@@ -423,7 +447,7 @@ uvicorn control_plane.adapters.providers.http_read_api:create_app_from_env `
   --workers 1 --no-access-log --no-server-header --no-proxy-headers
 ```
 
-**2 — Gateway Audit ingest (8085)**
+**2 — Operational audit ingest (8085)**
 
 ```powershell
 uvicorn control_plane.adapters.providers.http_gateway_audit_api:create_app_from_env `
@@ -455,23 +479,7 @@ uvicorn auth_router.adapters.providers.http_authenticate_api:create_app_from_env
   --workers 1 --no-access-log --no-server-header --no-proxy-headers
 ```
 
-**6 — Database Router Dispatch (8083)**
-
-```powershell
-uvicorn database_router.adapters.providers.http_dispatch_api:create_app_from_env `
-  --factory --host 127.0.0.1 --port 8083 `
-  --workers 1 --no-access-log --no-server-header --no-proxy-headers
-```
-
-**7 — Tenant Startup API (8084)**
-
-```powershell
-uvicorn database_router.adapters.providers.http_tenant_startup_api:create_app_from_env `
-  --factory --host 127.0.0.1 --port 8084 `
-  --workers 1 --no-access-log --no-server-header --no-proxy-headers
-```
-
-**8 — Import Service (8088)** — authority: **IC-012 §5** (D-44); the canonical Edge 9 native factory.
+**6 — Import Service (8088)** — authority: **IC-012 §5** (D-44); the canonical Edge 9 native factory.
 
 ```powershell
 uvicorn deployment.import_edge:create_app_from_env `
@@ -479,11 +487,19 @@ uvicorn deployment.import_edge:create_app_from_env `
   --workers 1 --no-access-log --no-server-header --no-proxy-headers
 ```
 
-**9 — API Gateway (8080)**
+**7 — Public tenant Startup edge (8083)**
 
 ```powershell
-uvicorn api_gateway.adapters.providers.http_gateway_edge:create_app_from_env `
-  --factory --host 127.0.0.1 --port 8080 `
+uvicorn database_router.adapters.providers.http_public_startup_edge:create_app_from_env `
+  --factory --host 127.0.0.1 --port 8083 `
+  --workers 1 --no-access-log --no-server-header --no-proxy-headers
+```
+
+**8 — Public Workspace edge (8084)**
+
+```powershell
+uvicorn control_plane.adapters.providers.http_public_workspace_edge:create_app_from_env `
+  --factory --host 127.0.0.1 --port 8084 `
   --workers 1 --no-access-log --no-server-header --no-proxy-headers
 ```
 
@@ -548,22 +564,29 @@ restores `off`. Tracked as a known gap, not a silent equivalence.
 
 ## 7. Health and smoke checks
 
-Only the API Gateway exposes operational routes. **Use 8820 for a standing environment; 8080 only
-while the isolated smoke map is up.**
+The two PUBLIC edges expose operational routes, **each on its own port** — there is no single
+northbound surface to probe any more, and checking one says nothing about the other.
 
 ```bash
-curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8820/health
+curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8831/health
 ```
 
 ```bash
-curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8820/readiness
+curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8830/health
 ```
 
-A `200` from `/health` proves the Gateway **composed** — not that any database is reachable. The
-Control Plane read edge and the audit ingest edge bind reference-only secrets and resolve them lazily
-at first store use, so a bad or absent reference surfaces on the first real request.
+```bash
+curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8831/readiness
+```
 
-For the eight internal edges, confirm the socket is listening and the closed surface holds. Every
+(Use 8083 / 8084 only while the isolated smoke map is up.)
+
+A `200` from `/health` proves that edge **composed** — not that any database is reachable, and not
+that the *other* public edge is up. The Control Plane read edge and the audit ingest edge bind
+reference-only secrets and resolve them lazily at first store use, so a bad or absent reference
+surfaces on the first real request.
+
+For the six internal edges, confirm the socket is listening and the closed surface holds. Every
 edge must refuse the docs/OpenAPI surface — both of these must answer `404` and publish no schema:
 
 ```bash
@@ -604,9 +627,10 @@ python tests/deployment/native_uvicorn_process_smoke.py
 
 ## 9. Configuration failure examples
 
-Every factory that **gates on an activation selector** fails closed before anything is served: the
-API Gateway, Auth Router, Dispatch, Tenant Startup and Import edges refuse to start when their
-selector is absent.
+Every factory that **gates on an activation selector** fails closed before anything is served: both
+PUBLIC edges, the Auth Router and the Import edge refuse to start when their selector is absent. For
+a public edge that is the load-bearing case — an unset `SP2_EDGE_AUTH_ROUTER_BASE_URL` must never
+yield an edge that serves without authenticating, so it yields no application at all.
 
 > ⚠️ **"There is no fallback to an in-memory backend" is not true without qualification, and this
 > runbook used to assert it absolutely — while §4 documented two such fallbacks a few screens earlier.**
@@ -617,7 +641,7 @@ selector is absent.
 > | An **unsupported** selector token (`SP2_CP_CONTROL_STORE=mysql`) | `ValueError` — fail closed |
 > | A **set-but-blank** `SP2_CP_CONTROL_STORE` | `ValueError` — fail closed (the Gate-A blank-value addendum) |
 > | An **unset** `SP2_CP_CONTROL_STORE` | **in-memory, test-only store — serves normally, silently** |
-> | An **unset** `SP2_GW_AUDIT_SINK_BASE_URL` | **in-memory emitter — no durable audit row, silently** |
+> | An **unset** `SP2_EDGE_AUDIT_SINK_BASE_URL` | **in-memory emitter — no durable audit row, silently** |
 > | An **unset** `SP2_IMPORT_AUDIT_SINK_BASE_URL` | **in-memory sink** (documented as intended at §4; tracked as the IC-012 M-2 open divergence — IC-012 §11 forbids exactly this, IC-012 remains Draft / Proposed, and Import stays outside the controlled local MVP journey) |
 >
 > The distinction that matters operationally: an *unsupported* value is loud, a *missing* value is
@@ -692,16 +716,17 @@ Note that failure messages never echo the offending configured value for host/se
 ## 11. Shutdown
 
 * **Ctrl+C** in the edge's terminal. Uvicorn stops accepting, drains in-flight requests, and exits.
-* Stop in **reverse startup order** (API Gateway first, Control Plane Read last) so no edge is
-  serving requests that depend on a dependency already gone.
-* Confirm the port is released before restarting:
+* Stop in **reverse startup order** (the two PUBLIC edges first, Control Plane Read last) so no edge
+  is serving requests that depend on a dependency already gone.
+* Confirm the ports are released before restarting — **both** of them:
 
 ```bash
-netstat -ano | grep "127.0.0.1:8820"
+netstat -ano | grep -E "127.0.0.1:(8830|8831)"
 ```
 
-(Use `8080` only when tearing down the isolated smoke map. If a standing environment is supposed to be
-down and something is still listening on **8080**, that is a second Gateway, not this one.)
+(Use `8083` / `8084` only when tearing down the isolated smoke map. If anything is still listening on
+**8820**, **8080**, **8002** or **8004**, that is a stale pre-removal process — those modules no
+longer exist in this tree.)
 
 * No supervisor restarts anything; a stopped edge stays stopped.
 * Databases are separate — stopping an edge never stops PostgreSQL, and no edge shutdown step
@@ -736,14 +761,14 @@ Each item is a **falsifiable observation**, not an inference:
 
 | # | Claim | How it is established | What must NOT be accepted as proof |
 |---|---|---|---|
-| W-1 | Six edges started from the accepted SHA | `git -C <worktree> rev-parse HEAD` recorded at launch, **plus** the neutral-directory import check from §1 proving the venv resolves to that same worktree | "the worktree is checked out at the SHA" — the editable finder can still point elsewhere |
+| W-1 | Five edges started from the accepted SHA | `git -C <worktree> rev-parse HEAD` recorded at launch, **plus** the neutral-directory import check from §1 proving the venv resolves to that same worktree | "the worktree is checked out at the SHA" — the editable finder can still point elsewhere |
 | W-2 | The canonical flags are active | The launcher's single command template, plus per-edge observation that no request line appears on stderr under load | The startup banner (§6.4) — it is `uvicorn.error` and is expected |
-| W-3 | The Gateway is on 8820 | Bound-socket census over the whole standing set, **plus** a negative check that nothing is listening on **8080** | A successful `/health` on 8820 alone — a second Gateway on 8080 is invisible to it |
-| W-4 | No `Server:` disclosure | `curl -s -D - -o /dev/null <edge> \| grep -i "^server:"` prints nothing, on **every** edge | Checking the Gateway only |
+| W-3 | The public edges are on 8830 **and** 8831 | Bound-socket census over the whole standing set, **plus** a negative check that nothing is listening on **8820 / 8080 / 8002 / 8004** | A successful `/health` on one public edge — it says nothing about the other, and a stale Gateway is invisible to it |
+| W-4 | No `Server:` disclosure | `curl -s -D - -o /dev/null <edge> \| grep -i "^server:"` prints nothing, on **every** edge | Checking one public edge only |
 | W-5 | No access-log request leakage | Drive at least one request per edge, then confirm no per-request line reached stderr | Absence of output while idle |
 | W-6 | The Auth Router did not wedge | It answers after the console window has produced output and after a Windows console selection is made and cleared (the QuickEdit pause condition) | A single early probe |
 | W-7 | No temporary-worktree dependency | The recorded worktree is the durable one, not a verification worktree | — |
-| W-8 | Store posture is what it claims | Explicitly record `SP2_CP_CONTROL_STORE`, `SP2_GW_AUDIT_SINK_BASE_URL` and `SP2_GW_TENANT_STARTUP_BASE_URL` for each process | A listening socket, or a `200` on any read |
+| W-8 | Store posture is what it claims | Explicitly record `SP2_CP_CONTROL_STORE` and `SP2_EDGE_AUDIT_SINK_BASE_URL` for each process, and whether the public Startup edge was started at all | A listening socket, or a `200` on any read |
 
 **W-8 is the one that has previously been skipped, and it is the one that invalidates everything
 downstream.** An in-memory Control Plane answers `/memberships` with `200` and an empty set exactly as
@@ -756,7 +781,7 @@ a durable one does when the principal has no membership row.
 The intended chain, stated in full so a partial one cannot be mistaken for it:
 
 ```text
-Browser -> Gateway 8820 -> Auth Router 8001 -> Control Plane 8003
+Browser -> Workspace edge 8831 -> Auth Router 8001 -> Control Plane 8003
         -> the REAL Control-DB membership store -> browser render
 ```
 
@@ -775,6 +800,9 @@ Binding conditions:
 5. This is **not** the historical Stage-0 in-memory Control Plane path. Evidence from that path may not
    be cited here.
 
-The witness proves the **control-plane read path** only. It says nothing about the tenant data plane —
-see `infrastructure/runbooks/clm_acme_dataplane_witness.md` for that, and note that with
-`SP2_GW_TENANT_STARTUP_BASE_URL` unset the data plane is not merely unproven, it is not wired.
+The witness proves the **control-plane read path** only. It says nothing about the tenant data plane.
+The CLM ACME dataplane witness that used to cover it drove `Gateway 8820 -> Tenant Startup 8004`, and
+both of those processes were deleted; a **Gateway-free successor witness has not been authored**, so
+there is currently NO live tenant-data-plane proof for this topology. Note also that with the public
+Startup edge not started (`-EnableTenantDataPlane` off) the data plane is not merely unproven — it is
+not running.

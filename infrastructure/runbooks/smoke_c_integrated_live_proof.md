@@ -1,5 +1,13 @@
 # Smoke C V2 — Integrated Live Proof (operator runbook)
 
+> ## ⛔ WITHDRAWN — the API Gateway has been DELETED
+>
+> The Smoke C V2 operator and its live proof (`tests/control_plane/requires_pg/smoke_c_integrated_live_proof.py` + its wrapper) were DELETED: the exercise composed the API Gateway and drove `browser -> Gateway -> Auth Router -> Control Plane -> tenant database`, and both the Gateway and the internal dispatch edge are gone. **B5-BLK-4 is not closed and has lost its live harness.**
+>
+> Nothing in this document may be run, and no evidence produced by it before the removal may be
+> cited as current. It is retained because the recorded scenario, its ordering rules and its
+> evidence format are what a Gateway-free successor must reproduce.
+
 > ## ⚠️ HISTORICAL — AUTHFIX-B (Gate A)
 >
 > Every prerequisite and status claim in this document that depends on the **B5-4A standing

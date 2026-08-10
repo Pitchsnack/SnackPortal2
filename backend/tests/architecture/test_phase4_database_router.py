@@ -30,7 +30,7 @@ def _imports(pkg: str):
 def test_database_router_imports_no_other_service() -> None:
     for f, mod in _imports("database_router"):
         top = mod.split(".")[0]
-        assert top not in {"control_plane", "auth_router", "import_service", "lineage_service", "api_gateway"}, (
+        assert top not in {"control_plane", "auth_router", "import_service", "lineage_service"}, (
             f"{_scan.relposix(f)} imports another service '{mod}' — transport ports only (Standard H)"
         )
 

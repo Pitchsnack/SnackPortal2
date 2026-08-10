@@ -6,7 +6,7 @@ Non-vacuously pins the B5-5 surface without generating a key or touching anythin
   failure-mode / audit-disclosure / evidence-format / no-overclaim obligation (exact-needle census with
   planted-mutant companions), states that it does not execute Smoke C, and can never claim B5-BLK-4
   closure (the required standing-status block is pinned; the closure phrase is forbidden);
-* the fixture (``tests/api_gateway/crypto_fixture.py``) is import-inert (top level = docstring /
+* the fixture (``tests/shared/crypto_fixture.py``) is import-inert (top level = docstring /
   imports / call-free constants / defs only — a module-level key generation cannot pass), carries
   EXACTLY the required import surface (stdlib + ``jwt`` + ``jwt.algorithms`` + the ``cryptography``
   RSA module — one vendor package more is a containment breach), calls no file-write / print / exec
@@ -41,8 +41,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import _scan  # noqa: E402
 
 _SPEC = _scan.REPO_ROOT / "docs" / "acceptance" / "SMOKE-C-SPEC-01.md"
-_FIXTURE = _scan.BACKEND_ROOT / "tests" / "api_gateway" / "crypto_fixture.py"
-_FIXTURE_TEST = _scan.BACKEND_ROOT / "tests" / "api_gateway" / "test_crypto_fixture.py"
+_FIXTURE = _scan.BACKEND_ROOT / "tests" / "shared" / "crypto_fixture.py"
+_FIXTURE_TEST = _scan.BACKEND_ROOT / "tests" / "shared" / "test_crypto_fixture.py"
 _CONTAINMENT = _scan.BACKEND_ROOT / "tests" / "architecture" / "test_vendor_and_db_containment.py"
 _PYPROJECT = _scan.BACKEND_ROOT / "pyproject.toml"
 _TESTS_DIR = _scan.BACKEND_ROOT / "tests"
@@ -318,7 +318,7 @@ def test_containment_allowance_constants_pinned_exactly() -> None:
     assert isinstance(allow, ast.Constant) and isinstance(allow.value, str), (
         "the allowance must stay ONE plain string (a tuple/list/computed value is a widening)"
     )
-    assert allow.value == "tests/api_gateway/crypto_fixture.py", "the allowance names exactly the one blessed fixture file"
+    assert allow.value == "tests/shared/crypto_fixture.py", "the allowance names exactly the one blessed fixture file"
 
 
 def test_no_production_import_of_fixture() -> None:

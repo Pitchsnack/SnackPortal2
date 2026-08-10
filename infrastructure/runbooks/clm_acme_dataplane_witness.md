@@ -1,5 +1,13 @@
 # CLM ACME tenant data-plane witness (operator runbook)
 
+> ## ⛔ WITHDRAWN — the API Gateway has been DELETED
+>
+> The CLM ACME dataplane witness (`tests/control_plane/requires_pg/test_pg_clm_acme_dataplane_witness.py`) and its 38-test boundary guard were DELETED: the witness drove `Gateway 8820 -> Tenant Startup 8004 -> Database Router -> one tenant database`, and BOTH of those processes were deleted. **There is currently no live tenant-data-plane proof for the Gateway-free topology.**
+>
+> Nothing in this document may be run, and no evidence produced by it before the removal may be
+> cited as current. It is retained because the recorded scenario, its ordering rules and its
+> evidence format are what a Gateway-free successor must reproduce.
+
 **Scope:** NON-PRODUCTION / documentation only. The procedure for proving the one chain the
 controlled local MVP still has no evidence for:
 

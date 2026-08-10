@@ -1,5 +1,21 @@
 # AW-1 — least-privilege Gateway operational-audit writer (operator runbook)
 
+> ## ℹ️ EMITTER CHANGED, STORE DID NOT — read this before matching names
+>
+> The API Gateway has been deleted on `experiment/complete-api-gateway-removal-mvp`. The durable
+> operational-audit events are now emitted by the two **PUBLIC edges** through the shared
+> `shared.adapters.providers.edge_audit` client, and the composition selector is
+> `SP2_EDGE_AUDIT_SINK_BASE_URL` (it was `SP2_GW_AUDIT_SINK_BASE_URL`).
+>
+> **Nothing on the store side changed, and nothing on the store side may be renamed here:** the
+> ingest edge (`control_plane...http_gateway_audit_api`, port 8005), the wire path
+> `/internal/gateway-audit/events`, the Control-DB table `control_gateway_audit` (DDL 012/013), its
+> frozen `source_service = 'api_gateway'` CHECK, and the SecretRef `control/gateway-audit-writer-dsn`
+> are all **separately governed** and are deliberately unchanged. Renaming any of them without the
+> corresponding DDL / SecretRef authority would only create drift — and this task holds neither.
+> Every action string is byte-identical to the Gateway's, which is why the emitter could move with
+> no schema migration.
+
 **Scope:** NON-PRODUCTION / documentation only. This runbook governs the identity the Gateway-audit
 ingest edge writes durable audit rows as, and the environment that process is allowed to hold.
 
@@ -71,7 +87,7 @@ O-6  `status` must report OK — read-only, fixed pass count
         ↓
 O-7  the Gateway-audit ingest process starts (the FIRST process ever able to write as the writer)
         ↓
-O-8  SP2_GW_AUDIT_SINK_BASE_URL is set on the API Gateway; the durable pipeline goes live
+O-8  SP2_EDGE_AUDIT_SINK_BASE_URL is set on the PUBLIC edges; the durable pipeline goes live
         ↓
 O-9  post-activation verification: one journey event → one durable row; connected-identity proof;
      historical-row integrity re-check
@@ -316,7 +332,7 @@ Every rollback action is governed; none is improvised.
 > this way, record it, because the next `plan` will correctly refuse to proceed and the reason will
 > not be obvious.
 
-Preferred disable path: unset `SP2_GW_AUDIT_SINK_BASE_URL` so the next Gateway composition returns to
+Preferred disable path: unset `SP2_EDGE_AUDIT_SINK_BASE_URL` so the next public-edge composition returns to
 the prior no-sink posture, or stop the ingest edge (served successes then fail closed to `503` —
 audit-before-hand-back). **Audit rows are never altered, moved, or removed.**
 

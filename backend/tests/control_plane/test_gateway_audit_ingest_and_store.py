@@ -47,7 +47,7 @@ from control_plane.adapters.providers.postgres_store import (  # noqa: E402
     _same_instant,
 )
 from control_plane.gateway_audit import (  # noqa: E402
-    GATEWAY_AUDIT_STORE_ACTIONS,
+    EDGE_AUDIT_STORE_ACTIONS,
     GatewayAuditAppendResult,
     GatewayAuditConflictError,
     GatewayAuditInvalidError,
@@ -240,7 +240,7 @@ def test_store07_failure_rolls_back_and_reraises_unchanged() -> None:
 
 
 def test_store08_validation_enforced_before_any_sql() -> None:
-    assert GATEWAY_AUDIT_STORE_ACTIONS == (
+    assert EDGE_AUDIT_STORE_ACTIONS == (
         "CarrierMismatch",
         "CarrierOnControlAnomaly",
         "RouteDenied",

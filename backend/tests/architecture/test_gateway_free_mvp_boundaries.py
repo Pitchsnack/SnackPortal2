@@ -185,17 +185,44 @@ def test_gf1c_no_public_edge_source_names_api_gateway() -> None:
 
 
 def test_gf1_nonvacuity() -> None:
-    # The executed probe must be able to FAIL: a subprocess that does import api_gateway reports it.
+    """The executed probe must be able to FAIL - and it must fail for the RIGHT reason.
+
+    The original positive control imported ``api_gateway.gateway`` in a clean subprocess and
+    asserted the census saw it. That package is now deleted, so the same program raises
+    ``ModuleNotFoundError``: the control would "detect" nothing, and its non-zero exit would look
+    like a broken probe rather than a working detector.
+
+    The control therefore imports a package that DOES exist and asserts the census reports it. That
+    is the property under test - the ``sys.modules`` census genuinely sees a loaded service - and it
+    now holds independently of which packages survive. The deleted package's own absence is proved
+    separately by ``test_gf1_the_deleted_package_is_unimportable``.
+    """
     program = (
         "import sys\n"
-        "import api_gateway.gateway\n"
-        "loaded = sorted(m for m in sys.modules if m.split('.')[0] == 'api_gateway')\n"
-        "print('API_GATEWAY_MODULES=' + repr(loaded))\n"
+        "import auth_router.main\n"
+        "loaded = sorted(m for m in sys.modules if m.split('.')[0] == 'auth_router')\n"
+        "print('PROBE_MODULES=' + repr(loaded))\n"
     )
     result = subprocess.run([sys.executable, "-c", program], cwd=str(_BACKEND), capture_output=True, text=True, timeout=180)
-    assert result.returncode == 0, f"the positive control could not import api_gateway: {result.stderr[-2000:]}"
-    assert "API_GATEWAY_MODULES=[]" not in result.stdout, "the probe must detect a real api_gateway import"
-    assert "'api_gateway.gateway'" in result.stdout, "the probe must name the loaded module"
+    assert result.returncode == 0, f"the positive control could not import the probe package: {result.stderr[-2000:]}"
+    assert "PROBE_MODULES=" in result.stdout, "the positive control must report what the interpreter loaded"
+    reported = result.stdout.split("PROBE_MODULES=", 1)[1]
+    assert "auth_router" in reported, f"the sys.modules census must SEE a loaded service package; got {reported.strip()}"
+
+
+def test_gf1_the_deleted_package_is_unimportable() -> None:
+    """The other half of GF-1's non-vacuity: ``api_gateway`` is not merely unloaded, it is GONE.
+
+    Executed, not read: a clean subprocess is asked to import it and must fail with
+    ``ModuleNotFoundError``. A stale editable-install finder, an empty leftover directory or a
+    ``.pth`` entry pointing at another worktree would each make this succeed - and that is exactly
+    the class of residue a source-level census cannot see.
+    """
+    result = subprocess.run([sys.executable, "-c", "import api_gateway\n"], cwd=str(_BACKEND), capture_output=True, text=True, timeout=180)
+    assert result.returncode != 0, "api_gateway must NOT be importable - it was deleted"
+    assert "ModuleNotFoundError" in result.stderr, (
+        f"the failure must be a genuine absence, not an error raised inside a surviving package: {result.stderr[-2000:]}"
+    )
 
 
 def test_gf1_probes_resolve_the_PRODUCTION_packages_not_the_test_stubs() -> None:
@@ -479,10 +506,10 @@ def test_gf5_the_denial_vocabulary_introduces_no_new_public_code() -> None:
 
 def test_gf5b_the_audit_action_vocabulary_is_exactly_the_existing_store_set() -> None:
     """No audit class is added, removed, renamed, or re-homed — only the emitter changes."""
-    from control_plane.gateway_audit import GATEWAY_AUDIT_STORE_ACTIONS
+    from control_plane.gateway_audit import EDGE_AUDIT_STORE_ACTIONS
     from shared.public_edge import EDGE_AUDIT_ACTIONS
 
-    assert set(EDGE_AUDIT_ACTIONS) == set(GATEWAY_AUDIT_STORE_ACTIONS), (
+    assert set(EDGE_AUDIT_ACTIONS) == set(EDGE_AUDIT_STORE_ACTIONS), (
         "the public-edge action vocabulary must equal the Control-DB store vocabulary exactly, so the durable home is a no-op"
     )
 
@@ -1091,7 +1118,7 @@ def _command_blocks() -> list:
 
 
 def test_gf7_both_public_edges_have_a_pinned_canonical_startup_command() -> None:
-    """The nine-edge census in ``test_native_uvicorn_factories.py`` is a hard-coded list and does
+    """The eight-edge census in ``test_native_uvicorn_factories.py`` is a hard-coded list and does
     NOT cover these two edges — so without this guard the canonical flags would be unenforced on
     the only two edges that terminate public requests. Uvicorn's defaults are ``proxy_headers=True``,
     ``server_header=True``, ``access_log=True``; every one of those is wrong for a public edge, and

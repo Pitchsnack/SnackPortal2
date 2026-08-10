@@ -1,5 +1,13 @@
 # W1a Composed-Core Import Copy & Durable Import Audit (operator runbook)
 
+> ## ⛔ WITHDRAWN — the API Gateway has been DELETED
+>
+> The W1a import-copy live proof (`tests/control_plane/requires_pg/test_pg_import_copy_durable.py`) now REFUSES: it composed the API Gateway to drive `Gateway import route -> internal Import edge -> ImportService.start_import`. The file is retained (its surface is pinned by `tests/architecture/test_import_write_path_boundaries.py`) but its exercise raises rather than running. Import remains outside the controlled local MVP journey (IMPORT-A / D-3).
+>
+> Nothing in this document may be run, and no evidence produced by it before the removal may be
+> cited as current. It is retained because the recorded scenario, its ordering rules and its
+> evidence format are what a Gateway-free successor must reproduce.
+
 **Scope:** NON-PRODUCTION / documentation only (W1a). This runbook documents the governed operator procedure
 for exercising the reviewed W1a Import operational-audit DDL
 (`infrastructure/db/control/014_import_operational_audit.sql` +

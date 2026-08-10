@@ -2,10 +2,27 @@
 
 Static + pure-executable boundary pins for the D-42 Stage B implementation slice (the CLM
 controlled-local rehearsal runtime): the two served tenant Startup routes, the bounded
-single-field update, the Gateway→Database-Router tenant Startup data seam, and the CLM
-durable-audit partition. Companion to the Stage A contract guard
-(test_clm_2day_stage_a_contract_boundaries.py — contract text) — THIS guard binds the code
-the Stage A code-closure note required to be widened "in the same change".
+single-field update, the tenant Startup data path, and the CLM durable-audit partition.
+Companion to the Stage A contract guard (test_clm_2day_stage_a_contract_boundaries.py —
+contract text) — THIS guard binds the code the Stage A code-closure note required to be
+widened "in the same change".
+
+**Migrated when the API Gateway was deleted.** Stage B's data path used to be
+Gateway → [HTTP] → internal tenant-Startup envelope edge → executor. The Gateway and that
+internal edge are both gone; the PUBLIC tenant Startup edge holds the executor in-process. Three
+checks moved and two were withdrawn with their subject:
+
+| Was | Now |
+|---|---|
+| the update parser lives in ``api_gateway/portal.py`` | ``database_router/portal.py`` — owner-resident |
+| the gateway keeps exactly ONE ``router.dispatch`` call site | WITHDRAWN — nothing dispatches;
+  ``test_public_edge_boundaries`` pins one ``boundary.admit`` site per edge instead |
+| the Gateway-side transport client's bounds | WITHDRAWN — the executor is in-process, so there
+  is no client; the surviving internal clients are bounded by
+  ``test_ic010_control_read_adapter_boundaries`` |
+| the internal envelope edge's boundaries | the PUBLIC Startup edge's boundaries (below), which additionally AUTHENTICATE |
+| ``_CLM_DURABLE_ACTIONS`` in the Gateway root | ``DURABLE_EDGE_AUDIT_ACTIONS`` in
+  ``shared/adapters/providers/edge_audit.py`` — the same five values |
 
 It binds no live runtime, opens no socket, and touches no database: every check is AST/text
 over the implementation modules or a call to a pure function (the update-body parser and
@@ -14,7 +31,7 @@ the two bounded route matchers are socket-free pure values).
 This guard closes no blocker. B5-BLK-5 remains OPEN; the live blocker census remains 7 of 9
 OPEN; production remains NOT READY / DO-NOT-ACTIVATE.
 
-Pure stdlib + api_gateway imports; standalone-runnable:
+Pure stdlib + repository imports; standalone-runnable:
   python tests/architecture/test_clm_2day_stage_b_runtime_boundaries.py
 """
 
@@ -31,22 +48,27 @@ import _scan  # noqa: E402
 if str(_scan.BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_scan.BACKEND_ROOT))
 
-from api_gateway.main import _CLM_DURABLE_ACTIONS  # noqa: E402
-from api_gateway.models import AuditAction  # noqa: E402
-from api_gateway.portal import (  # noqa: E402
+from database_router.portal import (  # noqa: E402
     TENANT_STARTUP_SHORT_DESCRIPTION_MAX_CHARS,
     TenantStartupUpdateRequestDTO,
     parse_tenant_startup_update_request,
 )
+from shared.adapters.providers.edge_audit import DURABLE_EDGE_AUDIT_ACTIONS  # noqa: E402
+from shared.public_edge import (  # noqa: E402
+    ACTION_CARRIER_MISMATCH,
+    ACTION_CARRIER_ON_CONTROL_ANOMALY,
+    ACTION_ISOLATION_ANOMALY,
+    ACTION_ROUTE_DENIED,
+    ACTION_TENANT_STARTUP_READ,
+    ACTION_TENANT_STARTUP_UPDATE,
+    ACTION_WORKSPACE_MEMBERSHIPS_READ,
+)
 
-_GW = _scan.BACKEND_ROOT / "api_gateway"
 _DBR = _scan.BACKEND_ROOT / "database_router"
-_GATEWAY = _GW / "gateway.py"
-_GW_CLIENT = _GW / "adapters" / "providers" / "http_tenant_startup.py"
-_GW_MAIN = _GW / "main.py"
 _DBR_OPS = _DBR / "tenant_startup_ops.py"
-_DBR_EDGE = _DBR / "adapters" / "providers" / "http_tenant_startup_api.py"
+_PUBLIC_EDGE = _DBR / "adapters" / "providers" / "http_public_startup_edge.py"
 _DBR_MAIN = _DBR / "main.py"
+_EDGE_AUDIT = _scan.BACKEND_ROOT / "shared" / "adapters" / "providers" / "edge_audit.py"
 
 # DB drivers / vendor SDKs / crypto / concurrency banned from every CLM module (the modules
 # reach tenant data ONLY through the injected routed-session port / internal transport).
@@ -126,56 +148,32 @@ def test_update_parser_single_allowlisted_field_closure() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 2. Gateway single-route rule: the CLM path never reaches router.dispatch
+# 2/3. WITHDRAWN with their subject: the dispatch call-site rule and the
+#      Gateway-side transport client. Recorded, not silently dropped.
 # ---------------------------------------------------------------------------
-def test_gateway_keeps_exactly_one_router_dispatch_call_site() -> None:
-    tree = _tree(_GATEWAY)
-    # The legacy TENANT_OPERATION handoff owns the ONE router.dispatch call; the CLM tenant
-    # Startup branch executes through the tenant_startup port and adds no second call site
-    # (single-route — the W1a import precedent).
-    dispatch_calls = [
-        n
-        for n in ast.walk(tree)
-        if isinstance(n, ast.Call)
-        and isinstance(n.func, ast.Attribute)
-        and n.func.attr == "dispatch"
-        and isinstance(n.func.value, ast.Attribute)
-        and n.func.value.attr == "_router"
-    ]
-    assert len(dispatch_calls) == 1, f"gateway.py must keep exactly ONE self._router.dispatch call site, found {len(dispatch_calls)}"
-    # The CLM branch exists and calls the port's read/update exactly once each.
-    text = _GATEWAY.read_text(encoding="utf-8")
-    assert "_tenant_startup_ref(request.path)" in text, "the gateway must own the bounded core-side ref extractor"
-    for method_name in ("read", "update"):
-        calls = [
-            n
-            for n in ast.walk(tree)
-            if isinstance(n, ast.Call)
-            and isinstance(n.func, ast.Attribute)
-            and n.func.attr == method_name
-            and isinstance(n.func.value, ast.Attribute)
-            and n.func.value.attr == "_tenant_startup"
-        ]
-        assert len(calls) == 1, f"the gateway must call tenant_startup.{method_name} exactly once, found {len(calls)}"
+def test_the_withdrawn_gateway_side_subjects_are_really_absent() -> None:
+    """Stage B's Gateway-side halves had two checks; both subjects were deleted.
 
+    Asserting the absence keeps "withdrawn deliberately" distinguishable from "forgotten", and
+    names where each property lives now so a reader is never left wondering whether it was lost.
+    """
+    import importlib.util
 
-# ---------------------------------------------------------------------------
-# 3. Gateway-side transport client boundaries (the HttpControlPlaneRead idiom)
-# ---------------------------------------------------------------------------
-def test_gateway_client_adapter_boundaries() -> None:
-    assert _GW_CLIENT.is_file(), "the gateway-side tenant Startup transport client must exist"
-    tree = _tree(_GW_CLIENT)
-    tops = _import_tops(_GW_CLIENT)
-    assert tops <= {"__future__", "json", "urllib", "typing", "api_gateway"}, f"client import surface violated: {sorted(tops)}"
-    assert not (tops & _FORBIDDEN_TOPS), f"client must import no driver/vendor/crypto/concurrency: {sorted(tops & _FORBIDDEN_TOPS)}"
-    # Exactly ONE urlopen site; no retry loop around it; bounded timeout default.
-    urlopen_calls = _attr_call_count(tree, "urlopen")
-    assert urlopen_calls == 1, f"the client must own exactly one urlopen site, found {urlopen_calls}"
-    call_fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_call")
-    assert not _has_loop(call_fn), "the transport call must not be wrapped in a retry loop (single attempt)"
-    init_fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "__init__")
-    defaults = [d.value for d in init_fn.args.defaults if isinstance(d, ast.Constant) and isinstance(d.value, (int, float))]
-    assert defaults and float(defaults[0]) <= 30.0, "the client timeout default must be bounded (<= 30s)"
+    for gone in (
+        "api_gateway",
+        "api_gateway.gateway",
+        "api_gateway.adapters.providers.http_tenant_startup",
+        "database_router.adapters.providers.http_tenant_startup_api",
+    ):
+        try:
+            found = importlib.util.find_spec(gone)
+        except ModuleNotFoundError:
+            found = None
+        assert found is None, f"{gone} must not be importable — it was deleted with the API Gateway"
+    # The successor properties exist and are guarded elsewhere; assert the guards themselves are
+    # present so this record cannot point at nothing.
+    for successor in ("test_public_edge_boundaries.py", "test_ic010_control_read_adapter_boundaries.py"):
+        assert (pathlib.Path(__file__).parent / successor).is_file(), f"the successor guard {successor} must exist"
 
 
 # ---------------------------------------------------------------------------
@@ -202,29 +200,32 @@ def test_dbr_executor_boundaries_and_sole_mutable_column() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 5. Database-Router internal edge: loopback, POST-only, fail-closed, silent
+# 5. The PUBLIC tenant Startup edge: loopback, bounded methods, fail-closed, silent
 # ---------------------------------------------------------------------------
-def test_dbr_internal_edge_boundaries() -> None:
-    assert _DBR_EDGE.is_file(), "the internal tenant Startup operations edge must exist"
-    text = _DBR_EDGE.read_text(encoding="utf-8")
-    tree = _tree(_DBR_EDGE)
-    tops = _import_tops(_DBR_EDGE)
-    assert tops <= {"__future__", "json", "typing", "fastapi", "database_router", "shared"}, f"edge import surface violated: {sorted(tops)}"
-    assert not (tops & _FORBIDDEN_TOPS), "the internal edge must import no driver/vendor/crypto/concurrency"
-    served = _scan.registered_route_methods(tree)
-    # The two internal surfaces (read + update) are POST-only; every other method is refused 405
-    # by the shared fail-closed app before the executor is reached.
-    assert served == ["post", "post"], f"the internal edge must expose exactly two POST routes (served: {served})"
-    assert 'host: str = "127.0.0.1"' in text, "the internal edge must default to the loopback bind (IC-010 §R)"
-    assert '"/internal/tenant/startups/read"' in text and '"/internal/tenant/startups/update"' in text, (
-        "the two literal internal paths must be pinned"
+def test_public_startup_edge_boundaries() -> None:
+    assert _PUBLIC_EDGE.is_file(), "the public tenant Startup edge must exist"
+    text = _PUBLIC_EDGE.read_text(encoding="utf-8")
+    tree = _tree(_PUBLIC_EDGE)
+    tops = _import_tops(_PUBLIC_EDGE)
+    assert tops <= {"__future__", "json", "re", "typing", "fastapi", "database_router", "shared"}, (
+        f"edge import surface violated: {sorted(tops)}"
     )
+    assert not (tops & _FORBIDDEN_TOPS), "the public edge must import no driver/vendor/crypto/concurrency"
+    served = _scan.registered_route_methods(tree)
+    # The tenant family serves GET + PATCH (+ its OPTIONS preflight); health and readiness are GET.
+    assert sorted(served) == ["get", "get", "get", "options", "patch"], f"the public edge's served method census drifted: {served}"
+    assert 'host: str = "127.0.0.1"' in text, "the public edge must default to the loopback bind — exposure is a proxy decision"
+    assert '"/tenant/startups/{startup_ref}"' in text, "the bounded parameterized family must be pinned"
     used = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)} | {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
-    assert "send_error" not in used, "the internal edge must never call stdlib send_error"
+    assert "send_error" not in used, "the public edge must never call stdlib send_error"
     for marker in ("HTTPServer", "ThreadingHTTPServer", "ThreadingMixIn"):
-        assert marker not in used, f"the internal edge must hand-roll no server ({marker}); the shared runtime owns it"
-    assert "build_asgi_server" in used, "the internal edge must serve through the shared ASGI runtime"
-    # Request logging is silenced at the shared runtime now (the migrated home of log_message).
+        assert marker not in used, f"the public edge must hand-roll no server ({marker}); the shared runtime owns it"
+    assert "build_asgi_server" in used, "the public edge must serve through the shared ASGI runtime"
+    # STRICTLY STRONGER than the internal edge this replaces: it AUTHENTICATES before any executor
+    # call. The internal edge read the tenant and actor from the request BODY.
+    assert "admit" in used, "the public edge must admit through the shared boundary before any executor call"
+    assert "require_tenant" in used, "the tenant must come from the signed claim, never from the request"
+    # Request logging is silenced at the shared runtime (the migrated home of log_message).
     runtime = (_scan.BACKEND_ROOT / "shared" / "adapters" / "providers" / "asgi_runtime.py").read_text(encoding="utf-8")
     assert "access_log=False" in runtime and "log_config=None" in runtime, "request logging must stay silenced"
 
@@ -235,36 +236,44 @@ def test_dbr_internal_edge_boundaries() -> None:
 def test_clm_durable_audit_partition_is_exactly_the_five_events() -> None:
     # D-43 (Post-10C.3 corrective): the durable set widened from four to exactly five —
     # adding the CarrierMismatch denial record and NO other audit class.
-    assert _CLM_DURABLE_ACTIONS == frozenset(
+    assert frozenset(DURABLE_EDGE_AUDIT_ACTIONS) == frozenset(
         {
-            AuditAction.WORKSPACE_MEMBERSHIPS_READ,
-            AuditAction.TENANT_STARTUP_READ,
-            AuditAction.TENANT_STARTUP_UPDATE,
-            AuditAction.ROUTE_DENIED,
-            AuditAction.CARRIER_MISMATCH,
+            ACTION_WORKSPACE_MEMBERSHIPS_READ,
+            ACTION_TENANT_STARTUP_READ,
+            ACTION_TENANT_STARTUP_UPDATE,
+            ACTION_ROUTE_DENIED,
+            ACTION_CARRIER_MISMATCH,
         }
     ), "the durably homed set is EXACTLY the IC-010 CLM audit evidence set (no wider audit expansion)"
     # The two remaining anomaly classes stay OUTSIDE the durable partition.
-    for unhomed in (AuditAction.CARRIER_ON_CONTROL_ANOMALY, AuditAction.ISOLATION_ANOMALY):
-        assert unhomed not in _CLM_DURABLE_ACTIONS, f"{unhomed.value} must stay on the in-memory no-sink emitter"
-    # The durably homed actions carry EXACTLY the contract action strings.
-    assert AuditAction.TENANT_STARTUP_READ.value == "tenant_startup_read"
-    assert AuditAction.TENANT_STARTUP_UPDATE.value == "tenant_startup_update"
-    assert AuditAction.CARRIER_MISMATCH.value == "CarrierMismatch"
+    for unhomed in (ACTION_CARRIER_ON_CONTROL_ANOMALY, ACTION_ISOLATION_ANOMALY):
+        assert unhomed not in DURABLE_EDGE_AUDIT_ACTIONS, f"{unhomed} must stay on the in-memory no-sink emitter"
+    # The durably homed actions carry EXACTLY the contract action strings. The emitter moved from
+    # the Gateway to the route-owning edges; not one action string changed, which is what keeps
+    # DDL 012's frozen CHECK satisfied without a schema migration.
+    assert ACTION_TENANT_STARTUP_READ == "tenant_startup_read"
+    assert ACTION_TENANT_STARTUP_UPDATE == "tenant_startup_update"
+    assert ACTION_CARRIER_MISMATCH == "CarrierMismatch"
 
 
 # ---------------------------------------------------------------------------
 # 7. Composition selectors exist and stay fail-closed (no silent fallback)
 # ---------------------------------------------------------------------------
 def test_composition_selectors_pinned() -> None:
-    gw_main = _GW_MAIN.read_text(encoding="utf-8")
-    assert 'GW_TENANT_STARTUP_BASE_URL_ENV = "SP2_GW_TENANT_STARTUP_BASE_URL"' in gw_main
-    assert "def build_tenant_startup_from_env" in gw_main
-    assert gw_main.count("no silent fallback") >= 6, "every gateway selector keeps the fail-closed no-silent-fallback posture"
     dbr_main = _DBR_MAIN.read_text(encoding="utf-8")
-    assert 'SP2_DBR_TENANT_STARTUP_HOST = "SP2_DBR_TENANT_STARTUP_HOST"' in dbr_main
-    assert 'SP2_DBR_TENANT_STARTUP_PORT = "SP2_DBR_TENANT_STARTUP_PORT"' in dbr_main
-    assert "def build_tenant_startup_server_from_env" in dbr_main
+    # The executor seam survives (the public edge composes through it); the two Gateway-facing
+    # transport seams do not.
+    assert "def build_tenant_startup_ops_from_env" in dbr_main, "the tenant Startup EXECUTOR seam must survive"
+    assert 'SP2_DBR_PUBLIC_STARTUP_HOST = "SP2_DBR_PUBLIC_STARTUP_HOST"' in dbr_main
+    assert 'SP2_DBR_PUBLIC_STARTUP_PORT = "SP2_DBR_PUBLIC_STARTUP_PORT"' in dbr_main
+    assert 'SP2_EDGE_AUTH_ROUTER_BASE_URL = "SP2_EDGE_AUTH_ROUTER_BASE_URL"' in dbr_main, (
+        "the public edge's REQUIRED authentication selector must be pinned — unset means no edge composes at all"
+    )
+    assert "def build_public_startup_edge_server_from_env" in dbr_main
+    for gone in ("def build_tenant_startup_server_from_env", "def build_dispatch_server_from_env", "SP2_GW_"):
+        assert gone not in dbr_main, f"{gone} went with the API Gateway and must not reappear"
+    assert dbr_main.count("no silent fallback") >= 1, "the selector keeps the fail-closed no-silent-fallback posture"
+    assert "fail closed" in dbr_main, "the composition root must document its fail-closed posture"
 
 
 # ---------------------------------------------------------------------------
@@ -273,7 +282,7 @@ def test_composition_selectors_pinned() -> None:
 def test_stage_b_closes_no_blocker() -> None:
     guard_src = pathlib.Path(__file__).read_text(encoding="utf-8").lower()
     assert "closes no blocker" in guard_src, "the guard must declare that it closes no blocker"
-    for module in (_GATEWAY, _GW_CLIENT, _DBR_OPS, _DBR_EDGE):
+    for module in (_DBR_OPS, _PUBLIC_EDGE, _EDGE_AUDIT):
         text = module.read_text(encoding="utf-8").lower()
         for overclaim in ("production ready", "production-ready", "activates production", "blocker closed"):
             assert overclaim not in text, f"{module.name} must not overclaim ({overclaim})"
@@ -283,10 +292,9 @@ if __name__ == "__main__":
     _scan.run(
         [
             test_update_parser_single_allowlisted_field_closure,
-            test_gateway_keeps_exactly_one_router_dispatch_call_site,
-            test_gateway_client_adapter_boundaries,
+            test_the_withdrawn_gateway_side_subjects_are_really_absent,
             test_dbr_executor_boundaries_and_sole_mutable_column,
-            test_dbr_internal_edge_boundaries,
+            test_public_startup_edge_boundaries,
             test_clm_durable_audit_partition_is_exactly_the_five_events,
             test_stage_b_closes_no_blocker,
             test_composition_selectors_pinned,

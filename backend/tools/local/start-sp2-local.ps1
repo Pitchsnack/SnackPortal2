@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Starts the SnackPortal2 local STANDING backend topology - six edges, governed posture.
+    Starts the SnackPortal2 local STANDING backend topology - five edges, governed posture.
 
 .DESCRIPTION
     LOCAL / NON-PRODUCTION ONLY. Nothing here authorises a production deployment, a public
@@ -21,7 +21,7 @@
       2. ONE command template. Every edge is emitted from the single line built in
          Get-StandingUvicornCommand, so a flag cannot be present on five edges and missing on the
          sixth. Copy-pasteable per-edge commands live in the runbook, not here.
-      3. The STANDING port map, and only it: 8001 / 8002 / 8003 / 8004 / 8005 / 8820.
+      3. The STANDING port map, and only it: 8001 / 8003 / 8005 / 8830 / 8831.
          The 8080-8088 map is ISOLATED SMOKE / VERIFICATION ONLY and is never used here.
       4. Fail-fast children. `$ErrorActionPreference = 'Stop'` is the FIRST statement inside each
          child window and every relayed variable is validated non-blank, so a dropped environment
@@ -38,8 +38,20 @@
     Prerequisites, started out of band: Keycloak (sp2_kc_standing) on 8814 and the four PostgreSQL
     containers on 5540-5543. See infrastructure/docker/runbooks/local_start.md.
 
+    GATEWAY-FREE TOPOLOGY. The API Gateway (8820) was deleted, together with the two internal
+    transports that existed only to carry a Gateway request into a service: the Database Router
+    dispatch edge (8002) and the internal tenant-Startup envelope edge (8004). Each MVP route family
+    is now served by the service that owns its records, behind the shared `shared.public_edge`
+    boundary linked in-process:
+
+        browser -> tenant Startup edge  8830  (database_router)  -> one tenant database
+        browser -> Workspace edge       8831  (control_plane)    -> the Control database
+
+    Both public edges still bind 127.0.0.1. Exposure is a deliberate act at a reverse proxy, never
+    the consequence of an unset variable, and TLS terminates there.
+
     Governed posture reference: docs/runbooks/backend_service_startup_fastapi.md (standing map,
-    canonical flags, the four selectors this launcher deliberately leaves UNSET by default).
+    canonical flags, the selectors this launcher deliberately leaves UNSET by default).
 
 .EXAMPLE
     .\start-sp2-local.ps1
@@ -64,18 +76,27 @@ param(
     # produces persistent standing state (durable reads, durable audit rows, tenant business
     # writes) and is Gate-B work - it is NOT authorised by the presence of the switch here.
     [switch]$EnableDurableControlStore,
-    [switch]$EnableDurableGatewayAudit,
+    [switch]$EnableDurableEdgeAudit,
+    # Gateway-free consequence, stated plainly: the public tenant Startup edge holds
+    # TenantStartupOperations IN-PROCESS, so there is no longer a separate "wire the data plane"
+    # selector to leave unset - composing the edge IS the tenant data plane. This switch therefore
+    # gates whether that edge STARTS AT ALL, which keeps the Gate-A default posture exactly what it
+    # was: no process able to write tenant business data.
     [switch]$EnableTenantDataPlane,
 
     # Reference NAMES only. Never a DSN, never a password, never a token. The value behind a
     # reference is resolved by the process from SNACKPORTAL_SECRET_<REF>_V1 (or the file form) and
     # never transits this script.
-    [string]$ControlStoreDsnRef       = "control/control-store-dsn",
-    [string]$GatewayAuditWriterDsnRef = "control/gateway-audit-writer-dsn",
+    # SecretRef NAMES are frozen by AW-1 and are NOT renamed by the Gateway removal: the durable
+    # audit store is the Control-DB table `control_gateway_audit` (DDL 012/013), whose name and
+    # `source_service = 'api_gateway'` CHECK are separately governed and untouched here.
+    [string]$ControlStoreDsnRef     = "control/control-store-dsn",
+    [string]$EdgeAuditWriterDsnRef  = "control/gateway-audit-writer-dsn",
 
-    # The single SNACKPORTAL_SECRET_* variable the Gateway-audit ingest edge is permitted to keep
-    # (AW-1 Q8 ingest-process environment whitelist). Name only; the launcher never reads its value.
-    [string]$GatewayAuditWriterSecretVar = "SNACKPORTAL_SECRET_CONTROL_GATEWAY_AUDIT_WRITER_DSN_V1",
+    # The single SNACKPORTAL_SECRET_* variable the operational-audit ingest edge is permitted to
+    # keep (AW-1 Q8 ingest-process environment whitelist). Name only; the launcher never reads its
+    # value, and the AW-1 SecretRef name is frozen.
+    [string]$EdgeAuditWriterSecretVar = "SNACKPORTAL_SECRET_CONTROL_GATEWAY_AUDIT_WRITER_DSN_V1",
 
     [switch]$SkipChecks
 )
@@ -103,26 +124,33 @@ $CANONICAL_UVICORN_FLAGS = @("--factory", "--workers 1", "--no-access-log", "--n
 $STANDING_BIND_HOST = "127.0.0.1"
 
 # ------------------------------------------------------------------------ STANDING PORT MAP ----
-# CLM-SS-1 decision "D-1 gateway port 8820" (the CLM-SS-1 decision register - NOT the repository
-# ADR register's D-01 "Bootstrap Cycle Resolution", which is a different decision with a colliding
-# short identifier). 8820 avoids the frontend tooling's habitual 8080.
-$PORT_AUTH           = 8001
-$PORT_DISPATCH       = 8002
-$PORT_CONTROL_READ   = 8003
-$PORT_TENANT_STARTUP = 8004
-$PORT_GATEWAY_AUDIT  = 8005
-$PORT_GATEWAY        = 8820
+# The Gateway-free standing map. CLM-SS-1 decision "D-1 gateway port 8820" assigned the single
+# northbound Gateway surface; that component is deleted, so 8820 is RETIRED and is never bound by
+# this launcher. 8002 (dispatch) and 8004 (internal tenant-Startup envelope) went with it - both
+# existed only to carry a Gateway request into a service.
+#
+# The two PUBLIC edges take 8830 / 8831: outside 8080-8088 (the isolated smoke map) and outside
+# 8001-8005 (the internal map), so a public port can never be confused with an internal one.
+$PORT_AUTH              = 8001
+$PORT_CONTROL_READ      = 8003
+$PORT_EDGE_AUDIT        = 8005
+$PORT_PUBLIC_STARTUP    = 8830
+$PORT_PUBLIC_WORKSPACE  = 8831
 
 # Ports this launcher binds. Busy => refuse to start (a second copy of an edge is never wanted).
-$STANDING_PORTS = @($PORT_AUTH, $PORT_DISPATCH, $PORT_CONTROL_READ, $PORT_TENANT_STARTUP, $PORT_GATEWAY_AUDIT, $PORT_GATEWAY)
+# The public Startup edge is listed unconditionally: if something is already on 8830 the launcher
+# must refuse whether or not this run intends to start that edge.
+$STANDING_PORTS = @($PORT_AUTH, $PORT_CONTROL_READ, $PORT_EDGE_AUDIT, $PORT_PUBLIC_STARTUP, $PORT_PUBLIC_WORKSPACE)
 
-# Ports this launcher does NOT bind but MUST look at. 8080 is the port the repository's historical
-# operator documentation used for the API Gateway; something listening there while the standing
-# Gateway runs on 8820 means a second Gateway is up and the frontend is talking to only one of
-# them. 8000 is uvicorn's own CLI default and catches a hand-started edge that forgot --port.
-# Advisory, not fatal: neither port belongs to this topology, so refusing to start would be a
-# false blocker (8080 is also an ordinary dev-server port).
-$COLLISION_ADVISORY_PORTS = @(8080, 8000)
+# Ports this launcher does NOT bind but MUST look at. 8820 was the standing API Gateway port and
+# 8080 the port the repository's historical operator documentation used for it; a listener on
+# either after the Gateway was deleted means a stale Gateway process from a pre-removal worktree is
+# still up, and the frontend may be talking to it instead of the public edges. 8002 / 8004 are the
+# two deleted internal transports, for the same reason. 8000 is uvicorn's own CLI default and
+# catches a hand-started edge that forgot --port. Advisory, not fatal: none of these ports belongs
+# to this topology, so refusing to start would be a false blocker (8080 is also an ordinary
+# dev-server port).
+$COLLISION_ADVISORY_PORTS = @(8820, 8080, 8002, 8004, 8000)
 
 # ------------------------------------------------------------------------ ACTIVATION SELECTORS --
 # The four selectors below are DELIBERATELY NOT SET in the default standing profile. They are
@@ -131,8 +159,11 @@ $COLLISION_ADVISORY_PORTS = @(8080, 8000)
 #
 #   SP2_CP_CONTROL_STORE=postgres                       -> Control Plane reads the real Control DB
 #   SP2_CP_CONTROL_STORE_DSN_REF=<reference name only>  -> which secret REFERENCE that store binds
-#   SP2_GW_AUDIT_SINK_BASE_URL=http://127.0.0.1:8005    -> Gateway writes durable audit rows
-#   SP2_GW_TENANT_STARTUP_BASE_URL=http://127.0.0.1:8004-> Gateway routes the tenant data plane
+#   SP2_EDGE_AUDIT_SINK_BASE_URL=http://127.0.0.1:8005  -> public edges write durable audit rows
+#
+# There is deliberately NO fourth selector. Under the Gateway the tenant data plane was wired by
+# SP2_GW_TENANT_STARTUP_BASE_URL; the public Startup edge holds the executor in-process, so the
+# equivalent control is whether that edge is started at all (-EnableTenantDataPlane).
 #
 # Running a process with any of them active produces persistent standing state and is GATE-B work
 # (classes M11 / M12 / M14). Gate A authorises this file to CONTAIN them; it does not authorise
@@ -142,8 +173,7 @@ $COLLISION_ADVISORY_PORTS = @(8080, 8000)
 # NO RAW DSN, PASSWORD, TOKEN OR CREDENTIAL VALUE MAY EVER BE ADDED TO THIS FILE. References and
 # variable NAMES only.
 $SELECTOR_CONTROL_STORE_VALUE = "postgres"
-$SELECTOR_AUDIT_SINK_URL      = "http://127.0.0.1:$PORT_GATEWAY_AUDIT"
-$SELECTOR_TENANT_STARTUP_URL  = "http://127.0.0.1:$PORT_TENANT_STARTUP"
+$SELECTOR_AUDIT_SINK_URL      = "http://127.0.0.1:$PORT_EDGE_AUDIT"
 
 # ============================================================================= WORKTREE PINNING ==
 if ([string]::IsNullOrWhiteSpace($BackendPath)) {
@@ -205,10 +235,15 @@ if (-not $SkipChecks) {
     foreach ($p in $COLLISION_ADVISORY_PORTS) {
         if (Test-Port $p) {
             Write-Host "  [WARN] something is listening on $p." -ForegroundColor Yellow
-            if ($p -eq 8080) {
-                Write-Host "         8080 is the port the repository's HISTORICAL operator documentation used for" -ForegroundColor Yellow
-                Write-Host "         the API Gateway. The standing Gateway is 8820. If that listener is a second" -ForegroundColor Yellow
-                Write-Host "         Gateway, the frontend is talking to only one of them and no log will say so." -ForegroundColor Yellow
+            if ($p -eq 8820 -or $p -eq 8080) {
+                Write-Host "         This was an API Gateway port (8820 standing, 8080 in historical operator docs)." -ForegroundColor Yellow
+                Write-Host "         The API Gateway has been DELETED. A listener here is a STALE process started from" -ForegroundColor Yellow
+                Write-Host "         a pre-removal worktree - and the frontend may be talking to it instead of the two" -ForegroundColor Yellow
+                Write-Host "         public edges. Stop it before trusting anything this topology serves." -ForegroundColor Yellow
+            } elseif ($p -eq 8002 -or $p -eq 8004) {
+                Write-Host "         This was an internal Gateway-facing transport (8002 dispatch, 8004 tenant-Startup" -ForegroundColor Yellow
+                Write-Host "         envelope). Both modules are DELETED, so a listener here is a stale pre-removal" -ForegroundColor Yellow
+                Write-Host "         process - and 8004 in particular served an UNAUTHENTICATED envelope edge." -ForegroundColor Yellow
             } else {
                 Write-Host "         8000 is uvicorn's own CLI default - a hand-started edge that omitted --port." -ForegroundColor Yellow
             }
@@ -294,9 +329,11 @@ function Start-StandingEdge {
     # would take effect silently. Removing the whole prefix is the only complete answer.
     #
     # SP2_* is scrubbed for the same reason and one more: it is how the standing profile guarantees
-    # that SP2_GW_IMPORT_BASE_URL, SP2_DBR_ROUTING_AUDIT_BASE_URL and SP2_IMPORT_AUDIT_SINK_BASE_URL
-    # are UNSET on every edge regardless of what the operator's shell holds. Merely not assigning
-    # them would leave an inherited value live.
+    # that SP2_DBR_ROUTING_AUDIT_BASE_URL, SP2_IMPORT_AUDIT_SINK_BASE_URL and every SP2_EDGE_* value
+    # the launcher does not itself set are UNSET on every edge regardless of what the operator's
+    # shell holds. Merely not assigning them would leave an inherited value live - and for
+    # SP2_EDGE_AUDIT_SINK_BASE_URL an inherited value would silently activate a DURABLE transport.
+    # The sweep is unconditional and nothing is ever exempted from it.
     #
     # NOTE ON MECHANISM: `Start-Process -UseNewEnvironment` is the textbook answer and is NOT used.
     # On this host (Windows PowerShell 5.1.19041) it fails the child outright with
@@ -354,7 +391,9 @@ if ($EnableDurableControlStore) {
     $controlReadEnv["SP2_CP_CONTROL_STORE_DSN_REF"] = $ControlStoreDsnRef
 }
 
-# Gateway-audit ingest edge (AW-1). This edge is durable BY CONSTRUCTION -
+# Operational-audit ingest edge (AW-1), still named for the frozen Control-DB table it writes
+# (control_gateway_audit, DDL 012/013 - separately governed, not renamed here). This edge is
+# durable BY CONSTRUCTION -
 # build_gateway_audit_store_from_env has no in-memory branch and never consults
 # SP2_CP_CONTROL_STORE. With no reference set it binds the DEFAULT ref control/control-store-dsn,
 # which by standing convention resolves to the sp2_local SUPERUSER DSN - so an ordinary operator
@@ -365,12 +404,12 @@ if ($EnableDurableControlStore) {
 # starts with an AW-1 Q8-scoped environment carrying NO SNACKPORTAL_SECRET_* material, no
 # SNACKPORTAL_SECRET_DIR, no SNACKPORTAL_TENANT_SECRET_*, and no libpq PG* variable. Composition is
 # lazy, so the edge binds 8005 and then FAILS CLOSED at first store use. It cannot write with the
-# superuser credential. Nothing routes to it under Gate A anyway (the Gateway's
-# SP2_GW_AUDIT_SINK_BASE_URL is unset), so no journey regresses.
+# superuser credential. Nothing routes to it under Gate A anyway (the public edges'
+# SP2_EDGE_AUDIT_SINK_BASE_URL is unset), so no journey regresses.
 $ingestScrub = @("SNACKPORTAL_SECRET_*", "SNACKPORTAL_TENANT_SECRET*", "PG*")
 $ingestKeep  = @()
 $ingestEnv   = @{}
-if ($EnableDurableGatewayAudit) {
+if ($EnableDurableEdgeAudit) {
     # AW-1 sec.11 S-3(a) PRIMARY control, checked FIRST because it needs no database at all.
     # psycopg.connect("") does NOT fail - it falls back to libpq connection defaults: the PG*
     # environment variables, then localhost:5432, the OS user's name as the role, and a ~/.pgpass
@@ -381,8 +420,8 @@ if ($EnableDurableGatewayAudit) {
     # PRESENCE ONLY. The value is tested for blankness in place and is never read into a variable,
     # never printed, never relayed to a child, and never written anywhere. The ingest child inherits
     # it directly through $ingestKeep / -KeepEnvNames; it does not transit this script.
-    if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($GatewayAuditWriterSecretVar))) {
-        throw "AW-1 S-3(a): $GatewayAuditWriterSecretVar is unset, empty or whitespace-only - refusing to start the Gateway-audit ingest edge on $PORT_GATEWAY_AUDIT. A blank credential does not fail closed at psycopg: it falls back to libpq defaults and connects somewhere nobody chose. (Presence only - no value was read out or printed.)"
+    if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($EdgeAuditWriterSecretVar))) {
+        throw "AW-1 S-3(a): $EdgeAuditWriterSecretVar is unset, empty or whitespace-only - refusing to start the operational-audit ingest edge on $PORT_EDGE_AUDIT. A blank credential does not fail closed at psycopg: it falls back to libpq defaults and connects somewhere nobody chose. (Presence only - no value was read out or printed.)"
     }
     Write-Host "`nAW-1 S-3(a): writer secret MATERIAL present and non-blank (presence only)" -ForegroundColor Cyan
 
@@ -395,43 +434,54 @@ if ($EnableDurableGatewayAudit) {
     Write-Host "`nAW-1 start gate (sec.9 O-6): checking the least-privilege writer state..." -ForegroundColor Cyan
     & (Join-Path $BackendPath ".venv\Scripts\python.exe") $Aw1Tool status
     if ($LASTEXITCODE -ne 0) {
-        throw "AW-1 start gate FAILED (exit $LASTEXITCODE): refusing to start the Gateway-audit ingest edge on 8005."
+        throw "AW-1 start gate FAILED (exit $LASTEXITCODE): refusing to start the operational-audit ingest edge on 8005."
     }
     Write-Host "  [ok] AW-1 status reports the writer state is as required"
 
-    $ingestKeep = @($GatewayAuditWriterSecretVar)
-    $ingestEnv["SP2_CP_CONTROL_STORE_DSN_REF"] = $GatewayAuditWriterDsnRef
+    $ingestKeep = @($EdgeAuditWriterSecretVar)
+    $ingestEnv["SP2_CP_CONTROL_STORE_DSN_REF"] = $EdgeAuditWriterDsnRef
 }
 
-# Gateway. Gate-A default: neither the durable audit sink nor the tenant-Startup selector is set.
-# With SP2_GW_TENANT_STARTUP_BASE_URL unset every TENANT_OPERATION keeps the pre-CLM router
-# handoff - the tenant-Startup edge runs on 8004 and the Gateway never routes to it, so the CLM
-# data plane is not merely unproven, it is not wired.
-$gatewayEnv = @{
-    SP2_GW_AUTH_ROUTER_BASE_URL  = "http://127.0.0.1:$PORT_AUTH"
-    SP2_GW_DB_ROUTER_BASE_URL    = "http://127.0.0.1:$PORT_DISPATCH"
-    SP2_GW_CONTROL_READ_BASE_URL = $controlUrl
-    # REQUIRED for any browser client. Unset means an EMPTY allowlist and every cross-origin
-    # request is denied. The failure mode is silent: the gateway answers the CORS preflight OPTIONS
-    # with 204, the browser then never sends the real request, and nothing appears in any server
-    # log. Exact match - the "localhost" spelling fails against a "127.0.0.1" origin.
-    SP2_GW_EDGE_ALLOWED_ORIGINS  = $FrontendOrigin
+# The two PUBLIC edges. Both consume the SAME IC-005 authenticate base URL - deliberately one name
+# for one thing - and the SAME exact-origin CORS allowlist. Neither has a loopback default for the
+# audit sink: a default would silently activate a durable transport.
+#
+# SP2_EDGE_ALLOWED_ORIGINS is REQUIRED for any browser client. Unset means an EMPTY allowlist and
+# every cross-origin request is denied. The failure mode is silent: the edge answers the CORS
+# preflight OPTIONS with 204, the browser then never sends the real request, and nothing appears in
+# any server log. Exact match - the "localhost" spelling fails against a "127.0.0.1" origin.
+$publicEdgeEnv = @{
+    SP2_EDGE_AUTH_ROUTER_BASE_URL = "http://127.0.0.1:$PORT_AUTH"
+    SP2_EDGE_ALLOWED_ORIGINS      = $FrontendOrigin
 }
-if ($EnableDurableGatewayAudit) { $gatewayEnv["SP2_GW_AUDIT_SINK_BASE_URL"] = $SELECTOR_AUDIT_SINK_URL }
-if ($EnableTenantDataPlane)     { $gatewayEnv["SP2_GW_TENANT_STARTUP_BASE_URL"] = $SELECTOR_TENANT_STARTUP_URL }
+if ($EnableDurableEdgeAudit) { $publicEdgeEnv["SP2_EDGE_AUDIT_SINK_BASE_URL"] = $SELECTOR_AUDIT_SINK_URL }
+
+# The Startup edge additionally needs the routing-association read (the Database Router's own
+# pre-existing selector). It is the ROUTER gate: with it set, the edge composes
+# TenantStartupOperations in-process, which IS the tenant data plane.
+$startupEdgeEnv = $publicEdgeEnv.Clone()
+$startupEdgeEnv["SP2_DBR_ROUTING_READ_BASE_URL"] = $controlUrl
+
+# The Workspace edge reads the Control DB through the SAME posture the read edge uses.
+$workspaceEdgeEnv = $publicEdgeEnv.Clone()
+if ($EnableDurableControlStore) {
+    $workspaceEdgeEnv["SP2_CP_CONTROL_STORE"]         = $SELECTOR_CONTROL_STORE_VALUE
+    $workspaceEdgeEnv["SP2_CP_CONTROL_STORE_DSN_REF"] = $ControlStoreDsnRef
+}
 
 Write-Host "`nStanding posture for this run:" -ForegroundColor Cyan
 Write-Host ("  Control store        : {0}" -f $(if ($EnableDurableControlStore) { "postgres (DURABLE - Gate-B class M12)" } else { "UNSET -> in-memory, TEST-ONLY" }))
-Write-Host ("  Gateway durable audit: {0}" -f $(if ($EnableDurableGatewayAudit) { "ON (DURABLE WRITES - Gate-B class M11)" } else { "OFF - sink unwired, ingest edge fails closed" }))
-Write-Host ("  Tenant data plane    : {0}" -f $(if ($EnableTenantDataPlane) { "ON (TENANT WRITES - Gate-B class M14)" } else { "OFF - pre-CLM router handoff" }))
-if ($EnableDurableControlStore -or $EnableDurableGatewayAudit -or $EnableTenantDataPlane) {
+Write-Host ("  Durable edge audit   : {0}" -f $(if ($EnableDurableEdgeAudit) { "ON (DURABLE WRITES - Gate-B class M11)" } else { "OFF - sink unwired, ingest edge fails closed" }))
+Write-Host ("  Tenant data plane    : {0}" -f $(if ($EnableTenantDataPlane) { "ON (public Startup edge STARTED - Gate-B class M14)" } else { "OFF - public Startup edge NOT started" }))
+if ($EnableDurableControlStore -or $EnableDurableEdgeAudit -or $EnableTenantDataPlane) {
     Write-Host "  >> At least one activation selector is ON. This produces PERSISTENT STANDING STATE." -ForegroundColor Yellow
     Write-Host "  >> That is Gate-B work. Confirm you hold that authorization before continuing." -ForegroundColor Yellow
 }
 
 # =================================================================================== START ORDER ==
 # A service's bound URL becomes the next service's selector value. Control Plane read first, since
-# auth_router, dispatch and tenant_startup all point at it; the Gateway last, since it needs three.
+# the Auth Router and the public Startup edge both point at it; the two PUBLIC edges last, since
+# each needs the Auth Router bound.
 
 Write-Host "`nStarting standing edges..." -ForegroundColor Cyan
 
@@ -445,22 +495,12 @@ if (-not (Test-Port $PORT_CONTROL_READ)) {
     throw "control_plane failed to start on $PORT_CONTROL_READ. Check its window."
 }
 
-Start-StandingEdge -Title "gateway_audit $PORT_GATEWAY_AUDIT" `
+Start-StandingEdge -Title "edge_audit $PORT_EDGE_AUDIT" `
     -Module "control_plane.adapters.providers.http_gateway_audit_api" `
-    -Port $PORT_GATEWAY_AUDIT `
+    -Port $PORT_EDGE_AUDIT `
     -EnvVars $ingestEnv `
     -ExtraScrubPatterns $ingestScrub `
     -KeepEnvNames $ingestKeep
-
-Start-StandingEdge -Title "database_router $PORT_DISPATCH" `
-    -Module "database_router.adapters.providers.http_dispatch_api" `
-    -Port $PORT_DISPATCH `
-    -EnvVars @{ SP2_DBR_ROUTING_READ_BASE_URL = $controlUrl }
-
-Start-StandingEdge -Title "tenant_startup $PORT_TENANT_STARTUP" `
-    -Module "database_router.adapters.providers.http_tenant_startup_api" `
-    -Port $PORT_TENANT_STARTUP `
-    -EnvVars @{ SP2_DBR_ROUTING_READ_BASE_URL = $controlUrl }
 
 Start-StandingEdge -Title "auth_router $PORT_AUTH" `
     -Module "auth_router.adapters.providers.http_authenticate_api" `
@@ -472,23 +512,36 @@ Start-StandingEdge -Title "auth_router $PORT_AUTH" `
 
 Start-Sleep -Seconds 3
 
-Start-StandingEdge -Title "gateway $PORT_GATEWAY" `
-    -Module "api_gateway.adapters.providers.http_gateway_edge" `
-    -Port $PORT_GATEWAY `
-    -EnvVars $gatewayEnv
+# --- the PUBLIC edges -------------------------------------------------------------------------
+# 127.0.0.1 by construction (Get-StandingUvicornCommand pins --host $STANDING_BIND_HOST). Exposure
+# is a deliberate act at a reverse proxy; nothing here opens one.
+Start-StandingEdge -Title "public_workspace $PORT_PUBLIC_WORKSPACE" `
+    -Module "control_plane.adapters.providers.http_public_workspace_edge" `
+    -Port $PORT_PUBLIC_WORKSPACE `
+    -EnvVars $workspaceEdgeEnv
+
+if ($EnableTenantDataPlane) {
+    Start-StandingEdge -Title "public_startup $PORT_PUBLIC_STARTUP" `
+        -Module "database_router.adapters.providers.http_public_startup_edge" `
+        -Port $PORT_PUBLIC_STARTUP `
+        -EnvVars $startupEdgeEnv
+} else {
+    Write-Host "  SKIPPING public_startup on $PORT_PUBLIC_STARTUP (-EnableTenantDataPlane is off)" -ForegroundColor DarkGray
+    Write-Host "  The public Startup edge holds TenantStartupOperations IN-PROCESS: starting it IS the" -ForegroundColor DarkGray
+    Write-Host "  tenant data plane (Gate-B class M14). There is no 'started but unwired' posture for it." -ForegroundColor DarkGray
+}
 
 # ======================================================================================= VERIFY ==
 Write-Host "`nWaiting for services to bind..." -ForegroundColor Cyan
 Start-Sleep -Seconds 5
 
 $expected = [ordered]@{
-    "auth_router"     = $PORT_AUTH
-    "database_router" = $PORT_DISPATCH
-    "control_plane"   = $PORT_CONTROL_READ
-    "tenant_startup"  = $PORT_TENANT_STARTUP
-    "gateway_audit"   = $PORT_GATEWAY_AUDIT
-    "gateway"         = $PORT_GATEWAY
+    "auth_router"      = $PORT_AUTH
+    "control_plane"    = $PORT_CONTROL_READ
+    "edge_audit"       = $PORT_EDGE_AUDIT
+    "public_workspace" = $PORT_PUBLIC_WORKSPACE
 }
+if ($EnableTenantDataPlane) { $expected["public_startup"] = $PORT_PUBLIC_STARTUP }
 
 Write-Host ""
 $failed = @()
@@ -507,13 +560,21 @@ if ($failed) {
     exit 1
 }
 
-# A listening socket proves a bind, not a composition. /health proves the Gateway composed.
+# A listening socket proves a bind, not a composition. /health proves the edge composed.
 Write-Host ""
 try {
-    $health = curl.exe -s "http://127.0.0.1:$PORT_GATEWAY/health" | ConvertFrom-Json
-    Write-Host "  gateway health: $($health.status) (build_phase $($health.build_phase))" -ForegroundColor Green
+    $health = curl.exe -s "http://127.0.0.1:$PORT_PUBLIC_WORKSPACE/health" | ConvertFrom-Json
+    Write-Host "  workspace edge health: $($health.status) (build_phase $($health.build_phase))" -ForegroundColor Green
 } catch {
-    Write-Host "  gateway health check failed" -ForegroundColor Yellow
+    Write-Host "  workspace edge health check failed" -ForegroundColor Yellow
+}
+if ($EnableTenantDataPlane) {
+    try {
+        $health = curl.exe -s "http://127.0.0.1:$PORT_PUBLIC_STARTUP/health" | ConvertFrom-Json
+        Write-Host "  startup edge health  : $($health.status) (build_phase $($health.build_phase))" -ForegroundColor Green
+    } catch {
+        Write-Host "  startup edge health check failed" -ForegroundColor Yellow
+    }
 }
 
 Write-Host ""
@@ -523,18 +584,23 @@ Write-Host "  first store use - a bad or absent reference surfaces on the first 
 
 Write-Host @"
 
-All six standing edges running.
+Standing edges running (Gateway-free topology).
 
   Frontend    cd <frontend worktree>; bun run dev -- --port 5173
-  Gateway     http://127.0.0.1:$PORT_GATEWAY
-  Sign in     $FrontendOrigin/sp2-gateway
+  Workspace   http://127.0.0.1:$PORT_PUBLIC_WORKSPACE      GET /memberships
+  Startup     http://127.0.0.1:$PORT_PUBLIC_STARTUP      GET|PATCH /tenant/startups/<ref>   (only with -EnableTenantDataPlane)
 
-  Standing map   auth 8001 / dispatch 8002 / control-read 8003 / tenant-startup 8004 /
-                 gateway-audit 8005 / API Gateway 8820
+  Standing map   auth 8001 / control-read 8003 / edge-audit 8005 /
+                 PUBLIC startup 8830 / PUBLIC workspace 8831
+  RETIRED        8820 (API Gateway), 8002 (dispatch), 8004 (internal tenant-Startup envelope) -
+                 all three deleted. A listener on any of them is a STALE pre-removal process.
   NOT this map   8080-8088 is ISOLATED SMOKE / VERIFICATION ONLY (tests/deployment/
-                 native_uvicorn_process_smoke.py). Never start a standing Gateway on 8080.
+                 native_uvicorn_process_smoke.py). Never start a standing edge on 8080.
+
+  TWO public surfaces now, not one: the reverse proxy needs two upstreams, two TLS bindings and
+  the same exact-origin CORS allowlist on both.
 
 To stop: close the service windows, or
-  Get-Process powershell | Where-Object MainWindowTitle -match '^(auth_router|database_router|control_plane|tenant_startup|gateway_audit|gateway) ' | Stop-Process
+  Get-Process powershell | Where-Object MainWindowTitle -match '^(auth_router|control_plane|edge_audit|public_startup|public_workspace) ' | Stop-Process
 
 "@ -ForegroundColor Cyan

@@ -32,8 +32,8 @@ from typing import Any, List, Optional, Tuple
 import psycopg  # type: ignore  # noqa: F401  (driver import confined to this zone)
 
 from control_plane.gateway_audit import (
-    GATEWAY_AUDIT_SOURCE_SERVICE,
-    GATEWAY_AUDIT_STORE_ACTIONS,
+    EDGE_AUDIT_SOURCE_SERVICE,
+    EDGE_AUDIT_STORE_ACTIONS,
     GatewayAuditAppendResult,
     GatewayAuditConflictError,
     GatewayAuditInvalidError,
@@ -831,11 +831,11 @@ class PostgresGatewayAuditStore(GatewayAuditStorePort):
     @staticmethod
     def _validate(record: GatewayAuditRecord) -> None:
         """Bounded pre-insert validation (fail closed BEFORE any durable write)."""
-        if record.action not in GATEWAY_AUDIT_STORE_ACTIONS:
+        if record.action not in EDGE_AUDIT_STORE_ACTIONS:
             raise GatewayAuditInvalidError("gateway-audit record rejected: unknown action")
         if record.event_version <= 0:
             raise GatewayAuditInvalidError("gateway-audit record rejected: non-positive event_version")
-        if record.source_service != GATEWAY_AUDIT_SOURCE_SERVICE:
+        if record.source_service != EDGE_AUDIT_SOURCE_SERVICE:
             raise GatewayAuditInvalidError("gateway-audit record rejected: unknown source_service")
         for name in ("audit_id", "occurred_at", "correlation_id", "outcome"):
             if not getattr(record, name):

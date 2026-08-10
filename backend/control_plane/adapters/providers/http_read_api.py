@@ -145,7 +145,7 @@ def serve_read_api(host: str = "127.0.0.1", port: int = 0) -> None:  # pragma: n
     bound the Control Plane read edge on the Gateway's port, and a client aimed at the Gateway hit
     the Control-Plane catch-all instead. Corrected under Gate A — no documentation fix can remove a
     code-level collision. The governed STANDING map is authoritative and pins the Control Plane read
-    edge to 8003 and the API Gateway to 8820 (``docs/runbooks/backend_service_startup_fastapi.md``);
+    edge to 8003 and the two PUBLIC edges to 8830/8831 (``docs/runbooks/backend_service_startup_fastapi.md``);
     standing operation uses the native ``create_app_from_env`` path, not this seam.
     """
     from control_plane.main import create_app  # function-local intra-package import (07E-1 §5A)

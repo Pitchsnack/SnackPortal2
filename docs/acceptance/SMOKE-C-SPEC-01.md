@@ -1,5 +1,19 @@
 # SMOKE-C-SPEC-01 — Smoke C Acceptance Specification (integrated live local topology proof)
 
+> ## ⛔ ITS HARNESS IS WITHDRAWN — the API Gateway has been DELETED
+>
+> This specification is retained as the **historical acceptance record** it always was, and its text
+> is unchanged: it still describes `Gateway.handle`, `gateway ingress` and
+> `build_dispatch_server_from_env`, because that is what Smoke C V2 was specified against.
+>
+> The executable side is gone. `tests/control_plane/requires_pg/smoke_c_integrated_live_proof.py`,
+> its wrapper and its boundary guard were deleted with the topology they drove, and the blessed
+> RS256 fixture this spec depends on moved from `tests/api_gateway/crypto_fixture.py` to
+> **`tests/shared/crypto_fixture.py`**.
+>
+> **B5-BLK-4 is not closed and no longer has a live harness.** A Gateway-free Smoke C successor must
+> be specified and authored before any integrated live proof may be cited for this architecture.
+
 **Spec id/version:** `SMOKE-C-SPEC-01` v1.0 · **Authored under:** PRD B5-5 (specification slice)
 **Status:** SPECIFICATION ONLY — this document **does not execute Smoke C**. Smoke C execution is a
 separately Dan-authorized acceptance PRD (Fable5) run over this spec. Until that run is accepted:

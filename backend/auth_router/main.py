@@ -36,7 +36,7 @@ from .tenant_context import TenantContextResolver
 SERVICE = "auth_router"
 
 # The config-selectable Auth Router control-plane read transport selector (mirrors the
-# Database Router SP2_DBR_* / gateway SP2_GW_* selector posture). The value is NON-SECRET
+# Database Router SP2_DBR_* / public-edge SP2_EDGE_* selector posture). The value is NON-SECRET
 # internal config — the loopback/internal control-plane read base URL, never a credential —
 # so it is read directly from the environment (no SecretRef, no SecretStore). Unset/empty
 # keeps the caller's injected (test/dev double) composition; a structurally valid internal

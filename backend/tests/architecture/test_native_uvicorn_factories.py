@@ -1,4 +1,4 @@
-"""Architecture guards for the NATIVE ASGI application factories (all nine HTTP edges).
+"""Architecture guards for the NATIVE ASGI application factories (all eight HTTP edges).
 
 The canonical operator startup path is::
 
@@ -8,7 +8,7 @@ The canonical operator startup path is::
 These guards police the properties that make that path safe, and that no default `pytest -q`
 behavioral test can observe (the native path is a separate OS process built by the uvicorn CLI):
 
-* every one of the nine edges exposes a no-argument ``create_app_from_env``;
+* every one of the eight edges exposes a no-argument ``create_app_from_env``;
 * the factory BINDS NO SOCKET — ``build_asgi_server`` / ``AsgiEdgeServer`` stay confined to the
   retained compatibility ``build_*_server`` seam;
 * the factory FAILS CLOSED — it raises and never returns ``None``, and never reaches for an
@@ -17,7 +17,7 @@ behavioral test can observe (the native path is a separate OS process built by t
   compatibility ``*_server_from_env`` seam calls, so environment parsing and adapter wiring
   cannot drift between the two;
 * the factory declares NO route of its own (the app shape stays owned by ``_make_app``);
-* the runbook pins the four canonical runtime flags for all nine edges — these are the ONLY
+* the runbook pins the four canonical runtime flags for all eight edges — these are the ONLY
   place the "no access log / no server header / no proxy headers" properties are established on
   the native path, because the uvicorn CLI builds its own config and never executes the shared
   ``asgi_runtime`` module those properties are otherwise asserted against.
@@ -42,15 +42,18 @@ import _scan  # noqa: E402
 _BACKEND = _scan.BACKEND_ROOT
 _RUNBOOK = _scan.REPO_ROOT / "docs" / "runbooks" / "backend_service_startup_fastapi.md"
 
-# The nine native factory targets: (module path, the dependency-composition name the factory and
+# The eight native factory targets: (module path, the dependency-composition name the factory and
 # the compatibility server seam MUST share). The shared name is the mechanical proof of "one
 # composition path only" — if the two ever diverge, this census fails.
+#
+# The API Gateway edge, the Database Router dispatch edge and the internal tenant-Startup envelope
+# edge were DELETED with the Gateway; the two service-owned PUBLIC edges took their place, so the
+# census went from nine entries to eight.
 _EDGES = (
-    ("api_gateway/adapters/providers/http_gateway_edge.py", "build_gateway_edge_deps_from_env"),
+    ("database_router/adapters/providers/http_public_startup_edge.py", "build_public_startup_edge_deps_from_env"),
+    ("control_plane/adapters/providers/http_public_workspace_edge.py", "build_public_workspace_edge_deps_from_env"),
     ("control_plane/adapters/providers/http_read_api.py", "create_app"),
     ("auth_router/adapters/providers/http_authenticate_api.py", "build_authenticator_from_env"),
-    ("database_router/adapters/providers/http_dispatch_api.py", "build_router_from_env"),
-    ("database_router/adapters/providers/http_tenant_startup_api.py", "build_tenant_startup_ops_from_env"),
     ("control_plane/adapters/providers/http_gateway_audit_api.py", "build_gateway_audit_store_from_env"),
     ("control_plane/adapters/providers/http_import_audit_api.py", "build_import_audit_store_from_env"),
     ("control_plane/adapters/providers/http_routing_audit_api.py", "build_routing_audit_store_from_env"),
@@ -61,11 +64,10 @@ _EDGES = (
 # edge composes from the deployment root (its two cross-package ports cannot be built inside
 # import_service — DAG independence), so its shared seam lives in import_service/main.py.
 _SERVER_SEAMS = {
-    "api_gateway/adapters/providers/http_gateway_edge.py": "api_gateway/main.py",
+    "database_router/adapters/providers/http_public_startup_edge.py": "database_router/main.py",
+    "control_plane/adapters/providers/http_public_workspace_edge.py": "control_plane/main.py",
     "control_plane/adapters/providers/http_read_api.py": "control_plane/main.py",
     "auth_router/adapters/providers/http_authenticate_api.py": "auth_router/main.py",
-    "database_router/adapters/providers/http_dispatch_api.py": "database_router/main.py",
-    "database_router/adapters/providers/http_tenant_startup_api.py": "database_router/main.py",
     "control_plane/adapters/providers/http_gateway_audit_api.py": "control_plane/main.py",
     "control_plane/adapters/providers/http_import_audit_api.py": "control_plane/main.py",
     "control_plane/adapters/providers/http_routing_audit_api.py": "control_plane/main.py",
@@ -102,7 +104,7 @@ def _names(node: ast.AST) -> set[str]:
     return out
 
 
-def test_all_nine_edges_expose_a_no_argument_factory() -> None:
+def test_all_eight_edges_expose_a_no_argument_factory() -> None:
     for rel, _shared in _EDGES:
         tree = _tree(rel)
         factory = _func(tree, _FACTORY)
@@ -150,10 +152,9 @@ def test_factories_that_gate_on_activation_raise() -> None:
     # misconfiguration. (The three durable-audit stores and the read edge fail closed inside their
     # own composition function instead, by raising on a blank secret reference / incoherent posture.)
     gated = (
-        "api_gateway/adapters/providers/http_gateway_edge.py",
+        "database_router/adapters/providers/http_public_startup_edge.py",
+        "control_plane/adapters/providers/http_public_workspace_edge.py",
         "auth_router/adapters/providers/http_authenticate_api.py",
-        "database_router/adapters/providers/http_dispatch_api.py",
-        "database_router/adapters/providers/http_tenant_startup_api.py",
         "deployment/import_edge.py",
     )
     for rel in gated:
@@ -266,7 +267,7 @@ def test_runbook_documents_both_port_maps_and_pins_each_to_its_source() -> None:
     """The runbook carries TWO disjoint maps. Each is pinned to the artifact that owns it.
 
     `8080-8088` is the ISOLATED SMOKE map, owned by `native_uvicorn_process_smoke.py`.
-    `8001/8002/8003/8004/8005/8820` is the STANDING map, owned by the governed launcher.
+    `8001/8003/8005/8830/8831` is the STANDING map, owned by the governed launcher.
 
     Before Gate A the runbook carried only the smoke map, presented itself as the canonical standing
     method, ended its startup order at `API Gateway :8080`, and probed 8080 on shutdown — while the
@@ -302,13 +303,24 @@ def test_runbook_documents_both_port_maps_and_pins_each_to_its_source() -> None:
         stray = ports - allowed
         assert not stray, f"the runbook documents {target} on unpinned port(s) {sorted(stray)}"
 
-    # The standing Gateway is 8820 and is never documented on 8080 as a standing command.
-    gateway = f"api_gateway.adapters.providers.http_gateway_edge:{_FACTORY}"
-    assert standing[gateway] == 8820, "the standing API Gateway must be 8820"
-    assert observed[gateway] == {8080, 8820}, (
-        "the runbook must document the Gateway exactly twice — once on the smoke map (8080) and once on the standing "
-        f"map (8820), found {sorted(observed[gateway])}"
-    )
+    # The two PUBLIC edges are the standing 8830/8831 pair and each is documented on BOTH maps.
+    for module, standing_port, smoke_port in (
+        ("database_router.adapters.providers.http_public_startup_edge", 8830, 8083),
+        ("control_plane.adapters.providers.http_public_workspace_edge", 8831, 8084),
+    ):
+        target = f"{module}:{_FACTORY}"
+        assert standing[target] == standing_port, f"the standing {module} must be {standing_port}"
+        assert observed[target] == {smoke_port, standing_port}, (
+            f"the runbook must document {module} exactly twice — once on the smoke map ({smoke_port}) and once on the "
+            f"standing map ({standing_port}), found {sorted(observed[target])}"
+        )
+    # Zero-residual: no retired Gateway-era target may appear in either documented map.
+    for retired in (
+        "api_gateway.adapters.providers.http_gateway_edge",
+        "database_router.adapters.providers.http_dispatch_api",
+        "database_router.adapters.providers.http_tenant_startup_api",
+    ):
+        assert not any(target.startswith(retired) for target in observed), f"the runbook must not document the deleted {retired}"
     runbook = _RUNBOOK.read_text(encoding="utf-8")
     for scope_label in ("ISOLATED SMOKE", "STANDING"):
         assert scope_label in runbook, f"the runbook must label the maps explicitly ({scope_label})"
@@ -320,7 +332,7 @@ def test_runbook_port_map_guard_is_non_vacuous() -> None:
         8820,
     )
     smoke = _smoke_map_from_harness()
-    assert smoke.get("api_gateway.adapters.providers.http_gateway_edge:create_app_from_env") == 8080, (
+    assert smoke.get("control_plane.adapters.providers.http_read_api:create_app_from_env") == 8081, (
         "the smoke-map parser must actually read the harness"
     )
 
@@ -336,13 +348,13 @@ def test_factory_census_nonvacuity() -> None:
     )
     router = ast.parse("@app.get('/x')\ndef create_app_from_env():\n    pass\n")
     assert _scan.own_route_methods(_func(router, _FACTORY)) == ["get"], "a route-declaring factory must be detectable"
-    assert len(_EDGES) == 9, "the census must cover exactly the nine HTTP edges"
+    assert len(_EDGES) == 8, "the census must cover exactly the eight HTTP edges"
 
 
 if __name__ == "__main__":
     _scan.run(
         [
-            test_all_nine_edges_expose_a_no_argument_factory,
+            test_all_eight_edges_expose_a_no_argument_factory,
             test_factory_binds_no_socket,
             test_factory_fails_closed_and_never_normalizes_in_memory,
             test_factories_that_gate_on_activation_raise,

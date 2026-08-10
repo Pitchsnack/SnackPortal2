@@ -10,7 +10,6 @@
     { "logical_id": "tenant-nova", "endpoint_ref": "ref:db/tenant-nova/endpoint@1" }
   ],
   "service_endpoints": [
-    { "service_id": "api-gateway", "endpoint_ref": "service://api-gateway" },
     { "service_id": "auth-router", "endpoint_ref": "service://auth-router" },
     { "service_id": "database-router", "endpoint_ref": "service://database-router" },
     { "service_id": "control-plane", "endpoint_ref": "service://control-plane" }

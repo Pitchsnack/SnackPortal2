@@ -150,11 +150,11 @@ def test_loopback_detector_nonvacuity_and_docstring_exemption() -> None:
 
 
 def test_sanctioned_zone_predicate_is_exact() -> None:
-    assert _is_sanctioned_loopback_zone("api_gateway/adapters/providers/http_gateway_edge.py")
-    assert _is_sanctioned_loopback_zone("api_gateway/main.py")
-    assert not _is_sanctioned_loopback_zone("api_gateway/carrier.py")
+    assert _is_sanctioned_loopback_zone("database_router/adapters/providers/http_public_startup_edge.py")
+    assert _is_sanctioned_loopback_zone("database_router/main.py")
+    assert not _is_sanctioned_loopback_zone("database_router/router.py")
     assert not _is_sanctioned_loopback_zone("shared/portability/profile.py")
-    assert not _is_sanctioned_loopback_zone("api_gateway/main_helpers.py")
+    assert not _is_sanctioned_loopback_zone("database_router/main_helpers.py")
 
 
 def test_vocabulary_allowance_is_exact() -> None:

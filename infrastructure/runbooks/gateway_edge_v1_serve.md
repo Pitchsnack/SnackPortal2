@@ -1,5 +1,13 @@
 # Runbook — Served API Gateway Edge V1
 
+> ## ⛔ WITHDRAWN — the API Gateway has been DELETED
+>
+> This runbook serves `api_gateway.adapters.providers.http_gateway_edge`, a module that no longer exists. The MVP route families are now served by the two PUBLIC edges — `database_router...http_public_startup_edge` (8830) and `control_plane...http_public_workspace_edge` (8831) — documented in `docs/runbooks/backend_service_startup_fastapi.md` §2.1 and `docs/runbooks/gateway_free_mvp_topology.md`.
+>
+> Nothing in this document may be run, and no evidence produced by it before the removal may be
+> cited as current. It is retained because the recorded scenario, its ordering rules and its
+> evidence format are what a Gateway-free successor must reproduce.
+
 > ## ⚠️ STATUS: PARTIALLY SUPERSEDED — read this box before running anything below
 >
 > | | |

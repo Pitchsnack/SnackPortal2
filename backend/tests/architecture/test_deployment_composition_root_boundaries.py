@@ -51,7 +51,12 @@ _ADR = _scan.REPO_ROOT / "docs" / "Architecture-Decision-Register.md"
 # IC-012 §3: the exhaustive authorized cross-package set. `shared` is the dependency leaf; the three service
 # packages are exactly what the proven Edge 9 composition requires.
 _AUTHORIZED_SERVICES = ("database_router", "import_service", "lineage_service")
-_UNAUTHORIZED_SERVICES = ("api_gateway", "auth_router", "control_plane")
+# The services the deployment root may NOT import. This is the exact COMPLEMENT of the
+# authorized Edge 9 set over the surviving service packages; ``api_gateway`` left it because the
+# package was deleted, not because the grant widened. IC-012 §3 still lists it — the contract is
+# unamended, which is recorded by ``_IC012_UNAMENDED_SERVICES`` below rather than papered over.
+_UNAUTHORIZED_SERVICES = ("auth_router", "control_plane")
+_IC012_UNAMENDED_SERVICES = ("api_gateway",)
 
 # IC-012 §16: the exhaustive module census of the root.
 _CENSUS = ("__init__.py", "import_edge.py")
@@ -191,7 +196,6 @@ _IC012_FORWARD = (
     "deployment ──> shared",
 )
 _IC012_FORWARD_FORBIDDEN = (
-    "deployment ─╳─> api_gateway",
     "deployment ─╳─> auth_router",
     "deployment ─╳─> control_plane",
 )
@@ -513,7 +517,6 @@ def test_importlinter_config_enforces_ic012_section13() -> None:
         'name = "services are mutually independent (no service imports another)"\n'
         'type = "independence"\n'
         "modules = [\n"
-        '  "api_gateway",\n'
         '  "auth_router",\n'
         '  "database_router",\n'
         '  "control_plane",\n'
@@ -539,6 +542,15 @@ def test_deployment_docstring_cites_the_ratified_governance() -> None:
         assert svc in doc, f"the docstring must state the narrow authorized import set — '{svc}' missing (IC-012 §3)"
     for svc in _UNAUTHORIZED_SERVICES:
         assert svc in doc, f"the docstring must name '{svc}' as NOT authorized (IC-012 §3)"
+    # IC-012 §3 also lists `api_gateway`. That package was DELETED, so the docstring no longer names
+    # it and the import-linter contract no longer forbids it — there is nothing left to forbid. The
+    # contract text is unamended; this assertion records the divergence rather than hiding it, and
+    # fails the moment someone reintroduces a package by that name without an IC-012 §5.1 amendment.
+    for gone in _IC012_UNAMENDED_SERVICES:
+        assert not (_scan.BACKEND_ROOT / gone).exists(), (
+            f"IC-012 §3 still lists '{gone}' as unauthorized; the package was deleted, so if it ever "
+            "returns it must be re-added to _UNAUTHORIZED_SERVICES and to the import-linter contract"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -570,7 +582,7 @@ def test_detectors_are_non_vacuous() -> None:
     for needle in _D44_ANCHORS:
         assert needle not in d44.replace(needle, ""), f"D-44 anchor detector is vacuous: {needle!r}"
     # AST pins: each violation shape is detectable in a synthetic module.
-    offender = ast.parse("import api_gateway\nimport database_router\n")
+    offender = ast.parse("import control_plane\nimport database_router\n")
     tops = {m.split(".")[0] for m in ([a.name for n in ast.walk(offender) if isinstance(n, ast.Import) for a in n.names])}
     assert len(tops & set(_scan.SERVICE_PACKAGES)) == 2, "a two-service module must be detectable (check 1)"
     assert _DYNAMIC_IMPORT.search('importlib.import_module("deployment.import_edge")'), "a dynamic root import must be detectable (check 2)"
@@ -588,8 +600,15 @@ def test_detectors_are_non_vacuous() -> None:
     # Docstrings are excluded from the literal scan, and non-docstring literals are not.
     sample = ast.parse('"""doc SELECT a FROM b"""\nq = "SELECT a FROM b"\n')
     assert _code_strings(sample) == ["SELECT a FROM b"], "the literal scan must skip docstrings and see code strings (check 4)"
-    assert len(_CENSUS) == 2 and len(_AUTHORIZED_SERVICES) == 3 and len(_UNAUTHORIZED_SERVICES) == 3, (
-        "the census and the authorized/un-authorized partition must stay exactly as IC-012 §3/§16 ratified them"
+    # The partition must remain EXHAUSTIVE over the surviving service packages: authorized +
+    # unauthorized covers every one of them, with no overlap. Asserting the partition rather than a
+    # fixed count is what keeps this meaningful after a package is deleted — the old ''3 and 3'' pin
+    # would have had to be edited to a number, which proves nothing.
+    surviving = set(_scan.SERVICE_PACKAGES)
+    authorized_services = {s for s in _AUTHORIZED_SERVICES if s in surviving}
+    assert len(_CENSUS) == 2, "the module census must stay exactly __init__.py + import_edge.py (IC-012 §16)"
+    assert authorized_services | set(_UNAUTHORIZED_SERVICES) == surviving, (
+        "the authorized/un-authorized partition must cover every surviving service package (IC-012 §3)"
     )
 
 

@@ -5,7 +5,7 @@ keeps the caller's injected composition (returns ``None``), a structurally valid
 ``http`` base URL composes a production ``DatabaseRouter`` wired to the ``HttpRoutingRead``
 routing-read client bound to exactly that URL (plus the env tenant SecretStore + the
 psycopg connection factory), and any malformed/off-scheme/missing-netloc value fails closed
-with ``ValueError`` — never a silent fallback (the gateway SP2_GW_* / control_plane SP2_CP_*
+with ``ValueError`` — never a silent fallback (the public-edge SP2_EDGE_* / control_plane SP2_CP_*
 selector posture). The construction is INERT: it opens no connection — proven non-vacuously by
 arming the sole connection-opening path (``PsycopgConnectionFactory.open``) with a trap the test
 would trip on. ``build_router`` direct-injection behavior stays unchanged. Stdlib-only; DB-free

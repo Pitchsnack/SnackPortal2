@@ -15,7 +15,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import _scan  # noqa: E402
 
 AR = _scan.BACKEND_ROOT / "auth_router"
-FORBIDDEN_SERVICES = ["control_plane", "database_router", "import_service", "lineage_service", "api_gateway"]
+FORBIDDEN_SERVICES = ["control_plane", "database_router", "import_service", "lineage_service"]
 FORBIDDEN_LIBS = [
     "psycopg2",
     "psycopg",

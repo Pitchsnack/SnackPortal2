@@ -8,7 +8,16 @@ SnackPortal2 is in **active build under contract-first governance**. Do **not** 
 
 Current state (see `docs/SnackPortal2_Canonical_Overview_and_Decisions_v2.md` for the full, authoritative picture):
 
-- **Backend (this repo):** core Phases 1–6 built and **accepted** (Control Plane, Authentication, Database Router, Import, Lineage; PostgreSQL-verified). **API Gateway is scaffold-only** — readiness review (PRD 04 V1) = `READY_WITH_GUARDS`; next artifact is **PRD 04 V2** (implementation), not yet started.
+- **Backend (this repo):** core Phases 1–6 built and **accepted** (Control Plane, Authentication, Database Router, Import, Lineage; PostgreSQL-verified).
+- **API Gateway — REMOVED ON THIS BRANCH ONLY.** `experiment/complete-api-gateway-removal-mvp`
+  deletes the `api_gateway` package, the Database Router dispatch edge and the internal
+  tenant-Startup envelope edge, and serves each MVP route family from the service that owns its
+  records behind the shared `shared.public_edge` boundary (public edges on 8830 / 8831). On `main`
+  the Gateway is untouched and B-7 remains as described in the PRD Index. **The removal is not
+  adopted:** IC-010 (Final) still names the API Gateway as the sole approved ingress, and IC-009 /
+  IC-011 / IC-012 carry Gateway-bound clauses. Ratifying those amendments is a human governance act
+  and is the named blocker before anything on that branch may be merged. See
+  `docs/reports/SnackPortal2_Complete_API_Gateway_Zero_Residual_Removal_Result_Claude.md`.
 - **Frontend (Lovable, separate Lovable Cloud project):** ~70% of screens built, but on an **interim** Supabase data layer using *logical* (`tenant_id` + RLS) separation. Per decisions D3/D7 this data layer is **interim** and must be re-pointed to the API Gateway + physical tenant databases; not yet brought into this repo's `frontend/`.
 
 This project follows a **contract-first design approach**: interface contracts are defined and agreed upon *before* the corresponding implementation begins.

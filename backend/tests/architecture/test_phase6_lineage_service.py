@@ -2,7 +2,7 @@
 
 Encodes the Phase-6 boundaries from PRD-P6-E1 §18 / P6-R2:
 - lineage_service imports NO other service (database_router / control_plane / import_service
-  / auth_router / api_gateway) — it runs on injected shared sessions/ports (Standard D).
+  / auth_router) — it runs on injected shared sessions/ports (Standard D).
 - no database drivers and no secret literals inside lineage_service.
 - canonicalization is single-sourced: only canonical.py constructs the HMAC content join /
   uses hmac/hashlib (closes P6-OBS-3).
@@ -35,7 +35,7 @@ def _imports():
 def test_lineage_service_imports_no_other_service() -> None:
     for f, mod in _imports():
         top = mod.split(".")[0]
-        assert top not in {"database_router", "control_plane", "import_service", "auth_router", "api_gateway"}, (
+        assert top not in {"database_router", "control_plane", "import_service", "auth_router"}, (
             f"{_scan.relposix(f)} imports another service '{mod}' — injected shared ports only (Standard D)"
         )
 

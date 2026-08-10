@@ -45,6 +45,14 @@ _TESTS_ROOT = _scan.BACKEND_ROOT / "tests"
 
 # The ONLY allowed omissions from the CI loop — explicit, named, justified. Adding a key here is a
 # governed decision (it consciously keeps a live proof manual-only).
+# Five entries were REMOVED when the API Gateway was deleted, because their harnesses were too:
+#   test_pg_smoke_c_integrated_live_proof / test_pg_b5_blk6_portal_binding_live_proof /
+#   test_pg_clm_acme_dataplane_witness / test_pg_clm_2day_stage_b_rehearsal /
+#   test_pg_controlled_served_write_rehearsal
+# Every one drove `browser -> Gateway 8820 -> ... -> tenant/Control DB`, a topology that no longer
+# exists. INV-C below fails on an exception naming a file that is not on disk, so the list could
+# not simply be left alone. A Gateway-free successor for each is an OUTSTANDING item, not a
+# completed migration.
 MANUAL_ONLY_EXCEPTIONS = {
     "tests/control_plane/requires_pg/test_b3a_multi_database_topology.py": (
         "requires four physically distinct clusters (SP2_B3A_*_DSN, four distinct system_identifiers); "
@@ -72,26 +80,6 @@ MANUAL_ONLY_EXCEPTIONS = {
         "exit is EXPECTED and EXPLICIT. It is retained, not retired: Stage 0 forbids partial retirement "
         "of this family and four default-suite guards still reference it. Accepted replacement: "
         "tests/control_plane/requires_pg/test_pg_clm_standing_auth_posture.py"
-    ),
-    "tests/control_plane/requires_pg/test_pg_smoke_c_integrated_live_proof.py": (
-        "PRD Smoke C V2 integrated live proof: bound to the ESTABLISHED B5-4 standing topology, the "
-        "B5-4A standing auth fixture, the local Docker fixture, and the external secret root — not "
-        "runnable on the single ephemeral CI service; loop enrollment would additionally require the "
-        ".github workflow edit plus the EXPECTED_HARNESS_COUNT/b7c2-doc lockstep, which is outside the "
-        "Smoke C V2 authorized five-file surface; tracked follow-up in the Smoke C V2 execution report ATR. "
-        "AUTHFIX-B (Gate A): this harness's subject state — the b5_standing trio — was replaced "
-        "around 2026-07-21 by the four-cluster standing fixture, so it is SUPERSEDED and its non-zero "
-        "exit is EXPECTED and EXPLICIT. It is retained, not retired: Stage 0 forbids partial retirement "
-        "of this family and four default-suite guards still reference it. Accepted replacement: "
-        "tests/control_plane/requires_pg/test_pg_clm_standing_auth_posture.py"
-    ),
-    "tests/control_plane/requires_pg/test_pg_b5_blk6_portal_binding_live_proof.py": (
-        "PRD B5-BLK-6C-C disposable real-Control-DB portal-composition proof: single-cluster capable "
-        "(creates and drops its own disposable Control DB), but deliberately MANUAL_ONLY — loop "
-        "enrollment would require editing the live-pg workflow (plus the EXPECTED_HARNESS_COUNT/"
-        "b7c2-doc lockstep), which is outside the 6C-C authorized surface (no .github changes); "
-        "operator-run per infrastructure/runbooks/b5_blk6_portal_binding_live_proof.md and pinned by "
-        "tests/architecture/test_b5_blk6_portal_binding_live_proof_boundaries.py"
     ),
     "tests/control_plane/requires_pg/test_pg_dbr_ar_2d_standing_witnesses.py": (
         "PRD DBR-AR-2D V3 standing-witness read-only verification: bound to the ESTABLISHED B5-4/B5-4A "
@@ -124,16 +112,6 @@ MANUAL_ONLY_EXCEPTIONS = {
         "infrastructure/runbooks/import_copy_live_proof.md and pinned by "
         "tests/architecture/test_import_write_path_boundaries.py"
     ),
-    "tests/control_plane/requires_pg/test_pg_controlled_served_write_rehearsal.py": (
-        "controlled served-write rehearsal harness (the W1b served Gateway Edge joined to the W1a composed "
-        "real-PostgreSQL import path in one test-owned deployment root): single-cluster capable (creates and "
-        "drops its own disposable databases sp2_rehearsal_control / _alpha / _beta), but deliberately "
-        "MANUAL_ONLY — an operator-run, disposable-topology rehearsal that requires an explicit human "
-        "START-GATE (Dan) before any execution, never an automatic CI proof; loop enrollment would "
-        "additionally require editing the live-pg workflow (plus the EXPECTED_HARNESS_COUNT/b7c2-doc "
-        "lockstep), which is outside the rehearsal slice's authorized surface (no .github changes); "
-        "operator-run per infrastructure/runbooks/controlled_served_write_rehearsal.md"
-    ),
     "tests/control_plane/requires_pg/test_pg_controlled_rollback_rehearsal.py": (
         "controlled rollback rehearsal harness (composed-core Control Plane + Database Router; disposable "
         "local rollback-to-deferred-in-memory mechanism proof): single-cluster capable (creates and drops "
@@ -156,18 +134,6 @@ MANUAL_ONLY_EXCEPTIONS = {
         "EXPECTED_HARNESS_COUNT/b7c2-doc lockstep are unchanged by this slice. Pinned by "
         "tests/architecture/test_clm_standing_auth_posture_boundaries.py"
     ),
-    "tests/control_plane/requires_pg/test_pg_clm_acme_dataplane_witness.py": (
-        "CLM ACME tenant data-plane witness (Gateway 8820 -> Tenant Startup 8004 -> Database Router -> "
-        "Control routing record -> SecretRef -> ACME physical tenant DB -> Startup GET/PATCH, plus ZETA "
-        "denial/isolation): bound to the ESTABLISHED four-cluster standing topology, the standing Keycloak "
-        "fixture, an operator-supplied bearer token, and the external tenant secret root — none of which "
-        "exists on the single ephemeral CI service. Its `run` leg additionally performs a REAL business "
-        "write to a physical tenant database (Gate-B class M14) and requires an explicit human START-GATE, "
-        "so it must never be an automatic CI proof. Enrollment is FORBIDDEN rather than deferred: the "
-        "hosted 14-harness loop and the EXPECTED_HARNESS_COUNT/b7c2-doc lockstep are deliberately unchanged "
-        "by this slice. Operator-run per infrastructure/runbooks/clm_acme_dataplane_witness.md and pinned by "
-        "tests/architecture/test_clm_dataplane_witness_boundaries.py"
-    ),
     "tests/control_plane/requires_pg/test_pg_aw1_gateway_audit_writer_rehearsal.py": (
         "AW-1 Tier-A disposable least-privilege privilege rehearsal: deliberately MANUAL_ONLY and "
         "deliberately NOT loop-enrolled — not merely deferred. CREATE ROLE is CLUSTER-scoped, so the "
@@ -180,19 +146,6 @@ MANUAL_ONLY_EXCEPTIONS = {
         "hosted 14-harness loop is UNCHANGED by this slice. Operator-run per "
         "infrastructure/runbooks/aw1_gateway_audit_writer.md and pinned by "
         "tests/architecture/test_aw1_gateway_audit_writer_boundaries.py"
-    ),
-    "tests/control_plane/requires_pg/test_pg_clm_2day_stage_b_rehearsal.py": (
-        "CLM 2-Day Stage B controlled-local rehearsal harness (the full D-42 journey: RS256/OIDC login -> "
-        "principal-only auth -> served GET /memberships -> backend-validated ACME selection -> served "
-        "GET/PATCH /tenant/startups/<startup_ref> -> unauthorized ZETA fail-closed denial -> four durable "
-        "audit events -> rollback and restore, joined in one test-owned deployment root over six loopback "
-        "served edges): single-cluster capable (creates and drops its own disposable databases sp2_clm_control "
-        "/ _acme / _zeta, applies control 001-009 + 012 + 013 and the 14-file tenant template to them only), "
-        "but deliberately MANUAL_ONLY — an operator-run, disposable-topology rehearsal that requires an "
-        "explicit human START-GATE (Dan) before any execution, never an automatic CI proof; loop enrollment "
-        "would additionally require editing the live-pg workflow (plus the EXPECTED_HARNESS_COUNT/b7c2-doc "
-        "lockstep), which is outside the Stage B authorized surface (no .github changes); operator-run per "
-        "infrastructure/runbooks/clm_2day_stage_b_rehearsal.md"
     ),
 }
 

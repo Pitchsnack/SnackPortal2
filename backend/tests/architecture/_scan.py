@@ -15,8 +15,10 @@ from typing import Callable, Iterator, List, Tuple
 BACKEND_ROOT = Path(__file__).resolve().parents[2]  # .../backend
 REPO_ROOT = BACKEND_ROOT.parent
 
+# The runtime service packages. ``api_gateway`` was removed with the API Gateway; every census
+# built from this list therefore covers the SURVIVING services exhaustively, and re-adding a
+# service here is the single edit that enrolls it in all of them.
 SERVICE_PACKAGES = [
-    "api_gateway",
     "auth_router",
     "database_router",
     "control_plane",

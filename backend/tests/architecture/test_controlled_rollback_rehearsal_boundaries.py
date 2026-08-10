@@ -74,10 +74,10 @@ _FORBIDDEN_DB_NAMES = [
 ]
 
 # Imports the harness must NEVER carry (composed-core has no served ingress, no crypto).
-_FORBIDDEN_IMPORT_PREFIXES = ("api_gateway", "auth_router")
+_FORBIDDEN_IMPORT_PREFIXES = ("auth_router",)
 _FORBIDDEN_IMPORT_EXACT = {"jwt", "cryptography", "socket"}
 # Runtime-source packages the harness must never import (contract/ADR/workflow minimum pin — test 17).
-_FORBIDDEN_RUNTIME_IMPORTS = ("api_gateway", "auth_router", "import_service", "lineage_service")
+_FORBIDDEN_RUNTIME_IMPORTS = ("auth_router", "import_service", "lineage_service")
 
 # Served-edge markers that must NEVER appear in the composed-core harness.
 _SERVED_MARKERS = ["_server_from_env", "httpconnection", "socket.create_connection", "create_connection"]
@@ -222,7 +222,7 @@ def test_harness_is_composed_core_no_gateway_no_auth() -> None:
         assert mod not in _FORBIDDEN_IMPORT_EXACT, f"composed-core must import no crypto/socket: {mod!r}"
         assert "crypto_fixture" not in mod, f"composed-core must not load the crypto fixture: {mod!r}"
     # non-vacuity: the forbidden-import detector must fire on a planted module list.
-    planted = ["api_gateway.main", "auth_router.main", "jwt"]
+    planted = ["auth_router.main", "import_service.main", "jwt"]
     assert any(m.startswith(_FORBIDDEN_IMPORT_PREFIXES) or m in _FORBIDDEN_IMPORT_EXACT for m in planted), "detector must fire"
 
 

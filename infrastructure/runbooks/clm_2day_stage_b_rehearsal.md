@@ -1,5 +1,13 @@
 # Runbook — CLM 2-Day Stage B Controlled-Local Rehearsal (MANUAL_ONLY)
 
+> ## ⛔ WITHDRAWN — the API Gateway has been DELETED
+>
+> The Stage B rehearsal harness (`tests/control_plane/requires_pg/test_pg_clm_2day_stage_b_rehearsal.py`) was DELETED: it composed `build_gateway_edge_server_from_env` and served the CLM journey through the Gateway edge. The Stage B RUNTIME boundaries it accompanied are still guarded in the default suite by `tests/architecture/test_clm_2day_stage_b_runtime_boundaries.py`, re-aimed at the public Startup edge.
+>
+> Nothing in this document may be run, and no evidence produced by it before the removal may be
+> cited as current. It is retained because the recorded scenario, its ordering rules and its
+> evidence format are what a Gateway-free successor must reproduce.
+
 **Governing PRD:** `PRD_SnackPortal2_2_Day_Accelerated_Controlled_Local_MVP_Stage_B_Implementation_START_GATE_GPT.md` (D-42)
 **Harness:** `backend/tests/control_plane/requires_pg/test_pg_clm_2day_stage_b_rehearsal.py`
 **Posture:** DISPOSABLE, operator-run, **human START-GATE required (Dan)**. Closes no blocker. Production **NOT READY / DO-NOT-ACTIVATE**.

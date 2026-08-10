@@ -5,6 +5,11 @@
 > `docs/runbooks/backend_service_startup_fastapi.md` is the canonical startup runbook. This document
 > predates the FastAPI/Uvicorn migration, the served API Gateway edge, and the tenant-Startup edge.
 >
+> **And it now describes processes that no longer exist.** On this branch the API Gateway (8820),
+> the Database Router dispatch edge (8002) and the internal tenant-Startup envelope edge (8004) have
+> been DELETED; the MVP route families are served by two PUBLIC edges on 8830 / 8831. Any step below
+> that starts one of the removed processes cannot succeed, and the ordering it implies is wrong.
+>
 > | Still valid here | Superseded here |
 > |---|---|
 > | The **dependency order** (§2) and why each URL feeds the next composition | Every runtime description: these edges are no longer plain stdlib `HTTPServer` processes |

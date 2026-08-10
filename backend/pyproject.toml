@@ -13,7 +13,7 @@ requires-python = ">=3.10"
 #     drivers confined to database_router/adapters/providers/** (tenant serving) and
 #     control_plane/adapters/providers/** (Control-DB persistence + verification probe).
 #     Standard PostgreSQL only; not exercised by the stdlib test suite.
-#   - The FastAPI migration adds the HTTP serving stack. FastAPI is imported by the nine
+#   - The FastAPI migration adds the HTTP serving stack. FastAPI is imported by the eight
 #     service edges under */adapters/providers/**; uvicorn is imported in exactly ONE place,
 #     shared/adapters/providers/asgi_runtime.py, so the concrete ASGI server stays inside the
 #     sanctioned containment zone. Both are open-source and vendor-neutral (ASGI is a standard
@@ -39,12 +39,13 @@ dev = [
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
-# Flat multi-package layout: enumerate the seven runtime packages so setuptools
+# Flat multi-package layout: enumerate the six runtime packages so setuptools
 # auto-discovery never guesses (and never packages tests/). PRD-P6-V1-E1 F1.
+# ``api_gateway*`` was REMOVED with the API Gateway: leaving a discovery glob for a deleted
+# package would let an empty directory re-enter the distribution silently.
 [tool.setuptools.packages.find]
 include = [
   "shared*",
-  "api_gateway*",
   "auth_router*",
   "database_router*",
   "control_plane*",
@@ -112,7 +113,6 @@ addopts = "--ignore=tests/lineage_service/requires_pg --ignore=tests/control_pla
 [tool.importlinter]
 root_packages = [
   "shared",
-  "api_gateway",
   "auth_router",
   "database_router",
   "control_plane",
@@ -128,7 +128,6 @@ name = "shared is a dependency leaf (must not import any service)"
 type = "forbidden"
 source_modules = ["shared"]
 forbidden_modules = [
-  "api_gateway",
   "auth_router",
   "database_router",
   "control_plane",
@@ -140,7 +139,6 @@ forbidden_modules = [
 name = "services are mutually independent (no service imports another)"
 type = "independence"
 modules = [
-  "api_gateway",
   "auth_router",
   "database_router",
   "control_plane",
@@ -157,7 +155,6 @@ name = "nothing may import the deployment composition root (it is the top of the
 type = "forbidden"
 source_modules = [
   "shared",
-  "api_gateway",
   "auth_router",
   "database_router",
   "control_plane",
@@ -167,15 +164,16 @@ source_modules = [
 forbidden_modules = ["deployment"]
 
 # The root's cross-service authority is EXHAUSTIVE, not general: Edge 9 requires import_service,
-# database_router, lineage_service and shared, and nothing else. Forbidding the remaining three
-# services makes the narrow grant machine-enforced, so widening it needs an IC-012 amendment
-# (sec.5.1) rather than an unreviewed import. (IC-012 sec.3 / sec.13)
+# database_router, lineage_service and shared, and nothing else. Forbidding the remaining services
+# makes the narrow grant machine-enforced, so widening it needs an IC-012 amendment (sec.5.1)
+# rather than an unreviewed import. (IC-012 sec.3 / sec.13) The forbidden list is the exact
+# complement of the authorized set over the FIVE surviving services; ``api_gateway`` left it
+# because the package no longer exists, not because the grant widened.
 [[tool.importlinter.contracts]]
 name = "the deployment root may compose only the authorized Edge 9 services"
 type = "forbidden"
 source_modules = ["deployment"]
 forbidden_modules = [
-  "api_gateway",
   "auth_router",
   "control_plane",
 ]

@@ -43,7 +43,7 @@ from typing import Any, Dict, Optional, Tuple
 from fastapi import FastAPI, Request, Response
 
 from control_plane.gateway_audit import (
-    GATEWAY_AUDIT_SOURCE_SERVICE,
+    EDGE_AUDIT_SOURCE_SERVICE,
     GatewayAuditConflictError,
     GatewayAuditInvalidError,
     GatewayAuditRecord,
@@ -123,7 +123,7 @@ _REJECTED_OUTCOME = "rejected"
 _SECRET_SHAPES = ("eyJ", "-----BEGIN", "AKIA", "ghp_", "xox", "://")
 _MAX_REF_LENGTH = 512  # uniform reference-field cap
 
-# D-43: the opaque carrier-reference shape the gateway emits (api_gateway/carrier.py
+# D-43: the opaque carrier-reference shape the public edges emit (shared/public_edge.py
 # opaque_carrier_ref): "carrier:" + the carrier-asserted value, hard-capped at 64 characters.
 # The ingest edge accepts ONLY that rendering — a bearer token, signed claim, or any other
 # raw value is rejected (the secret-shape markers above apply in addition).
@@ -246,7 +246,7 @@ def _parse_record(raw: bytes) -> GatewayAuditRecord:
         correlation_id=_required_string(event, "correlation_id"),
         action=action,
         outcome=outcome,
-        source_service=GATEWAY_AUDIT_SOURCE_SERVICE,  # store-side producer constant — never from the wire
+        source_service=EDGE_AUDIT_SOURCE_SERVICE,  # store-side producer constant — never from the wire
         actor_ref=actor_ref,
         subject_ref=subject_ref,
         tenant_ref=_optional_string(event, "tenant_ref"),

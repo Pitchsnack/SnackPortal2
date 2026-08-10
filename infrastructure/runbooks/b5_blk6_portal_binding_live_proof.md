@@ -1,5 +1,13 @@
 # B5-BLK-6C-C — Real Control-DB Portal-Composition Disposable Proof (operator runbook)
 
+> ## ⛔ WITHDRAWN — the API Gateway has been DELETED
+>
+> The 6C-C portal-binding proof (`tests/control_plane/requires_pg/b5_blk6_portal_binding_live_proof.py` + its wrapper) was DELETED: it composed the Gateway and proved the Gateway-composed portal DTOs against a real Control DB. Response composition is now owner-resident (`control_plane/portal.py`, `database_router/portal.py`) and is pinned in the DEFAULT suite by `tests/architecture/test_ic009_portal_binding_checks.py` and `tests/gateway_free/test_response_contract_parity.py` — but there is no longer a LIVE Control-DB proof of it.
+>
+> Nothing in this document may be run, and no evidence produced by it before the removal may be
+> cited as current. It is retained because the recorded scenario, its ordering rules and its
+> evidence format are what a Gateway-free successor must reproduce.
+
 **Scope:** NON-PRODUCTION / disposable-only (PRD B5-BLK-6C-C). This runbook documents the governed
 operator procedure for the MANUAL_ONLY disposable proof that the API Gateway's composed CONTROL
 portal read (startup directory, investor directory, MembershipsForPrincipal) works end-to-end over a

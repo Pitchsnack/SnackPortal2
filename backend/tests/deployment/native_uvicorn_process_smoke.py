@@ -1,4 +1,4 @@
-"""Standalone native-Uvicorn PROCESS smoke for all nine SnackPortal2 FastAPI edges.
+"""Standalone native-Uvicorn PROCESS smoke for all eight SnackPortal2 FastAPI edges.
 
 Not collected by ``pytest`` (no ``test_`` prefix): it starts nine real operating-system processes
 through the actual Uvicorn command line, so it is deliberately kept out of the default suite. It is
@@ -6,7 +6,7 @@ the ONLY proof that the canonical operator path — and the security properties 
 command line rather than in the application — actually hold, because the native path builds its own
 server configuration and never executes ``shared/adapters/providers/asgi_runtime.py``.
 
-For each of the nine edges it proves:
+For each of the eight edges it proves:
 
 * the process starts and the socket LISTENS;
 * ``/docs``, ``/redoc`` and ``/openapi.json`` answer ``404`` and publish no schema and no FastAPI
@@ -44,7 +44,6 @@ _BACKEND = pathlib.Path(__file__).resolve().parents[2]
 
 # (port, label, uvicorn target, probe route, probe method)
 _EDGES: Tuple[Tuple[int, str, str, str, str], ...] = (
-    (8080, "API Gateway", "api_gateway.adapters.providers.http_gateway_edge:create_app_from_env", "/health", "GET"),
     (8081, "Control Plane Read", "control_plane.adapters.providers.http_read_api:create_app_from_env", "/memberships", "GET"),
     (
         8082,
@@ -55,21 +54,21 @@ _EDGES: Tuple[Tuple[int, str, str, str, str], ...] = (
     ),
     (
         8083,
-        "DB Router Dispatch",
-        "database_router.adapters.providers.http_dispatch_api:create_app_from_env",
-        "/internal/dispatch/route",
-        "POST",
+        "Public tenant Startup edge",
+        "database_router.adapters.providers.http_public_startup_edge:create_app_from_env",
+        "/tenant/startups/probe",
+        "GET",
     ),
     (
         8084,
-        "Tenant Startup",
-        "database_router.adapters.providers.http_tenant_startup_api:create_app_from_env",
-        "/internal/tenant/startups/read",
-        "POST",
+        "Public Workspace edge",
+        "control_plane.adapters.providers.http_public_workspace_edge:create_app_from_env",
+        "/memberships",
+        "GET",
     ),
     (
         8085,
-        "Gateway Audit",
+        "Operational audit ingest",
         "control_plane.adapters.providers.http_gateway_audit_api:create_app_from_env",
         "/internal/gateway-audit/events",
         "POST",
@@ -120,9 +119,10 @@ def _env() -> Dict[str, str]:
             "SP2_DBR_ROUTING_READ_BASE_URL": "http://127.0.0.1:8081",
             "SNACKPORTAL_TENANT_SECRET_DIR": os.environ.get("SP2_SMOKE_TENANT_SECRET_DIR", str(_BACKEND / "build" / "_smoke_secrets")),
             "SP2_IMPORT_DIRECTORY_READ_BASE_URL": "http://127.0.0.1:8081",
-            "SP2_GW_AUTH_ROUTER_BASE_URL": "http://127.0.0.1:8082",
-            "SP2_GW_CONTROL_READ_BASE_URL": "http://127.0.0.1:8081",
-            "SP2_GW_DB_ROUTER_BASE_URL": "http://127.0.0.1:8083",
+            # Both PUBLIC edges consume the same IC-005 authenticate base URL; the Startup edge
+            # additionally needs the routing-association read. There is no Gateway selector any
+            # more — every SP2_GW_* name was defined inside the deleted api_gateway package.
+            "SP2_EDGE_AUTH_ROUTER_BASE_URL": "http://127.0.0.1:8082",
         }
     )
     # The live-PostgreSQL harness variable must never double as runtime configuration.
