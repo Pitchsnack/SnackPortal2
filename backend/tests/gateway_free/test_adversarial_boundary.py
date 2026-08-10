@@ -454,6 +454,55 @@ def test_a13b_an_over_bound_field_value_is_refused_after_authentication_with_no_
     assert provider.store(ACME)[ACME_REF]["short_description"] == "acme-private", "no partial write"
 
 
+def test_a13c_a_header_count_beyond_the_bound_is_refused_before_the_handler() -> None:
+    """One of three documented transport bounds an adversarial review found had NO coverage.
+
+    ``public_edge_transport`` documents five request bounds; only the request-target cap and the
+    per-route body budget were tested. A documented bound with no test is a claim, not a control.
+    """
+    edge, provider, auth, _audit = _startup_edge()
+    at_bound = [("Authorization", "Bearer " + ACME_BEARER)] + [(f"X-Pad-{i}", "v") for i in range(60)]
+    over_bound = [("Authorization", "Bearer " + ACME_BEARER)] + [(f"X-Pad-{i}", "v") for i in range(80)]
+    with edge:
+        ok = edge.request_raw("GET", _ACME_TARGET, pairs=at_bound)
+        refused = edge.request_raw("GET", _ACME_TARGET, pairs=over_bound)
+    # POSITIVE CONTROL: the bound is a COUNT, not "large is refused" — 61 headers still serve.
+    assert ok[0] == 200, f"a request under the header-count bound must still be served; got {ok[0]}"
+    assert refused[0] == 413, f"a request over the header-count bound must be refused 413; got {refused[0]}"
+    assert provider.opened == [(ACME, ACME_PRINCIPAL)], "only the accepted request reached a tenant database"
+    assert len(auth.calls) == 1, "the refusal happened BEFORE authentication"
+
+
+def test_a13d_total_header_bytes_beyond_the_bound_are_refused_before_the_handler() -> None:
+    edge, provider, auth, _audit = _startup_edge()
+    # Few headers, large values: this can only trip the BYTE bound, never the count bound.
+    fat = [("Authorization", "Bearer " + ACME_BEARER)] + [(f"X-Big-{i}", "z" * 4000) for i in range(6)]
+    with edge:
+        refused = edge.request_raw("GET", _ACME_TARGET, pairs=fat)
+    assert refused[0] == 413, f"a request over the total-header-byte bound must be refused 413; got {refused[0]}"
+    assert provider.opened == [], "no tenant database may be opened for an over-bound request"
+    assert auth.calls == [], "the refusal happened BEFORE authentication"
+
+
+def test_a13e_a_chunked_transfer_encoding_is_refused_before_the_handler() -> None:
+    """Chunked bodies are never accepted — the bound is a Content-Length the edge can check.
+
+    A streamed body has no declared length, so the per-route body budget cannot be applied to it
+    at all; accepting one would silently bypass every size control the edge advertises.
+    """
+    edge, provider, auth, _audit = _startup_edge()
+    pairs = [
+        ("Authorization", "Bearer " + ACME_BEARER),
+        ("Content-Type", "application/json"),
+        ("Transfer-Encoding", "chunked"),
+    ]
+    with edge:
+        refused = edge.request_raw("PATCH", _ACME_TARGET, pairs=pairs, body=b'{"short_description":"x"}')
+    assert refused[0] == 413, f"a chunked request must be refused 413; got {refused[0]}"
+    assert provider.opened == [], "no tenant database may be opened for a chunked request"
+    assert auth.calls == [], "the refusal happened BEFORE authentication"
+
+
 # ------------------------------------------------------------------------------------------
 # A14 / A15 — missing configuration fails closed
 # ------------------------------------------------------------------------------------------

@@ -103,11 +103,18 @@ GATED_ACTIVATION_SELECTORS = (
 # The isolated smoke / verification map. No standing edge may live here.
 SMOKE_ONLY_PORT_RANGE = range(8080, 8089)
 
+# INVOCATIONS only. `(?<!function )` excludes the helper's own DEFINITION, which naturally carries
+# no -Module argument — without it the strengthened "an unparseable block is a FAILURE" rule below
+# would fire on the definition and mask the check it exists to make.
 _START_EDGE_RE = re.compile(
-    r"Start-StandingEdge\b(?P<body>.*?)(?=\n\s*\n|\nStart-|\Z)",
+    r"(?<!function )Start-StandingEdge\b(?P<body>.*?)(?=\n\s*\n|\nStart-|\Z)",
     re.DOTALL,
 )
-_MODULE_RE = re.compile(r'-Module\s+"([^"]+)"')
+# Every form PowerShell accepts, not just the double-quoted one. A single-quoted or bare
+# -Module argument used to make `_standing_edges` silently SKIP the whole block, so a sixth
+# standing edge — including a resurrected Gateway — would have been invisible to the port
+# census, the retired-module ban and the map-equality check, all of which read that dict.
+_MODULE_RE = re.compile(r"""-Module\s+(?:"([^"]+)"|'([^']+)'|([A-Za-z_][\w.]*))""")
 _PORT_RE = re.compile(r"-Port\s+(\$[A-Za-z_][A-Za-z0-9_]*|\d+)")
 _PORT_CONST_RE = re.compile(r"^\s*\$(PORT_[A-Z_]+)\s*=\s*(\d+)\s*$", re.MULTILINE)
 _FLAG_ARRAY_RE = re.compile(r"\$CANONICAL_UVICORN_FLAGS\s*=\s*@\((?P<items>[^)]*)\)")
@@ -153,11 +160,15 @@ def _standing_edges(text: str) -> Dict[str, int]:
         body = match.group("body")
         module = _MODULE_RE.search(body)
         port = _PORT_RE.search(body)
-        if not module or not port:
-            continue
+        # An unparseable block is a FAILURE, never a skip. Skipping is how a standing edge becomes
+        # invisible to every census built on this dict.
+        assert module and port, (
+            "an unparseable Start-StandingEdge block was found — the standing census must see EVERY "
+            f"edge, so this is a hard failure rather than a silent skip:\n{body.strip()[:400]}"
+        )
         token = port.group(1)
         resolved = consts[token[1:]] if token.startswith("$") else int(token)
-        edges[module.group(1)] = resolved
+        edges[next(g for g in module.groups() if g)] = resolved
     return edges
 
 

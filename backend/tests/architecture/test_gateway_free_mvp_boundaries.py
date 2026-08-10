@@ -856,20 +856,31 @@ def _reachable(root: object, limit: int = 20000) -> list:
         out.append(obj)
         if isinstance(obj, _ATOMIC) or isinstance(obj, type) or type(obj).__name__ == "module":
             continue
+        # A container's CONTENTS are walked — and then the walk CONTINUES into the object itself.
+        # An earlier version `continue`d here, which meant a dict/list/tuple SUBCLASS satisfied the
+        # isinstance check and had its __dict__, its slots, its closure and its class attributes
+        # never read. An independent adversarial review reproduced a full ``ControlPlane`` hidden
+        # that way, with every GF-9 leg green.
         if isinstance(obj, dict):
             stack.extend(list(obj.keys()) + list(obj.values()))
-            continue
-        if isinstance(obj, (list, tuple, set, frozenset)):
+        elif isinstance(obj, (list, tuple, set, frozenset)):
             stack.extend(list(obj))
-            continue
         state = getattr(obj, "__dict__", None)
         if isinstance(state, dict):
             stack.extend(state.values())
-        for slot in getattr(type(obj), "__slots__", ()) or ():
-            try:
-                stack.append(getattr(obj, slot))
-            except AttributeError:
-                pass
+        # The FULL MRO, not `type(obj).__slots__`. Attribute lookup returns the most-derived
+        # class's ``__slots__``, so a derived class declaring its own — even the empty
+        # ``__slots__ = ()`` an ordinary "make this slotted" refactor produces — SHADOWS every
+        # base's slots and hides whatever they hold. Same review, same reproduction.
+        for klass in type(obj).__mro__:
+            slots = klass.__dict__.get("__slots__") or ()
+            if isinstance(slots, str):
+                slots = (slots,)
+            for slot in slots:
+                try:
+                    stack.append(getattr(obj, slot))
+                except AttributeError:
+                    pass
         owner = getattr(obj, "__self__", None)  # a bound method carries the object it came from
         if owner is not None:
             stack.append(owner)
@@ -1073,6 +1084,60 @@ def test_gf9d_the_only_control_db_writer_the_default_posture_retains_is_the_test
     assert writers == ["InMemoryControlStore"], (
         f"the default posture may retain exactly the test-only in-memory store as a writer; got {writers}"
     )
+
+
+def test_gf9_reachability_sees_slotted_bases_and_container_subclasses() -> None:
+    """The two doors an independent adversarial review opened in this walk, held shut.
+
+    Both hid a real ``ControlPlane`` behind an ALLOW-LISTED type name with every GF-9 leg green:
+
+    * a **slotted base** — ``getattr(type(obj), "__slots__", ())`` returns the most-derived
+      class's slots, so a derived ``__slots__ = ()`` shadows the base's and its contents vanish;
+    * a **container subclass** — it satisfies ``isinstance(obj, dict)``, so the old walk extended
+      its contents and then `continue`d, never reading its ``__dict__``.
+
+    This is the same defect CLASS a previous review found as a closure cell. The lesson that keeps
+    being re-learned: a reachability walk must enumerate every state-carrying channel Python has,
+    not the ones the author happened to think of — so each new channel gets a planted probe here.
+    """
+
+    class _Hidden:
+        def provision(self) -> None: ...
+
+    class _SlottedBase:
+        __slots__ = ("_smuggled",)
+
+        def __init__(self, held: object) -> None:
+            self._smuggled = held
+
+    class _DerivedSlotted(_SlottedBase):
+        __slots__ = ()  # shadows the base's __slots__ under normal attribute lookup
+
+    class _DictSubclass(dict):
+        def __init__(self, held: object) -> None:
+            super().__init__()
+            self._smuggled = held
+
+    class _TupleSubclass(tuple):
+        def __new__(cls, held: object) -> "_TupleSubclass":
+            self = super().__new__(cls)
+            self._smuggled = held  # type: ignore[attr-defined]
+            return self
+
+    for label, holder in (
+        ("slotted base", _DerivedSlotted(_Hidden())),
+        ("dict subclass", _DictSubclass(_Hidden())),
+        ("tuple subclass", _TupleSubclass(_Hidden())),
+    ):
+        reached = {type(o).__name__ for o in _reachable(holder)}
+        assert "_Hidden" in reached, f"the walk must see through a {label}; reached {sorted(reached)}"
+
+    # Green control: the walk still terminates and still sees an ordinary attribute.
+    class _Plain:
+        def __init__(self, held: object) -> None:
+            self.held = held
+
+    assert "_Hidden" in {type(o).__name__ for o in _reachable(_Plain(_Hidden()))}
 
 
 def test_gf9_nonvacuity() -> None:

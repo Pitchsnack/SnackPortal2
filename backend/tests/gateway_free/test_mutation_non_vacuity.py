@@ -433,3 +433,68 @@ def test_m12_collapsing_headers_into_a_mapping_makes_the_STRADDLE_CHECK_UNREACHA
     assert breached[0] == 200, "MUTATED: the second asserted tenant vanished and the request was served"
     assert "IsolationAnomaly" not in audit.actions()[len(clean_actions) :], "DETECTOR: the straddle evidence disappeared"
     assert provider.opened == [(ACME, ACME_PRINCIPAL)], "the request proceeded on the first carrier alone"
+
+
+def test_m12b_collapsing_headers_on_the_WORKSPACE_edge_is_ALSO_DETECTED(monkeypatch) -> None:
+    """The same mutation, on the SECOND public edge — because M12 alone did not cover it.
+
+    An independent adversarial review found that the straddle control was mutation-proved on the
+    Startup edge only. Both edges hand the kernel their own ``_raw_headers``, so the defect is
+    per-edge: reintroducing ``dict(request.headers)`` in the Workspace edge would have turned an
+    isolation denial into a served response with no test anywhere going red.
+
+    That is the cost of two public surfaces, stated concretely: every per-edge control needs a
+    per-edge proof, and a mutation suite that covers one of them covers half the system.
+    """
+    import control_plane.adapters.providers.http_public_workspace_edge as ws_module
+    from control_plane.adapters.providers.control_membership_reader import ControlStoreMembershipReader
+    from control_plane.adapters.providers.control_store_factory import SharedControlStoreFactory
+    from control_plane.adapters.providers.http_public_workspace_edge import build_public_workspace_edge_server
+    from control_plane.adapters.providers.in_memory_store import InMemoryControlStore
+    from control_plane.membership import MembershipRegistry
+    from control_plane.records import Role
+
+    store = InMemoryControlStore()
+    MembershipRegistry(store).add_membership(principal_ref=ACME_PRINCIPAL, tenant_id=ACME, role=Role.TENANT_AGENT)
+    boundary, auth, audit = build_boundary()
+    server, base_url = build_public_workspace_edge_server(
+        ControlStoreMembershipReader(SharedControlStoreFactory(store)), boundary, host="127.0.0.1", port=0
+    )
+    pairs = [("Authorization", "Bearer " + ACME_BEARER), ("X-Tenant-Id", ACME), ("X-Tenant-Id", ZETA)]
+    with HostedEdge(server, base_url) as edge:
+        clean = edge.request_raw("GET", "/memberships", pairs=pairs)
+        clean_actions = list(audit.actions())
+        clean_auth_calls = list(auth.calls)
+        monkeypatch.setattr(ws_module, "_raw_headers", lambda request: list(dict(request.headers).items()))
+        breached = edge.request_raw("GET", "/memberships", pairs=pairs)
+
+    assert clean[0] == 403 and clean_actions == ["IsolationAnomaly"], "baseline: the straddle is caught on the Workspace edge too"
+    assert clean_auth_calls == [], "baseline: and caught BEFORE authentication"
+    assert breached[0] == 200, "MUTATED: the second asserted tenant vanished and the memberships request was served"
+    assert "IsolationAnomaly" not in audit.actions()[len(clean_actions) :], "DETECTOR: the straddle evidence disappeared"
+
+
+def test_both_public_edges_hand_the_kernel_RAW_header_pairs() -> None:
+    """The structural half of M12/M12b: neither edge may collapse the wire into a mapping.
+
+    A behavioural mutation proof covers the edges that exist today. This asserts the shape
+    directly, on both, so a THIRD public edge written to the same pattern inherits the check
+    rather than needing someone to remember to add a mutation for it.
+    """
+    import ast
+
+    import control_plane.adapters.providers.http_public_workspace_edge as ws_module
+    import database_router.adapters.providers.http_public_startup_edge as startup_module
+
+    for module in (startup_module, ws_module):
+        source = pathlib.Path(module.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        fn = next((n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "_raw_headers"), None)
+        assert fn is not None, f"{module.__name__} must own a _raw_headers helper"
+        # It must read the ASGI scope's header LIST, not the mapping view.
+        assert "scope" in ast.dump(fn), f"{module.__name__}._raw_headers must read the raw ASGI scope headers"
+        called = {n.func.id for n in ast.walk(fn) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+        assert "dict" not in called, (
+            f"{module.__name__}._raw_headers must not build a dict — a mapping keeps only the FIRST value of a "
+            "repeated header, which is exactly the shape the straddle check exists to catch"
+        )

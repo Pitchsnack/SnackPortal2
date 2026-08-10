@@ -53,7 +53,7 @@ pre-task state.
 | `git merge-base main HEAD` | `cdb46fc9d3b6e12c4926f23f2f6c7a9d7c56a81f` |
 | HEAD **before** this task | `8719f4f3da7db5dffda99a6bca00edd078340d0d` |
 | HEAD **after** this task | `2bdb58768` (this document is committed on top of it) |
-| commits added | **2** — `172edf2d9` *delete the API Gateway completely (zero active residue)* and `2bdb58768` *close the defects an independent adversarial review found* |
+| commits added | **4** — `172edf2d9` *delete the API Gateway completely (zero active residue)* and `2bdb58768` *close the defects an independent adversarial review found*, `c1923d46` *result document*, `e0d1f61` *close the four CONFIRMED verify-phase findings* |
 | working tree | clean |
 
 `8719f4f3` is the reference point used throughout this document: every "before" figure and every
@@ -401,10 +401,11 @@ adversarial verifier instructed to default to REFUTED.
 
 Ten independent skeptics, one per named claim in §16 of the instruction, each told to **refute**
 rather than confirm and each with execution rights (pytest, ruff, mypy, `lint-imports`, clean
-subprocesses) but read-only on tracked files. Nine returned before this document was finalized;
-**43 candidate findings**. I triaged every one myself against the source rather than accepting it.
+subprocesses) but read-only on tracked files. All ten returned, and the automated
+verify pass completed: **49 candidate findings → 39 REFUTED, 6 ALREADY-DISCLOSED, 4 CONFIRMED**
+(§12.4).
 
-### 13.1 What the review could NOT break
+### 12.1 What the review could NOT break
 
 This half matters as much as the findings, and is quoted from the skeptics' own refutations:
 
@@ -429,7 +430,7 @@ This half matters as much as the findings, and is quoted from the skeptics' own 
 * **Every runbook with copy-pasteable Gateway startup carries an accurate withdrawal banner** —
   checked by reading each header directly.
 
-### 13.2 Confirmed findings, all corrected in `2bdb58768`
+### 12.2 Confirmed findings, all corrected in `2bdb58768`
 
 | # | Severity | Finding | Correction |
 |---:|---|---|---|
@@ -452,7 +453,7 @@ This half matters as much as the findings, and is quoted from the skeptics' own 
 | 17 | MINOR | `backend/README.md` still listed `api_gateway/`; the startup runbook's §4 heading still read *"Database Router Dispatch (8083) and Tenant Startup (8084)"* — the exact map-confusion the runbook's own opening warns about | both corrected |
 | 18 | MINOR | The retargeted audit guard's docstring still named a dead selector | corrected |
 
-### 13.3 Findings deliberately NOT "fixed", and why
+### 12.3 Findings deliberately NOT "fixed", and why
 
 Each of these is real. None is a defect this task should patch, and burying them would be worse
 than the finding.
@@ -467,15 +468,39 @@ than the finding.
 | **The loopback allowlist is not consulted on the canonical native startup path** | Pre-existing and already documented: on the native path the **command line** is the only place the bind host is enforced, which is exactly why the canonical-flags guards exist. |
 | **`_jwt_crypto_allowed` also blesses `/adapters/providers/`** | By design — that is the production containment zone. The *test-side* allowance is one exact file, and a skeptic's independent census confirmed exactly one. |
 
-### 13.4 Honest limits of this review
+### 12.4 Verify-phase outcome — the review completed after the first draft of this document
 
-* The tenth skeptic (claim 4, *guards gone vacuous*) and the automated adversarial **verify** pass
-  had not returned when this document was finalized. Three other skeptics reached claim 4's
-  territory independently and all three found the same GF-8 defect, which is the strongest single
-  finding here — but the dedicated pass is incomplete, and every finding above was triaged by me
-  rather than by an independent verifier.
-* No skeptic could execute a `requires_pg` harness (no live-PostgreSQL authority), so nothing here
-  validates the retargeted DDL-012 live proof.
+The automated adversarial **verify** pass (a second skeptic per finding, instructed to default to
+REFUTED) finished after §12.1–12.3 were first written, and it removed the incompleteness caveat this
+section originally carried. Final tally over the ten skeptics:
+
+| Verdict | Count |
+|---|---:|
+| REFUTED | **39** |
+| ALREADY-DISCLOSED | 6 |
+| **CONFIRMED** | **4** |
+| total candidate findings | 49 |
+
+A 39/49 refutation rate is the calibration signal worth reading: the skeptics were not rubber-
+stamping, and the four that survived independent re-derivation are all in the **guard-integrity**
+class — the one §16 singles out as highest-risk. **None is a live exploit**; the shipped composition
+is clean in every case. Each means a guard could be defeated silently. All four are fixed in
+`e0d1f61`, each with an executed proof:
+
+| # | Severity | Confirmed finding | Fix, and how it was proved |
+|---:|---|---|---|
+| C1 | **CRITICAL** | **GF-9's object-graph walk was blind through two doors.** `getattr(type(obj), "__slots__", ())` returns only the MOST-DERIVED class's slots, so a derived `__slots__ = ()` — the ordinary product of a "make this slotted" refactor — shadows a base's and hides whatever it holds. Separately, a `dict`/`list`/`tuple`/`set` **subclass** satisfied the `isinstance` check, had its contents extended, and then `continue`d — its `__dict__`, slots, closure and class attributes never read. The verifier hid a **real `ControlPlane`** behind an allow-listed type name through each door, mutated the real `ControlStoreMembershipReader`, and watched **all five GF-9 legs stay green** in all three postures | the walk now enumerates the **full MRO** for slots and no longer `continue`s out of container instances. **Reproduced against the repair:** the walk goes from 13 objects to 88, sees the smuggled `ControlPlane`, and the capability census fires with the whole provisioning/recovery surface. A new `test_gf9_reachability_sees_slotted_bases_and_container_subclasses` plants all three shapes |
+| C2 | **CRITICAL** | **The straddle control was mutation-proved on the Startup edge only.** Both edges own their own `_raw_headers`, so the defect is per-edge: reintroducing `dict(request.headers)` in the **Workspace** edge would have turned a 403 isolation denial into a served 200 with nothing going red | **M12b** does to the Workspace edge exactly what M12 does to the Startup edge, and a new structural guard asserts *neither* `_raw_headers` builds a `dict` — so a third public edge inherits the check instead of needing someone to remember it |
+| C3 | MAJOR | **Three of five documented transport bounds had zero coverage** — header count, total header bytes, and chunked `Transfer-Encoding`. A documented bound with no test is a claim, not a control | **A13c / A13d / A13e**. A13c carries a positive control (61 headers still serve) so it pins a *count*, not "large is refused"; A13d uses few-but-fat headers so only the byte bound can trip; all three assert `provider.opened == []` and `auth.calls == []` — refused **before** authentication |
+| C4 | MINOR | **The launcher port census silently DROPPED any `Start-StandingEdge` whose `-Module` used single quotes**, so a sixth standing edge — including a resurrected Gateway on 8820 — was invisible to the port map, the retired-module ban and the map-equality check, all of which read that dict | the matcher accepts every form PowerShell takes, and an unparseable block is now a **hard failure, never a skip**. **Proved by mutation:** a single-quoted rogue Gateway edge on 8820 now fails two guards; before, it passed silently |
+
+**One lesson worth carrying forward.** C1 is the *third* time this codebase has had a capability
+smuggled past an object-graph walk — a closure cell the previous review found, and now a slotted
+base and a container subclass. The pattern is not "someone forgot a case"; it is that a reachability
+walk must enumerate **every** state-carrying channel Python has, and a deny-list of the ones the
+author thought of will keep losing. Each newly-found channel now has a planted probe in
+`test_gf9_reachability_sees_slotted_bases_and_container_subclasses`, so the next one is added to a
+list that already exists rather than rediscovered by a reviewer.
 
 ---
 
@@ -483,12 +508,12 @@ than the finding.
 
 | Gate | Command | Result | Exit |
 |---|---|---|---|
-| full suite | `pytest -q` | **1782 passed**, 0 failed (baseline 2163 → −381, all deleted Gateway coverage) | 0 |
-| architecture | `pytest tests/architecture -q` | **964 passed** | 0 |
-| Gateway-free | `pytest tests/gateway_free -q` | **78 passed** | 0 |
+| full suite | `pytest -q` | **1788 passed**, 0 failed (baseline 2163 → −375, all deleted Gateway coverage) | 0 |
+| architecture | `pytest tests/architecture -q` | **965 passed** | 0 |
+| Gateway-free | `pytest tests/gateway_free -q` | **83 passed** | 0 |
 | Workspace privilege narrowing | `pytest tests/gateway_free/test_workspace_privilege_narrowing.py -q` | **14 passed** | 0 |
-| mutation / non-vacuity | `pytest tests/gateway_free/test_mutation_non_vacuity.py -q` | **13 passed** | 0 |
-| adversarial boundary | `pytest tests/gateway_free/test_adversarial_boundary.py -q` | **40 passed** | 0 |
+| mutation / non-vacuity | `pytest tests/gateway_free/test_mutation_non_vacuity.py -q` | **15 passed** | 0 |
+| adversarial boundary | `pytest tests/gateway_free/test_adversarial_boundary.py -q` | **43 passed** | 0 |
 | new public-edge guards | `pytest tests/architecture/test_public_edge_*.py -q` | **20 passed** | 0 |
 | lint | `ruff check .` | All checks passed | 0 |
 | format | `ruff format --check .` | 345 files already formatted | 0 |
@@ -503,11 +528,11 @@ than the finding.
 all inside the git-ignored `backend/.venv` third-party packages — so the clean commit-range result is
 a real result, not a silent no-op.
 
-**Test-count movement, stated honestly.** 2163 → 1782 is **−381**, and 1063 → 964 architecture tests
-is **−99**. That is not a regression in coverage of the surviving system: 262 of those tests were
+**Test-count movement, stated honestly.** 2163 → 1788 is **−375**, and 1063 → 965 architecture tests
+is **−98**. That is not a regression in coverage of the surviving system: 262 of those tests were
 `tests/api_gateway/**` (a deleted component), and the rest were guards whose subject no longer
-exists. **+23 tests were added** (two new public-edge guards plus three guards the adversarial review
-required), and 14 guards were re-aimed rather than dropped. Coverage of what remains went up, not down; the total went down because the
+exists. **+29 tests were added** (two new public-edge guards, three guards the first adversarial round
+required, and six the verify phase required), and 14 guards were re-aimed rather than dropped. Coverage of what remains went up, not down; the total went down because the
 system got smaller.
 
 ---
