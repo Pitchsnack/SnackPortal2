@@ -40,9 +40,11 @@ from gateway_free._fakes import (  # noqa: E402
     decode,
 )
 
+from control_plane.adapters.providers.control_membership_reader import ControlStoreMembershipReader  # noqa: E402
+from control_plane.adapters.providers.control_store_factory import SharedControlStoreFactory  # noqa: E402
 from control_plane.adapters.providers.http_public_workspace_edge import build_public_workspace_edge_server  # noqa: E402
 from control_plane.adapters.providers.in_memory_store import InMemoryControlStore  # noqa: E402
-from control_plane.main import ControlPlane  # noqa: E402
+from control_plane.membership import MembershipRegistry  # noqa: E402
 from control_plane.records import Role  # noqa: E402
 from database_router.adapters.providers.http_public_startup_edge import build_public_startup_edge_server  # noqa: E402
 from database_router.adapters.providers.http_tenant_startup_api import build_tenant_startup_server  # noqa: E402
@@ -69,13 +71,21 @@ def _startup_edge(allowed_origins=()):
 
 
 def _workspace_edge(memberships=((ACME_PRINCIPAL, ACME, Role.TENANT_AGENT),), allowed_origins=()):
-    """A composed, hosted public workspace edge over a REAL in-memory ControlStore."""
-    control_plane = ControlPlane(store=InMemoryControlStore())
+    """A composed, hosted public workspace edge over a REAL in-memory ControlStore.
+
+    The seeding path (``MembershipRegistry``) is deliberately kept OUT of what the edge is
+    handed: the store is written here, then only a ``ControlStoreMembershipReader`` over it is
+    passed in. That mirrors production exactly — the edge reads Control-DB rows it has no way
+    to write — so a test could not accidentally prove the narrowing while the edge still held
+    a writer.
+    """
+    store = InMemoryControlStore()
+    registry = MembershipRegistry(store)
     for principal_ref, tenant_id, role in memberships:
-        control_plane.membership.add_membership(principal_ref=principal_ref, tenant_id=tenant_id, role=role)
+        registry.add_membership(principal_ref=principal_ref, tenant_id=tenant_id, role=role)
     boundary, auth, audit = build_boundary()
     server, base_url = build_public_workspace_edge_server(
-        control_plane,
+        ControlStoreMembershipReader(SharedControlStoreFactory(store)),
         boundary,
         host="127.0.0.1",
         port=0,

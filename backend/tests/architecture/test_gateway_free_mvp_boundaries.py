@@ -18,7 +18,9 @@ The invariants, in order of how much they matter:
 * **GF-5** the denial vocabulary and the audit action vocabulary are unchanged — no new
   ``public_code``, no new, renamed, or re-homed audit class;
 * **GF-6** the documented Gateway-free topology contains no Gateway edge, no port 8820, and no
-  internal tenant-Startup envelope edge.
+  internal tenant-Startup envelope edge;
+* **GF-9** the public workspace edge holds ONE read capability and nothing else — proved by
+  source, by parameter type, and by walking the object graph a composed edge actually holds.
 
 Pure stdlib; runs under pytest and standalone.
 """
@@ -26,6 +28,7 @@ Pure stdlib; runs under pytest and standalone.
 from __future__ import annotations
 
 import ast
+import os
 import pathlib
 import subprocess
 import sys
@@ -158,11 +161,13 @@ def test_gf1b_composing_both_mvp_edges_never_loads_api_gateway() -> None:
         "from database_router.tenant_startup_ops import TenantStartupOperations\n"
         "from database_router.adapters.providers.http_public_startup_edge import make_app as startup_app\n"
         "from control_plane.adapters.providers.http_public_workspace_edge import make_app as workspace_app\n"
+        "from control_plane.adapters.providers.control_membership_reader import ControlStoreMembershipReader\n"
+        "from control_plane.adapters.providers.control_store_factory import SharedControlStoreFactory\n"
         "from control_plane.adapters.providers.in_memory_store import InMemoryControlStore\n"
-        "from control_plane.main import ControlPlane\n"
         "boundary, _a, _b = build_boundary()\n"
         "startup_app(TenantStartupOperations(TwoTenantProvider()), boundary, ())\n"
-        "workspace_app(ControlPlane(store=InMemoryControlStore()), boundary, ())\n"
+        "reader = ControlStoreMembershipReader(SharedControlStoreFactory(InMemoryControlStore()))\n"
+        "workspace_app(reader, boundary, ())\n"
         "loaded = sorted(m for m in sys.modules if m.split('.')[0] == 'api_gateway')\n"
         "print('API_GATEWAY_MODULES=' + repr(loaded))\n"
     )
@@ -554,21 +559,25 @@ def test_gf8b_KNOWN_REGRESSION_the_gateway_free_public_tier_holds_database_crede
     """The dominant security consequence of removing the Gateway. Pinned, not buried.
 
     Because each public edge executes its own data access IN-PROCESS — the very thing that
-    removes the hop — the internet-facing processes are now composed INSIDE the credential-
-    holding, driver-permitted zones:
+    removes the hop — the internet-facing processes are composed INSIDE the credential-holding,
+    driver-permitted zones. The Gateway was not only a request boundary, it was a PRIVILEGE
+    boundary: a public tier that provably could not reach a database. Removing it collapses that
+    tier. Nothing here says the trade is wrong — plenty of systems let a service expose its own
+    API — but it is a decision, it is Dan's to make, and this test exists so it cannot be made
+    silently.
 
-    * the tenant Startup edge's composition reaches ``build_router_from_env``, which wires
-      ``EnvTenantSecretStore`` (every tenant's database credential) and ``PsycopgConnectionFactory``;
-    * the workspace edge's composition builds the whole ``ControlPlane``, which carries the
-      Control-DB store, the provisioning operator and the recovery/compensation services — to
-      serve one read-only route.
+    **Scope note (Workspace privilege narrowing).** This test originally pinned TWO instances of
+    the regression. The workspace half asserted that the workspace edge is handed the whole
+    ``ControlPlane`` — a defect, deliberately enshrined so it could not be lost. That defect has
+    now been CORRECTED, so its assertion is inverted and moved to the GF-9 family below, which
+    proves the narrowing positively and structurally. Nothing is weakened: a stronger, executed
+    check replaced a source-text characterisation, and the guard's alerting purpose is preserved
+    — GF-9 fails the moment the workspace edge is handed a broad object again.
 
-    So the Gateway was not only a request boundary, it was a PRIVILEGE boundary: a public tier
-    that provably could not reach a database. Removing it collapses that tier. Nothing here says
-    that trade is wrong — plenty of systems let a service expose its own API — but it is a
-    decision, it is Dan's to make, and this test exists so it cannot be made silently.
-
-    If this test ever fails, the posture has CHANGED and the result document's risk section is
+    What remains here is the Startup half, UNCHANGED and still true: that edge's composition
+    reaches ``build_router_from_env``, which wires ``EnvTenantSecretStore`` (every tenant's
+    database credential) and ``PsycopgConnectionFactory``. It is explicitly out of scope for the
+    workspace narrowing, and if it ever stops holding, the result document's risk section is
     stale — which is exactly when someone should re-read it.
     """
     dbr_main = _text(_BACKEND / "database_router" / "main.py")
@@ -579,16 +588,8 @@ def test_gf8b_KNOWN_REGRESSION_the_gateway_free_public_tier_holds_database_crede
             f"the public Startup edge's composition root still wires {credential_bearing} — the public tier holds tenant credentials"
         )
 
-    # The workspace edge is handed the whole ControlPlane. Asserted on the AST of the
-    # composition function itself, so this cannot pass on a docstring or a stale comment.
-    cp_tree = ast.parse(_text(_BACKEND / "control_plane" / "main.py"))
-    deps_fn = next(
-        node for node in ast.walk(cp_tree) if isinstance(node, ast.FunctionDef) and node.name == "build_public_workspace_edge_deps_from_env"
-    )
-    called = {node.func.id for node in ast.walk(deps_fn) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
-    assert "create_app" in called, "the workspace edge is handed the full ControlPlane, not a narrowed store accessor"
-
-    # And the full ControlPlane really does carry the privileged collaborators.
+    # The full ControlPlane really does carry the privileged collaborators — which is WHY the
+    # workspace edge must not be handed one. Retained as the statement of what GF-9 excludes.
     from control_plane.main import ControlPlane
 
     assigned = {
@@ -603,8 +604,334 @@ def test_gf8b_KNOWN_REGRESSION_the_gateway_free_public_tier_holds_database_crede
         if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "self"
     }
     for privileged in ("provisioning", "recovery", "secret_store", "store_factory"):
-        assert privileged in assigned, f"ControlPlane composes {privileged!r}, and that object is what the public edge receives"
+        assert privileged in assigned, f"ControlPlane composes {privileged!r} — the object GF-9 keeps out of the public workspace edge"
     assert ControlPlane is not None  # imported to prove the module composes, not merely parses
+
+
+# ------------------------------------------------------------------------------------------
+# GF-9 — the PUBLIC WORKSPACE EDGE holds one read capability and nothing else
+# ------------------------------------------------------------------------------------------
+#
+# GF-8b above characterises the privilege collapse the Gateway removal causes. GF-9 is the
+# correction for the workspace half of it, and it is asserted three ways because each way alone
+# has a known blind spot:
+#
+#   * by SOURCE   (GF-9a) — the composition root no longer builds a ControlPlane. Cheap and
+#     readable, but an AST call-name check can be satisfied while the posture is unchanged
+#     (call ``create_app()`` under another name, or extract an accessor from it and hand that
+#     over). So this is the weakest leg and is never relied on alone.
+#   * by TYPE     (GF-9b) — the edge's own signature declares the narrow port. This is what
+#     makes the narrowing survive an unrelated future edit: a handler cannot reach for a
+#     capability its parameter type does not declare without widening the signature first.
+#   * by EXECUTION (GF-9c/GF-9d) — the composition is RUN and the resulting object graph is
+#     walked. This is the leg that cannot be talked around: it inspects what the process
+#     actually holds, not what the source appears to say.
+#
+# HONEST LIMIT, stated here so the guard is never read as proving more than it does: this proves
+# OBJECT-GRAPH narrowing, not PROCESS narrowing. ``control_plane.main`` stays importable in the
+# workspace process, so code already inside that process can still rebuild a plane; and whichever
+# ``SNACKPORTAL_SECRET_*`` values the process is started with remain resolvable by anything that
+# constructs a wide enough allow-list. Narrowing the process is an environment/credential change,
+# NOT a code change, and is deliberately out of this guard's scope.
+
+# The exact capability TYPES the public workspace process must not hold, discovered from
+# control_plane/main.py's own composition (both the in-memory and the postgres variants of each).
+_FORBIDDEN_CAPABILITY_TYPES = frozenset(
+    {
+        "ControlPlane",
+        # provisioning — CREATE DATABASE
+        "InMemoryProvisioningOperator",
+        "PostgresProvisioningOperator",
+        # lifecycle mutation gate (CAS + audit + ledger writes); never posture-guarded
+        "ProvisioningVerificationService",
+        "_LazyControlEvidenceGate",
+        # schema application / migration
+        "InMemoryTenantSchemaApplicator",
+        "PostgresTenantSchemaApplicator",
+        # onboarding
+        "OnboardingOrchestrator",
+        "_MixedPostureOnboardingGuard",
+        # recovery / compensation — DROP DATABASE — and orphan scanning
+        "RecoveryCompensationService",
+        "OrphanScanService",
+        "_MixedPostureRecoveryGuard",
+        "InMemoryRecoveryInspection",
+        "PostgresRecoveryInspection",
+        # distinctness evidence ledger
+        "InMemoryDistinctnessLedger",
+        "PostgresDistinctnessLedger",
+        # mutation-oriented Control-Plane services
+        "TenantRegistry",
+        "MembershipRegistry",
+        "GlobalDirectory",
+        "FederationStore",
+        "ControlPlaneAudit",
+        "BootstrapController",
+        # the tenant-DSN resolver (every tenant database credential)
+        "EnvTenantDsnSecretStore",
+    }
+)
+
+# The exact capability METHODS, by name, from the classes above.
+_FORBIDDEN_CAPABILITY_METHODS = frozenset(
+    {
+        "provision",
+        "deprovision",
+        "deprovision_tenant_database",
+        "apply_schema",
+        "onboard",
+        "recover",
+        "reassociate",
+        "disable_routing",
+        "scan_for_orphans",
+    }
+)
+
+# The Control-DB WRITE surface of the ControlStore port.
+_CONTROL_STORE_WRITE_METHODS = frozenset(
+    {
+        "put_tenant",
+        "compare_and_swap_tenant",
+        "put_membership",
+        "put_federation",
+        "put_directory_record",
+        "append_audit",
+    }
+)
+
+_ATOMIC = (str, bytes, bytearray, int, float, complex, bool, type(None))
+
+
+def _reachable(root: object, limit: int = 20000) -> list:
+    """Every object reachable from ``root`` by attribute / container traversal.
+
+    Deliberately traverses PRIVATE attributes and bound-method owners: an object hidden behind
+    a leading underscore is still held by the process, and "we only call the safe method" is
+    exactly the reasoning this guard exists to refuse. Classes and modules are traversal STOPS
+    — following them would walk the entire interpreter and prove nothing about this composition.
+    """
+    seen: set = set()
+    out: list = []
+    stack = [root]
+    while stack and len(out) < limit:
+        obj = stack.pop()
+        if id(obj) in seen:
+            continue
+        seen.add(id(obj))
+        out.append(obj)
+        if isinstance(obj, _ATOMIC) or isinstance(obj, type) or type(obj).__name__ == "module":
+            continue
+        if isinstance(obj, dict):
+            stack.extend(list(obj.keys()) + list(obj.values()))
+            continue
+        if isinstance(obj, (list, tuple, set, frozenset)):
+            stack.extend(list(obj))
+            continue
+        state = getattr(obj, "__dict__", None)
+        if isinstance(state, dict):
+            stack.extend(state.values())
+        for slot in getattr(type(obj), "__slots__", ()) or ():
+            try:
+                stack.append(getattr(obj, slot))
+            except AttributeError:
+                pass
+        owner = getattr(obj, "__self__", None)  # a bound method carries the object it came from
+        if owner is not None:
+            stack.append(owner)
+    return out
+
+
+def _capability_offences(root: object, *, include_store_writes: bool) -> dict:
+    """The privilege verdict on one composed object graph."""
+    objects = _reachable(root)
+    methods = set(_FORBIDDEN_CAPABILITY_METHODS)
+    if include_store_writes:
+        methods |= _CONTROL_STORE_WRITE_METHODS
+    return {
+        "types": sorted({type(obj).__name__ for obj in objects} & _FORBIDDEN_CAPABILITY_TYPES),
+        "methods": sorted({f"{type(obj).__name__}.{name}" for obj in objects for name in methods if hasattr(obj, name)}),
+        "admin_refs": sorted({obj for obj in objects if isinstance(obj, str) and "provisioning-admin" in obj}),
+    }
+
+
+def _composed_workspace_deps(control_store: str) -> tuple:
+    """Run the REAL env composition for the public workspace edge and return its deps.
+
+    Inert by construction: both transport clients are lazy, both store factories are
+    lazy-connect, and no bind knob is read — so nothing is dialled, connected, or bound. The
+    Auth Router URL is an RFC 2606 reserved host, so even a future accidental probe could not
+    reach a standing service. Env is saved and restored by the caller.
+    """
+    import control_plane.main as cp_main
+
+    deps = cp_main.build_public_workspace_edge_deps_from_env()
+    assert deps is not None, f"the workspace composition must be ACTIVE for this probe (SP2_CP_CONTROL_STORE={control_store!r})"
+    return deps
+
+
+def _with_workspace_env(control_store: str, fn):
+    """Run ``fn`` under the workspace-edge composition env, restoring every variable after."""
+    import control_plane.main as cp_main
+
+    names = (
+        cp_main.SP2_EDGE_AUTH_ROUTER_BASE_URL,
+        cp_main.SP2_EDGE_AUDIT_SINK_BASE_URL,
+        cp_main.SP2_EDGE_ALLOWED_ORIGINS,
+        cp_main.CONTROL_STORE_ENV,
+        cp_main.PROVISIONING_ADAPTER_ENV,
+        cp_main.TENANT_SCHEMA_APPLICATOR_ENV,
+        cp_main.DISTINCTNESS_LEDGER_ENV,
+    )
+    saved = {name: os.environ.get(name) for name in names}
+    try:
+        for name in names:
+            os.environ.pop(name, None)
+        # RFC 2606 reserved host: structurally valid for the selector and it can never resolve.
+        os.environ[cp_main.SP2_EDGE_AUTH_ROUTER_BASE_URL] = "http://auth.invalid"
+        if control_store:
+            os.environ[cp_main.CONTROL_STORE_ENV] = control_store
+        return fn()
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+def test_gf9a_the_workspace_composition_root_builds_no_control_plane() -> None:
+    """SOURCE leg: the composition function neither calls ``create_app`` nor names ``ControlPlane``.
+
+    Asserted on the AST of the two functions themselves, so a docstring or a stale comment
+    cannot satisfy it. This is the weakest of the three legs by design — see the family note
+    above — and GF-9c is what actually settles the question.
+    """
+    cp_tree = ast.parse(_text(_BACKEND / "control_plane" / "main.py"))
+    for fn_name in ("build_public_workspace_edge_deps_from_env", "build_workspace_membership_reader_from_env"):
+        fn = next(node for node in ast.walk(cp_tree) if isinstance(node, ast.FunctionDef) and node.name == fn_name)
+        called = {node.func.id for node in ast.walk(fn) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
+        assert "create_app" not in called, f"{fn_name} must not build a ControlPlane for the public workspace edge"
+        assert "ControlPlane" not in called, f"{fn_name} must not construct a ControlPlane directly"
+        docs = _docstring_ids(fn)
+        names = {n.id for n in ast.walk(fn) if isinstance(n, ast.Name)} | {
+            n.value for n in ast.walk(fn) if isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in docs
+        }
+        assert "ControlPlane" not in names, f"{fn_name} must not reference ControlPlane in executable code"
+
+
+def test_gf9b_the_workspace_edge_declares_the_narrow_read_port_as_its_dependency() -> None:
+    """TYPE leg: the edge's public constructors are ANNOTATED to the one-method read port.
+
+    An AST call-name check (GF-9a) can be satisfied without the posture changing; a parameter
+    TYPE cannot. This is what stops a future handler quietly reaching for a privileged method —
+    it would first have to widen a signature that this guard reads.
+    """
+    tree = ast.parse(_text(_WORKSPACE_EDGE))
+    for fn_name in ("make_app", "build_public_workspace_edge_server"):
+        fn = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == fn_name)
+        first = fn.args.args[0]
+        assert first.annotation is not None, f"{fn_name}'s first parameter must be explicitly typed"
+        rendered = ast.unparse(first.annotation).strip("\"'")
+        assert rendered == "WorkspaceMembershipReadPort", (
+            f"{fn_name} must declare the narrow read port as its Control-Plane dependency; got {rendered!r}"
+        )
+    # And the narrow port really is narrow: exactly ONE abstract method.
+    from control_plane.ports import WorkspaceMembershipReadPort
+
+    abstracts = sorted(getattr(WorkspaceMembershipReadPort, "__abstractmethods__", frozenset()))
+    assert abstracts == ["memberships_for_principal"], f"the read port must declare exactly one operation; got {abstracts}"
+    own = sorted(n for n, v in vars(WorkspaceMembershipReadPort).items() if callable(v) and not n.startswith("_"))
+    assert own == ["memberships_for_principal"], f"the read port must define no other method; got {own}"
+
+
+def test_gf9c_the_composed_workspace_edge_holds_no_privileged_capability() -> None:
+    """EXECUTION leg: compose for real, then walk the object graph the process would hold.
+
+    Run under BOTH store postures, because they compose different factories: the durable one
+    retains no store at all (it issues a fresh one per unit of work), the test-only in-memory one
+    retains the process-local store. Under the durable posture the graph must therefore contain
+    no Control-DB WRITE method either — that is the posture that matters for privilege.
+    """
+    durable = _with_workspace_env(
+        "postgres",
+        lambda: _capability_offences(_composed_workspace_deps("postgres"), include_store_writes=True),
+    )
+    assert durable["types"] == [], f"durable workspace composition holds a privileged capability object: {durable['types']}"
+    assert durable["methods"] == [], f"durable workspace composition exposes a privileged/mutating method: {durable['methods']}"
+    assert durable["admin_refs"] == [], f"durable workspace composition carries a provisioning-admin reference: {durable['admin_refs']}"
+
+    default = _with_workspace_env(
+        "",
+        lambda: _capability_offences(_composed_workspace_deps(""), include_store_writes=False),
+    )
+    assert default["types"] == [], f"default workspace composition holds a privileged capability object: {default['types']}"
+    assert default["methods"] == [], f"default workspace composition exposes a privileged method: {default['methods']}"
+    assert default["admin_refs"] == [], f"default workspace composition carries a provisioning-admin reference: {default['admin_refs']}"
+
+
+def test_gf9d_the_only_control_db_writer_the_default_posture_retains_is_the_test_only_store() -> None:
+    """The ONE documented exception, pinned so it can never quietly become something else.
+
+    ``SharedControlStoreFactory`` (the UNSET/test-only posture) retains the process-local
+    ``InMemoryControlStore``, which carries the whole ``ControlStore`` port — writes included —
+    because a factory that yields a store must be able to reach one. That is a property of the
+    in-memory test double, not of the durable path: ``PostgresControlStoreFactory`` retains only
+    a secret reference and a resolver, which is why GF-9c can demand zero writers there.
+
+    This test states the exception exactly. If the durable posture ever starts retaining a
+    writer, GF-9c fails; if the default posture starts retaining a DIFFERENT writer, this fails.
+    """
+    writers = _with_workspace_env(
+        "",
+        lambda: sorted(
+            {
+                type(obj).__name__
+                for obj in _reachable(_composed_workspace_deps(""))
+                if any(hasattr(obj, name) for name in _CONTROL_STORE_WRITE_METHODS)
+            }
+        ),
+    )
+    assert writers == ["InMemoryControlStore"], (
+        f"the default posture may retain exactly the test-only in-memory store as a writer; got {writers}"
+    )
+
+
+def test_gf9_nonvacuity() -> None:
+    """The probes must FLAG a real ControlPlane — otherwise GF-9c proves nothing.
+
+    A synthetic, controlled forbidden dependency: the very object the narrowing removed is
+    dropped into a deps-shaped tuple and run through the SAME predicate the guard uses. No
+    source is modified and nothing is left behind.
+    """
+    from control_plane.adapters.providers.in_memory_store import InMemoryControlStore
+    from control_plane.main import ControlPlane
+
+    synthetic = (ControlPlane(store=InMemoryControlStore()), object(), ())
+    offences = _capability_offences(synthetic, include_store_writes=True)
+    assert "ControlPlane" in offences["types"], "the type probe must flag an injected ControlPlane"
+    for expected in ("OnboardingOrchestrator", "RecoveryCompensationService", "OrphanScanService", "TenantRegistry"):
+        assert expected in offences["types"], f"the type probe must reach {expected} through the ControlPlane"
+    for verb in ("onboard", "deprovision_tenant_database", "scan_for_orphans", "provision"):
+        assert any(entry.endswith("." + verb) for entry in offences["methods"]), f"the method probe must flag {verb!r}"
+    assert any(name.endswith(".put_tenant") for name in offences["methods"]), "the write probe must flag put_tenant"
+
+    # The signature probe must equally reject a widened annotation.
+    bad = ast.parse("def make_app(control_plane: 'ControlPlane', boundary, origins=()): ...")
+    first = next(n for n in ast.walk(bad) if isinstance(n, ast.FunctionDef)).args.args[0]
+    assert ast.unparse(first.annotation).strip("\"'") != "WorkspaceMembershipReadPort", "the signature probe must reject a broad annotation"
+
+    # And the reachability walk must actually traverse private attributes and bound methods.
+    class _Hidden:
+        def __init__(self) -> None:
+            self._secret = ControlPlane(store=InMemoryControlStore())
+
+    assert "ControlPlane" in _capability_offences(_Hidden(), include_store_writes=False)["types"], (
+        "a capability hidden behind a private attribute must still be found"
+    )
+    bound = ControlPlane(store=InMemoryControlStore()).control_store_unit_of_work
+    assert "ControlPlane" in _capability_offences(bound, include_store_writes=False)["types"], (
+        "a capability reachable through a bound method's owner must still be found"
+    )
 
 
 # ------------------------------------------------------------------------------------------

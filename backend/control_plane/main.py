@@ -51,7 +51,7 @@ from .distinctness import (
 from .federation import FederationStore
 from .membership import MembershipRegistry
 from .onboarding import OnboardingOrchestrator, tenant_id_from_dsn_ref
-from .ports import ControlStore
+from .ports import ControlStore, WorkspaceMembershipReadPort
 from .provisioning import (
     InMemoryProvisioningOperator,
     ProvisioningError,
@@ -155,6 +155,84 @@ _LIVE_SELECTOR_ENVS: Tuple[str, str, str] = (
     TENANT_SCHEMA_APPLICATOR_ENV,
     DISTINCTNESS_LEDGER_ENV,
 )
+
+
+def selector_value(env_name: str) -> str:
+    """One selector's effective value — normalized BYTE-EQUAL to the builders (07D-2a R1-10).
+
+    Module-level so BOTH composition paths share one normalization: the full ``ControlPlane``
+    (via ``ControlPlane._selector_value``, which delegates here) and the narrow workspace-edge
+    membership-read composition, which builds no ``ControlPlane`` at all. Two copies of this
+    rule would be two chances for ``'  IN_MEMORY  '`` to classify differently on two paths.
+
+    See ``ControlPlane._selector_value`` for the ONE deliberate divergence from
+    ``control_store_selector`` (a SET-but-blank ``SP2_CP_CONTROL_STORE`` classifies as
+    ``in_memory`` here, because this function only decides whether the four selectors are MIXED).
+    """
+    return (os.environ.get(env_name) or "in_memory").strip().lower()
+
+
+def check_selector_coherence() -> None:
+    """PRD 07D-2a selector-coherence matrix (AT-07D1-9) — fail closed, env values only.
+
+    Module-level so the narrow workspace-edge composition keeps this gate WITHOUT constructing a
+    ``ControlPlane``. Dropping it on the narrow path would have been a silent behaviour change:
+    an incoherent selector set used to refuse to compose the public workspace edge, and it must
+    still refuse. Reads env only, performs no I/O, and composes nothing — a pure gate, so keeping
+    it costs the narrowed edge no capability whatsoever.
+
+    RULE 1: 'postgres' on ANY live-side selector (provisioning / schema applicator / distinctness
+    ledger) requires ALL FOUR selectors (incl. the control store) to be 'postgres'; any mix raises
+    ValueError. RULE 2: control-store-standalone 'postgres' stays ALLOWED (the live-proven B-7B
+    durable audit/registry posture — creates nothing physical). RULE 3: all-in_memory and
+    all-postgres are allowed.
+    """
+    selectors = (CONTROL_STORE_ENV, *_LIVE_SELECTOR_ENVS)
+    values = {name: selector_value(name) for name in selectors}
+    live = [name for name in _LIVE_SELECTOR_ENVS if values[name] == "postgres"]
+    if live and any(values[name] != "postgres" for name in selectors):
+        mixed = ", ".join(f"{name}={values[name]!r}" for name in selectors)
+        raise ValueError(
+            "incoherent selector combination (PRD 07D-2a RULE 1): selecting 'postgres' for "
+            "provisioning, the tenant schema applicator, or the distinctness ledger requires "
+            f"ALL FOUR selectors to be 'postgres' — got {mixed}. Half-live compositions "
+            "manufacture orphans or record fabricated evidence (fail closed)."
+        )
+
+
+def control_store_secret_binding() -> Tuple[EnvReferenceSecretStore, SecretRef]:
+    """The Control-DB DSN secret binding (D-14; PRD 06 B-7B): resolver + reference, no literal.
+
+    Module-level so the narrow workspace-edge composition resolves the SAME Control-DB reference
+    as the full plane without constructing one. The allow-list is widened for the control-store
+    ref ONLY — the provisioning-admin reference (``PROVISIONING_ADMIN_DSN_REF``) is deliberately
+    NOT in it, so a store built from this binding cannot resolve an admin DSN even if something
+    asked it to.
+    """
+    store_ref = (os.environ.get(CONTROL_STORE_DSN_REF_ENV) or DEFAULT_CONTROL_STORE_DSN_REF).strip()
+    ref = SecretRef(store_ref=store_ref, version="1")
+    # Widen the allow-list for the control-store ref ONLY (default trust-anchor-only preserved
+    # everywhere else). Without this, EnvReferenceSecretStore.resolve() raises PermissionError.
+    secrets = EnvReferenceSecretStore(allowed=frozenset({*DEFAULT_ALLOWED, store_ref}))
+    return secrets, ref
+
+
+def build_control_store_factory_from_env() -> "SharedControlStoreFactory | PostgresControlStoreFactory":
+    """Build ONLY the per-unit-of-work ControlStore factory (PRD 07D-3b), no plane around it.
+
+    Byte-for-byte the same selection ``ControlPlane._build_store_factory(explicit_store=False)``
+    makes — the in-memory default wraps ONE process-local store (its state IS the instance, so
+    every unit of work must see the same object); ``postgres`` issues a FRESH lazily-connecting
+    durable store per unit of work over the shared control-store secret binding. Construction
+    performs no I/O. Any other value raises (fail closed; no silent fallback).
+    """
+    kind = control_store_selector()
+    if kind == "in_memory":
+        return SharedControlStoreFactory(InMemoryControlStore(schema_version=1))
+    if kind == "postgres":
+        control_store_secrets, ref = control_store_secret_binding()
+        return PostgresControlStoreFactory(secrets=control_store_secrets, ref=ref)
+    raise ValueError(f"unsupported {CONTROL_STORE_ENV}={kind!r}; expected 'in_memory' or 'postgres'")
 
 
 def _proven_control_evidence(evidence: Optional[DistinctnessEvidence]) -> Optional[DistinctnessEvidence]:
@@ -525,32 +603,22 @@ class ControlPlane:
         ``_build_store`` / ``_build_store_factory``. Both branches still fail closed: blank +
         live-side ``postgres`` raises RULE 1 here (before any builder runs), and blank + a
         non-postgres live side raises in the builder. The divergence cannot produce a served,
-        silently non-durable store."""
-        return (os.environ.get(env_name) or "in_memory").strip().lower()
+        silently non-durable store.
+
+        Delegates to the module-level ``selector_value`` so the narrow workspace-edge composition
+        (which builds no ``ControlPlane``) normalizes selectors identically."""
+        return selector_value(env_name)
 
     def _check_selector_coherence(self) -> None:
         """PRD 07D-2a selector-coherence matrix (AT-07D1-9) — fail closed at construction.
 
-        RULE 1: 'postgres' on ANY live-side selector (provisioning / schema applicator /
-        distinctness ledger) requires ALL FOUR selectors (incl. the control store) to be
-        'postgres'; any mix raises ValueError. RULE 2: control-store-standalone 'postgres' stays
-        ALLOWED (the live-proven B-7B durable audit/registry posture — creates nothing physical;
-        see the 07D-2a documented residual). RULE 3: all-in_memory and all-postgres are allowed.
-        Reads the four ENV VALUES ONLY (never the effective store object — the explicit ``store=``
-        constructor param remains a deliberate bypass used by the B-7B selector tests). Performs
-        no I/O; unknown selector tokens are left to the builders' existing per-selector
-        fail-closed ValueError (the outcome is ValueError either way)."""
-        selectors = (CONTROL_STORE_ENV, *_LIVE_SELECTOR_ENVS)
-        values = {name: self._selector_value(name) for name in selectors}
-        live = [name for name in _LIVE_SELECTOR_ENVS if values[name] == "postgres"]
-        if live and any(values[name] != "postgres" for name in selectors):
-            mixed = ", ".join(f"{name}={values[name]!r}" for name in selectors)
-            raise ValueError(
-                "incoherent selector combination (PRD 07D-2a RULE 1): selecting 'postgres' for "
-                "provisioning, the tenant schema applicator, or the distinctness ledger requires "
-                f"ALL FOUR selectors to be 'postgres' — got {mixed}. Half-live compositions "
-                "manufacture orphans or record fabricated evidence (fail closed)."
-            )
+        Delegates to the module-level ``check_selector_coherence`` (the rule itself, unchanged),
+        so the narrow workspace-edge membership-read composition applies the SAME gate without
+        constructing a plane. Reads the four ENV VALUES ONLY (never the effective store object —
+        the explicit ``store=`` constructor param remains a deliberate bypass used by the B-7B
+        selector tests). Performs no I/O; unknown selector tokens are left to the builders'
+        existing per-selector fail-closed ValueError (the outcome is ValueError either way)."""
+        check_selector_coherence()
 
     def _build_store(self) -> ControlStore:
         """Select the Control-Store backend (controlled non-production; PRD 06 B-7B).
@@ -606,13 +674,10 @@ class ControlPlane:
         include the control-store ref ONLY — the default trust-anchor-only secret store
         (``self.secret_store``, used by Bootstrap) is preserved unchanged. Shared by the durable
         ControlStore (B-7B), the durable distinctness ledger, and the D-C Control-DB evidence
-        acquisition (PRD 07D-1) so all three resolve the SAME Control-DB reference."""
-        store_ref = (os.environ.get(CONTROL_STORE_DSN_REF_ENV) or DEFAULT_CONTROL_STORE_DSN_REF).strip()
-        ref = SecretRef(store_ref=store_ref, version="1")
-        # Widen the allow-list for the control-store ref ONLY (default trust-anchor-only preserved
-        # everywhere else). Without this, EnvReferenceSecretStore.resolve() raises PermissionError.
-        secrets = EnvReferenceSecretStore(allowed=frozenset({*DEFAULT_ALLOWED, store_ref}))
-        return secrets, ref
+        acquisition (PRD 07D-1) so all three resolve the SAME Control-DB reference. Delegates to
+        the module-level ``control_store_secret_binding`` so the narrow workspace-edge composition
+        binds the identical reference (and the identical allow-list) without a plane."""
+        return control_store_secret_binding()
 
     def _build_durable_control_store(self) -> ControlStore:
         """Build the durable PostgreSQL ControlStore (lazy-connect; references only — D-14).
@@ -1266,24 +1331,65 @@ def build_public_boundary_from_env() -> Optional["PublicBoundary"]:
     return _PublicBoundary(authenticator=HttpPrincipalAuthenticator(auth_base), audit=audit)
 
 
-def build_public_workspace_edge_deps_from_env() -> Optional[Tuple[ControlPlane, "PublicBoundary", Tuple[str, ...]]]:
+def build_workspace_membership_reader_from_env() -> "WorkspaceMembershipReadPort":
+    """Compose the MINIMUM Control-Plane capability the public workspace edge may hold.
+
+    This function is the privilege narrowing. It builds a membership READ port over the
+    per-unit-of-work ControlStore factory and **nothing else** — no ``ControlPlane`` is
+    constructed on this path, so the internet-facing workspace process never comes to possess:
+
+    * ``operator`` — the provisioning operator (``PostgresProvisioningOperator`` under the
+      all-postgres composition: real ``CREATE DATABASE``);
+    * ``recovery`` / ``orphan_scan`` — ``RecoveryCompensationService`` /
+      ``OrphanScanService`` (``deprovision_tenant_database`` — real ``DROP DATABASE``);
+    * ``provisioning`` — ``ProvisioningVerificationService`` (``verify`` / ``reassociate`` /
+      ``disable_routing``: lifecycle CAS + audit + ledger writes, and the ONE live-side
+      collaborator that is never posture-guarded);
+    * ``schema_applicator`` — ``PostgresTenantSchemaApplicator`` (applies the tenant DDL set);
+    * ``onboarding`` — ``OnboardingOrchestrator`` (``onboard`` / ``reassociate`` / ``recover``);
+    * ``_ledger`` — the distinctness ledger (durable evidence writes);
+    * ``registry`` / ``membership`` / ``federation`` / ``directory`` / ``audit`` — the Control-DB
+      WRITE surface (``put_tenant``, ``compare_and_swap_tenant``, ``put_membership``,
+      ``put_federation``, ``put_directory_record``, ``append_audit``);
+    * ``bootstrap`` / ``secret_store`` — the Bootstrap controller and its secret store;
+    * and, under the all-postgres composition ONLY, the two ``PROVISIONING_ADMIN_DSN_REF``
+      bindings (``_build_recovery_inspection`` / ``_build_postgres_provisioning``), which are
+      the provisioning-ADMIN credential consumers.
+
+    ``check_selector_coherence()`` runs FIRST and unchanged, so an incoherent selector set still
+    refuses to compose the workspace edge exactly as it did when the edge built a whole plane.
+    It is a pure env-value gate: it grants the narrowed edge no capability.
+
+    Side-effect boundary (LOAD-BEARING): DB-inert (both factories are lazy-connect),
+    network-inert, serve-inert and socket-inert.
+    """
+    check_selector_coherence()
+    # Function-local provider import (driver containment): the composition root binds no
+    # database driver at module load.
+    from .adapters.providers.control_membership_reader import ControlStoreMembershipReader
+
+    return ControlStoreMembershipReader(build_control_store_factory_from_env())
+
+
+def build_public_workspace_edge_deps_from_env() -> Optional[Tuple["WorkspaceMembershipReadPort", "PublicBoundary", Tuple[str, ...]]]:
     """The public workspace edge DEPENDENCY composition — the ONE construction path.
 
-    Boundary-gate-first: an inactive boundary returns ``None`` and no ``ControlPlane`` is
-    composed, so there is no partial composition in which Control-DB data is reachable but the
-    boundary is not. When active, ``create_app()`` composes the ``ControlPlane`` under its own
-    unchanged SP2_CP_* selector-coherence rules.
+    Boundary-gate-first: an inactive boundary returns ``None`` and no Control-DB accessor is
+    composed at all, so there is no partial composition in which Control-DB data is reachable
+    but the boundary is not. When active, the edge receives a ``WorkspaceMembershipReadPort``
+    — one read method — instead of the whole ``ControlPlane``; see
+    ``build_workspace_membership_reader_from_env`` for the exact capability set that removes.
 
-    Returns ``(control_plane, boundary, allowed_origins)``. ``SP2_EDGE_ALLOWED_ORIGINS``
+    Returns ``(membership_reader, boundary, allowed_origins)``. ``SP2_EDGE_ALLOWED_ORIGINS``
     unset/empty yields an EMPTY allowlist, so every cross-origin request is denied.
 
-    Side-effect boundary (LOAD-BEARING): DB-inert (``ControlPlane`` is lazy-connect),
+    Side-effect boundary (LOAD-BEARING): DB-inert (the store factory is lazy-connect),
     network-inert, serve-inert AND socket-inert — no bind knob is read here.
     """
     boundary = build_public_boundary_from_env()
     if boundary is None:
         return None
-    return create_app(), boundary, allowed_origins_from_env(SP2_EDGE_ALLOWED_ORIGINS)
+    return build_workspace_membership_reader_from_env(), boundary, allowed_origins_from_env(SP2_EDGE_ALLOWED_ORIGINS)
 
 
 def build_public_workspace_edge_server_from_env() -> Optional[Tuple[object, str]]:
@@ -1300,10 +1406,10 @@ def build_public_workspace_edge_server_from_env() -> Optional[Tuple[object, str]
     deps = build_public_workspace_edge_deps_from_env()
     if deps is None:
         return None
-    control_plane, boundary, allowed_origins = deps
+    membership_reader, boundary, allowed_origins = deps
     host = (os.environ.get(SP2_CP_PUBLIC_WORKSPACE_HOST) or "").strip() or "127.0.0.1"
     port = edge_bind_port_from_env(SP2_CP_PUBLIC_WORKSPACE_PORT)
     # Function-local provider import (transport containment).
     from .adapters.providers.http_public_workspace_edge import build_public_workspace_edge_server
 
-    return build_public_workspace_edge_server(control_plane, boundary, host=host, port=port, allowed_origins=allowed_origins)
+    return build_public_workspace_edge_server(membership_reader, boundary, host=host, port=port, allowed_origins=allowed_origins)

@@ -6,10 +6,17 @@ Control-DB data this service already owns, so under the Gateway-free MVP this se
 it directly:
 
     browser -> API Gateway (8820) -> [HTTP] -> internal Control-Plane read (8003)     (before)
-    browser -> workspace edge -> ControlStore unit of work                            (after)
+    browser -> workspace edge -> WorkspaceMembershipReadPort -> Control-DB read       (after)
 
 **Why this is not the Gateway renamed.** One route family, owned by the service that owns the
 records behind it. It classifies nothing, dispatches nothing, and forwards nothing.
+
+**Least privilege is structural here, not disciplinary.** This edge is handed a
+``WorkspaceMembershipReadPort`` — a single read method — and never a ``ControlPlane``. It
+therefore cannot create or drop a tenant database, provision, apply tenant schema, run recovery
+or compensation, scan for orphans, onboard, or write ANY Control-DB row: those operations are
+not expressible through the object it holds. That is what makes the narrowing survive a future
+edit — a handler cannot regain a capability its dependency does not declare.
 
 **The load-bearing invariant.** The internal read dispatcher answers
 ``GET /memberships?p=<principal_ref>`` — the subject comes from a QUERY PARAMETER, and that
@@ -23,7 +30,8 @@ parameter — the rejection is defence-in-depth, not the control (see mutation M
 
 **Per-request unit of work is preserved.** Each served request opens its own fresh
 ``ControlStore`` unit of work and releases it (rollback + close) before the response is
-written. No store is cached, shared, or carried across requests.
+written — the boundary simply moved behind the port (see ``ControlStoreMembershipReader``).
+No store is cached, shared, or carried across requests.
 
 Fail closed: every denial and unavailability carries a fixed status and an EMPTY body — never
 a provider body, exception text, stack, token, connection material, database identity, or
@@ -33,12 +41,12 @@ tenant topology. Bearer-only; no cookie authentication, so CSRF is not applicabl
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, List, Tuple, cast
+from typing import List, Tuple, cast
 
 from fastapi import FastAPI, Request, Response
 
 from control_plane.portal import MembershipEntryDTO, WorkspaceMembershipDTO, compose_display_ref, serialize_portal_dto
-from control_plane.read_api import ControlPlaneReadService
+from control_plane.ports import WorkspaceMembershipReadPort
 from shared.adapters.providers.asgi_runtime import AsgiEdgeServer, build_asgi_server
 from shared.adapters.providers.fastapi_edge import empty_response, new_edge_app
 from shared.adapters.providers.public_edge_transport import PublicEdgePolicy, install_public_transport, write_preflight
@@ -50,9 +58,6 @@ from shared.public_edge import (
     PublicRequest,
     TrustedPrincipal,
 )
-
-if TYPE_CHECKING:  # typing only — no composition import at runtime module load
-    from control_plane.main import ControlPlane
 
 SERVICE = "workspace_edge"
 
@@ -107,8 +112,13 @@ def _compose(rows: object) -> WorkspaceMembershipDTO:
     return WorkspaceMembershipDTO(memberships=tuple(entries))
 
 
-def make_app(control_plane: "ControlPlane", boundary: PublicBoundary, allowed_origins: Tuple[str, ...] = ()) -> FastAPI:
-    """Build the public workspace application bound to a composed ControlPlane + boundary."""
+def make_app(membership_reader: WorkspaceMembershipReadPort, boundary: PublicBoundary, allowed_origins: Tuple[str, ...] = ()) -> FastAPI:
+    """Build the public workspace application over the NARROW read port + the boundary.
+
+    The first parameter is typed to the one-method read port on purpose: it is the whole of this
+    application's Control-Plane authority, and a future edit that wanted a privileged operation
+    would have to widen this signature — visibly, and against an architecture guard.
+    """
     app = new_edge_app(invalid_status=400, unavailable_status=503)
     install_public_transport(
         app,
@@ -144,10 +154,10 @@ def make_app(control_plane: "ControlPlane", boundary: PublicBoundary, allowed_or
             return empty_response(denied.http_status)
 
         try:
-            # One logical request == one fresh ControlStore unit of work, released before the
-            # response is written. The subject is the authenticated principal, full stop.
-            with control_plane.control_store_unit_of_work() as store:
-                rows = ControlPlaneReadService(store).memberships_for_principal(principal.principal_ref)
+            # The ONE Control-Plane call this edge can make. Its argument is the authenticated
+            # principal, full stop — there is no second parameter to abuse and no other method
+            # on the port to reach for. The per-request unit of work lives inside the reader.
+            rows = membership_reader.memberships_for_principal(principal.principal_ref)
             composed = _compose(rows)
         except Exception:
             # Store/connection/shape failure -> fixed 503, empty body: no tenant, database,
@@ -200,10 +210,11 @@ def create_app_from_env() -> FastAPI:
     raises ``ValueError``. There is deliberately NO fallback to an unauthenticated edge: a
     public edge that cannot authenticate must never bind.
 
-    Store posture is unchanged Control-Plane behaviour: ``create_app()`` applies its own
-    selector-coherence validation, and an UNSET ``SP2_CP_CONTROL_STORE`` still composes the
-    in-memory, test-only store. A listening workspace edge is therefore not by itself evidence
-    that the physical Control database is the authority behind it.
+    Store posture is unchanged Control-Plane behaviour: the narrow composition applies the SAME
+    ``check_selector_coherence()`` gate the full plane applied, and an UNSET
+    ``SP2_CP_CONTROL_STORE`` still composes the in-memory, test-only store. A listening
+    workspace edge is therefore not by itself evidence that the physical Control database is
+    the authority behind it.
     """
     from control_plane.main import build_public_workspace_edge_deps_from_env
 
@@ -213,12 +224,12 @@ def create_app_from_env() -> FastAPI:
             "create_app_from_env: public workspace edge composition is INACTIVE — "
             "SP2_EDGE_AUTH_ROUTER_BASE_URL is unset/empty (fail closed: no application composed)"
         )
-    control_plane, boundary, allowed_origins = deps
-    return make_app(control_plane, boundary, allowed_origins)
+    membership_reader, boundary, allowed_origins = deps
+    return make_app(membership_reader, boundary, allowed_origins)
 
 
 def build_public_workspace_edge_server(
-    control_plane: "ControlPlane",
+    membership_reader: WorkspaceMembershipReadPort,
     boundary: PublicBoundary,
     *,
     host: str = "127.0.0.1",
@@ -229,7 +240,7 @@ def build_public_workspace_edge_server(
 
     Constructs only — it does not serve. Returns ``(server, base_url)``.
     """
-    return build_asgi_server(make_app(control_plane, boundary, allowed_origins), host, port)
+    return build_asgi_server(make_app(membership_reader, boundary, allowed_origins), host, port)
 
 
 def serve_public_workspace_edge() -> None:

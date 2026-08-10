@@ -37,9 +37,11 @@ from gateway_free._fakes import (  # noqa: E402
 import api_gateway.portal as gateway_portal  # noqa: E402  (test-only reference oracle)
 import control_plane.portal as cp_portal  # noqa: E402
 import database_router.portal as dbr_portal  # noqa: E402
+from control_plane.adapters.providers.control_membership_reader import ControlStoreMembershipReader  # noqa: E402
+from control_plane.adapters.providers.control_store_factory import SharedControlStoreFactory  # noqa: E402
 from control_plane.adapters.providers.http_public_workspace_edge import build_public_workspace_edge_server  # noqa: E402
 from control_plane.adapters.providers.in_memory_store import InMemoryControlStore  # noqa: E402
-from control_plane.main import ControlPlane  # noqa: E402
+from control_plane.membership import MembershipRegistry  # noqa: E402
 from control_plane.records import Role  # noqa: E402
 from database_router.adapters.providers.http_public_startup_edge import build_public_startup_edge_server  # noqa: E402
 from database_router.tenant_startup_ops import TenantStartupOperations  # noqa: E402
@@ -113,10 +115,11 @@ def test_the_served_startup_response_is_the_eight_field_contract_not_the_interna
 
 
 def test_the_served_membership_response_matches_the_contract_shape() -> None:
-    control_plane = ControlPlane(store=InMemoryControlStore())
-    control_plane.membership.add_membership(principal_ref=ACME_PRINCIPAL, tenant_id=ACME, role=Role.TENANT_AGENT)
+    store = InMemoryControlStore()
+    MembershipRegistry(store).add_membership(principal_ref=ACME_PRINCIPAL, tenant_id=ACME, role=Role.TENANT_AGENT)
     boundary, _auth, _audit = build_boundary()
-    server, base_url = build_public_workspace_edge_server(control_plane, boundary, host="127.0.0.1", port=0)
+    reader = ControlStoreMembershipReader(SharedControlStoreFactory(store))
+    server, base_url = build_public_workspace_edge_server(reader, boundary, host="127.0.0.1", port=0)
     with HostedEdge(server, base_url) as edge:
         status, body, _headers = edge.request("GET", "/memberships", headers=bearer(ACME_BEARER))
     assert status == 200

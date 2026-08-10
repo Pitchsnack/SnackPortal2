@@ -219,9 +219,11 @@ def test_m6_removing_the_query_rejection_is_SURVIVED_by_two_independent_controls
     composed middleware, so this is not a claim about what the code "would" do.
     """
     from control_plane.adapters.providers import http_public_workspace_edge as ws_module
+    from control_plane.adapters.providers.control_membership_reader import ControlStoreMembershipReader
+    from control_plane.adapters.providers.control_store_factory import SharedControlStoreFactory
     from control_plane.adapters.providers.http_public_workspace_edge import build_public_workspace_edge_server
     from control_plane.adapters.providers.in_memory_store import InMemoryControlStore
-    from control_plane.main import ControlPlane
+    from control_plane.membership import MembershipRegistry
     from control_plane.records import Role
 
     startup_target = _ACME_TARGET + "?p=" + ZETA_PRINCIPAL
@@ -240,11 +242,13 @@ def test_m6_removing_the_query_rejection_is_SURVIVED_by_two_independent_controls
     with HostedEdge(server, base_url) as mutated_startup_edge:
         startup = mutated_startup_edge.request("GET", startup_target, headers=bearer(ACME_BEARER))
 
-    control_plane = ControlPlane(store=InMemoryControlStore())
-    control_plane.membership.add_membership(principal_ref=ACME_PRINCIPAL, tenant_id=ACME, role=Role.TENANT_AGENT)
-    control_plane.membership.add_membership(principal_ref=ZETA_PRINCIPAL, tenant_id=ZETA, role=Role.TENANT_AGENT)
+    ws_store = InMemoryControlStore()
+    ws_registry = MembershipRegistry(ws_store)
+    ws_registry.add_membership(principal_ref=ACME_PRINCIPAL, tenant_id=ACME, role=Role.TENANT_AGENT)
+    ws_registry.add_membership(principal_ref=ZETA_PRINCIPAL, tenant_id=ZETA, role=Role.TENANT_AGENT)
     ws_boundary, _auth2, _audit2 = build_boundary()
-    ws_server, ws_base = build_public_workspace_edge_server(control_plane, ws_boundary, host="127.0.0.1", port=0)
+    ws_reader = ControlStoreMembershipReader(SharedControlStoreFactory(ws_store))
+    ws_server, ws_base = build_public_workspace_edge_server(ws_reader, ws_boundary, host="127.0.0.1", port=0)
     with HostedEdge(ws_server, ws_base) as mutated_ws_edge:
         workspace = mutated_ws_edge.request("GET", "/memberships?p=" + ZETA_PRINCIPAL, headers=bearer(ACME_BEARER))
 
