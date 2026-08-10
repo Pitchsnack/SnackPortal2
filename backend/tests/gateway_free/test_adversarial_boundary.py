@@ -387,7 +387,10 @@ def test_a14_missing_auth_configuration_fails_closed(monkeypatch) -> None:
     from database_router.adapters.providers import http_public_startup_edge as dbr_edge
 
     monkeypatch.delenv(dbr_main.SP2_EDGE_AUTH_ROUTER_BASE_URL, raising=False)
-    monkeypatch.setenv(dbr_main.SP2_DBR_ROUTING_READ_BASE_URL, "http://127.0.0.1:8003")
+    # RFC 2606 reserved host: structurally valid for the selector, and it can never resolve.
+    # Naming a real standing port here would be a latent hazard — if composition ever gained a
+    # build-time probe, this test would start dialling a standing edge.
+    monkeypatch.setenv(dbr_main.SP2_DBR_ROUTING_READ_BASE_URL, "http://routing.invalid")
     assert dbr_main.build_public_boundary_from_env() is None, "no auth URL -> no boundary"
     assert dbr_main.build_public_startup_edge_deps_from_env() is None, "no boundary -> no public edge composes"
     assert cp_main.build_public_workspace_edge_deps_from_env() is None, "no boundary -> no public edge composes"
@@ -415,7 +418,7 @@ def test_a15_missing_routing_configuration_fails_closed(monkeypatch) -> None:
     import database_router.main as dbr_main
     from database_router.adapters.providers import http_public_startup_edge as dbr_edge
 
-    monkeypatch.setenv(dbr_main.SP2_EDGE_AUTH_ROUTER_BASE_URL, "http://127.0.0.1:8001")
+    monkeypatch.setenv(dbr_main.SP2_EDGE_AUTH_ROUTER_BASE_URL, "http://auth.invalid")  # RFC 2606 reserved; never resolves
     monkeypatch.delenv(dbr_main.SP2_DBR_ROUTING_READ_BASE_URL, raising=False)
     assert dbr_main.build_public_startup_edge_deps_from_env() is None, "no routing association -> no public edge composes"
     assert dbr_main.build_public_startup_edge_server_from_env() is None, "an inactive composition binds no socket"
