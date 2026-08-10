@@ -94,8 +94,10 @@ _READ_EDGE_MAKE_SERVER_BLESSED = {"control_plane/main.py"}
 # The production serve-loop census (B5-2 Guard Evolution Matrix, EVOLVED by Served API Gateway
 # Edge V1). ``http_read_api.py`` (the 07E-1 ``serve_read_api`` precedent) is the read adapter
 # itself, skipped in the census by identity and retained unchanged; B5-2 blessed two more blocking
-# entrypoints, and Served API Gateway Edge V1 blesses ONE more — the served northbound edge
-# ``serve_gateway_edge`` — for a total of THREE blessed adapter entrypoints. Each module may
+# entrypoints, Served API Gateway Edge V1 blessed the served northbound edge ``serve_gateway_edge``,
+# and the Gateway-free MVP experiment blesses the two service-owned public edges. The count is
+# deliberately not restated here — a number in a comment goes stale and this dict is the census
+# itself; the invariant that matters is the per-module rule below. Each module may
 # reference ``serve_forever`` ONLY inside its single named entrypoint, exactly once. Narrow, named,
 # per-module (module -> sole approved entrypoint) — never a directory/substring open.
 # ``ThreadingHTTPServer`` is never blessed anywhere (AT-D15T1-10 single-threaded HARD-GATE).
@@ -107,6 +109,14 @@ _SERVE_LOOP_BLESSED = {
     # D-42 CLM Stage B: the internal Database-Router tenant Startup operations edge (the
     # dispatch-edge sibling; same single-entrypoint/single-serve_forever shape).
     "database_router/adapters/providers/http_tenant_startup_api.py": "serve_tenant_startup_api",
+    # Gateway-free MVP (EXPERIMENT BRANCH): the two service-owned PUBLIC edges that replace the
+    # single central Gateway edge. Each is registered on exactly the same terms as every entry
+    # above — one named blocking entrypoint per module, containing exactly one ``serve_forever``
+    # — so the census stays narrow, named and per-module. Registering a legitimate new edge is
+    # what this dictionary is for; the guard's strength is the per-entrypoint rule, not the
+    # size of the set.
+    "database_router/adapters/providers/http_public_startup_edge.py": "serve_public_startup_edge",
+    "control_plane/adapters/providers/http_public_workspace_edge.py": "serve_public_workspace_edge",
 }
 
 # The 5 production CAS callers frozen by the 07D-3 planning census (V-4).
@@ -438,16 +448,20 @@ def test_serve_loop_census_blessed_entrypoints_are_real() -> None:
     # defines its single blocking entrypoint with exactly one serve_forever inside it (the blessing
     # never outlives the code it blesses); the blessed set stays exactly the named adapter
     # modules; and the retained 07E-1 precedent (serve_read_api in the read adapter) survives. W1a
-    # blessed the served internal import edge serve_import_api; the D-42 CLM Stage B slice blesses
-    # ONE more — the internal Database-Router tenant Startup operations edge
-    # serve_tenant_startup_api — for a total of FIVE.
+    # blessed the served internal import edge serve_import_api; the D-42 CLM Stage B slice blessed
+    # the internal Database-Router tenant Startup operations edge serve_tenant_startup_api; and the
+    # Gateway-free MVP experiment blesses the two service-owned PUBLIC edges. The set below is the
+    # census — every entry is checked against real code immediately after, so a blessing can never
+    # outlive the module it blesses.
     assert set(_SERVE_LOOP_BLESSED) == {
         "auth_router/adapters/providers/http_authenticate_api.py",
         "database_router/adapters/providers/http_dispatch_api.py",
         "api_gateway/adapters/providers/http_gateway_edge.py",
         "import_service/adapters/providers/http_import_api.py",
         "database_router/adapters/providers/http_tenant_startup_api.py",
-    }, "the serve-loop blessing must stay exactly the five named adapter modules"
+        "database_router/adapters/providers/http_public_startup_edge.py",
+        "control_plane/adapters/providers/http_public_workspace_edge.py",
+    }, "the serve-loop blessing must stay exactly the named adapter modules"
     for relp, entrypoint in _SERVE_LOOP_BLESSED.items():
         path = _scan.BACKEND_ROOT / relp
         assert path.is_file(), f"serve-blessed module missing: {relp}"

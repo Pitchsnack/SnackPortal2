@@ -15,6 +15,13 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Callable, ContextManager, Dict, Iterable, List, NoReturn, Optional, Set, Tuple
 
 from shared.adapters.providers.env_reference_secret_store import DEFAULT_ALLOWED, EnvReferenceSecretStore
+from shared.public_edge import (
+    EdgeAuditPort,
+    PublicBoundary,
+    allowed_origins_from_env,
+    edge_bind_port_from_env,
+    internal_base_url_from_env,
+)
 from shared.secrets import SecretRef
 
 from .adapters.providers.control_store_factory import (  # driver-free at import (PRD 07D-3b)
@@ -1209,3 +1216,94 @@ def build_import_audit_server_from_env() -> Optional[Tuple[object, str]]:
     from .adapters.providers.http_import_audit_api import build_import_audit_server
 
     return build_import_audit_server(store, host=host, port=port)
+
+
+# --- Gateway-free MVP: the PUBLIC workspace edge composition seam -----------------------------
+# The one public route the Control Plane owns under the Gateway-free MVP is the self-scoped
+# workspace-membership enumeration. Composing it needs the shared public-boundary kernel — a
+# LIBRARY, not a component, so this adds no process, port, or hop beyond the edge itself.
+
+# The IC-005 authenticate base URL every public edge consumes. REQUIRED: unset/empty means no
+# boundary composes, so no public edge composes. There is deliberately no default and no
+# fallback — an edge that cannot authenticate must never bind.
+SP2_EDGE_AUTH_ROUTER_BASE_URL = "SP2_EDGE_AUTH_ROUTER_BASE_URL"
+# The durable operational-audit ingest base URL (optional; unset keeps the in-memory no-sink
+# default). No loopback default — a default would silently activate a durable transport.
+SP2_EDGE_AUDIT_SINK_BASE_URL = "SP2_EDGE_AUDIT_SINK_BASE_URL"
+# The exact-origin CORS allowlist shared by the MVP public edges. Unset/empty denies every
+# cross-origin request.
+SP2_EDGE_ALLOWED_ORIGINS = "SP2_EDGE_ALLOWED_ORIGINS"
+# The public workspace edge bind knobs. Both optional; the defaults are loopback and an
+# ephemeral port. Only consulted once the composition gate passes.
+SP2_CP_PUBLIC_WORKSPACE_HOST = "SP2_CP_PUBLIC_WORKSPACE_HOST"
+SP2_CP_PUBLIC_WORKSPACE_PORT = "SP2_CP_PUBLIC_WORKSPACE_PORT"
+
+
+def build_public_boundary_from_env() -> Optional["PublicBoundary"]:
+    """Compose the shared public-boundary kernel for this service's public edge.
+
+    ``SP2_EDGE_AUTH_ROUTER_BASE_URL`` is the activation gate: unset/empty returns ``None`` and
+    nothing further is consulted; a malformed value raises ``ValueError`` before any socket.
+    ``SP2_EDGE_AUDIT_SINK_BASE_URL`` is optional — unset keeps the in-memory no-sink default,
+    a valid value selects the durable partition behind the bounded one-retry policy.
+
+    Side-effect boundary (LOAD-BEARING): DB-inert, network-inert, serve-inert and socket-inert.
+    Both transport clients are lazy; construction performs no I/O.
+    """
+    auth_base = internal_base_url_from_env(SP2_EDGE_AUTH_ROUTER_BASE_URL)
+    if auth_base is None:
+        return None
+    audit_base = internal_base_url_from_env(SP2_EDGE_AUDIT_SINK_BASE_URL)
+    # Function-local provider imports (transport containment): the composition root binds no
+    # transport module at module load.
+    from shared.adapters.providers.edge_audit import BoundedEdgeAuditPolicy, DurableEdgeAuditPartition, HttpEdgeAudit, InMemoryEdgeAudit
+    from shared.adapters.providers.http_principal_authenticator import HttpPrincipalAuthenticator
+    from shared.public_edge import PublicBoundary as _PublicBoundary
+
+    audit: EdgeAuditPort = InMemoryEdgeAudit()
+    if audit_base is not None:
+        audit = DurableEdgeAuditPartition(BoundedEdgeAuditPolicy(HttpEdgeAudit(audit_base)), InMemoryEdgeAudit())
+    return _PublicBoundary(authenticator=HttpPrincipalAuthenticator(auth_base), audit=audit)
+
+
+def build_public_workspace_edge_deps_from_env() -> Optional[Tuple[ControlPlane, "PublicBoundary", Tuple[str, ...]]]:
+    """The public workspace edge DEPENDENCY composition — the ONE construction path.
+
+    Boundary-gate-first: an inactive boundary returns ``None`` and no ``ControlPlane`` is
+    composed, so there is no partial composition in which Control-DB data is reachable but the
+    boundary is not. When active, ``create_app()`` composes the ``ControlPlane`` under its own
+    unchanged SP2_CP_* selector-coherence rules.
+
+    Returns ``(control_plane, boundary, allowed_origins)``. ``SP2_EDGE_ALLOWED_ORIGINS``
+    unset/empty yields an EMPTY allowlist, so every cross-origin request is denied.
+
+    Side-effect boundary (LOAD-BEARING): DB-inert (``ControlPlane`` is lazy-connect),
+    network-inert, serve-inert AND socket-inert — no bind knob is read here.
+    """
+    boundary = build_public_boundary_from_env()
+    if boundary is None:
+        return None
+    return create_app(), boundary, allowed_origins_from_env(SP2_EDGE_ALLOWED_ORIGINS)
+
+
+def build_public_workspace_edge_server_from_env() -> Optional[Tuple[object, str]]:
+    """The public workspace edge SERVER composition seam.
+
+    Gate-first: ``build_public_workspace_edge_deps_from_env()``; if inactive this returns
+    ``None`` WITHOUT consulting a bind knob. When active, ``SP2_CP_PUBLIC_WORKSPACE_HOST``
+    (default ``127.0.0.1``) and ``SP2_CP_PUBLIC_WORKSPACE_PORT`` (default ``0`` → ephemeral,
+    and ``ValueError`` before any bind on a malformed value) select the address.
+
+    Serve-inert but NOT socket-inert: when active, server construction binds a local listening
+    socket. Callers/tests own the socket lifecycle and must close it.
+    """
+    deps = build_public_workspace_edge_deps_from_env()
+    if deps is None:
+        return None
+    control_plane, boundary, allowed_origins = deps
+    host = (os.environ.get(SP2_CP_PUBLIC_WORKSPACE_HOST) or "").strip() or "127.0.0.1"
+    port = edge_bind_port_from_env(SP2_CP_PUBLIC_WORKSPACE_PORT)
+    # Function-local provider import (transport containment).
+    from .adapters.providers.http_public_workspace_edge import build_public_workspace_edge_server
+
+    return build_public_workspace_edge_server(control_plane, boundary, host=host, port=port, allowed_origins=allowed_origins)

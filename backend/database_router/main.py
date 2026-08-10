@@ -39,6 +39,13 @@ from typing import TYPE_CHECKING, Dict, Iterable, Optional, Tuple, Type, cast
 from urllib.parse import urlsplit
 
 from shared.audit import OperationalAudit, OperationalAuditEvent
+from shared.public_edge import (
+    EdgeAuditPort,
+    PublicBoundary,
+    allowed_origins_from_env,
+    edge_bind_port_from_env,
+    internal_base_url_from_env,
+)
 from shared.secrets import SecretStore
 
 from .adapters.providers.in_memory_audit_sink import InMemoryAuditSink
@@ -94,6 +101,23 @@ SP2_DBR_ROUTING_AUDIT_BASE_URL = "SP2_DBR_ROUTING_AUDIT_BASE_URL"
 # 2.0; otherwise a finite number in (0, 30.0]; anything else raises ValueError BEFORE any
 # client construction (fail closed). Read at build time only.
 SP2_DBR_ROUTING_AUDIT_TIMEOUT_SECONDS = "SP2_DBR_ROUTING_AUDIT_TIMEOUT_SECONDS"
+
+# --- Gateway-free MVP public edge selectors -------------------------------------------------
+# The IC-005 authenticate base URL every public edge consumes. Deliberately NOT prefixed per
+# service: both public edges consume the same Auth Router, and one name is one thing to get
+# right. REQUIRED for a public edge to compose at all — there is no default and no fallback.
+SP2_EDGE_AUTH_ROUTER_BASE_URL = "SP2_EDGE_AUTH_ROUTER_BASE_URL"
+# The durable operational-audit ingest base URL (optional; unset keeps the in-memory no-sink
+# default). There is deliberately NO loopback default — a default would silently activate a
+# durable transport.
+SP2_EDGE_AUDIT_SINK_BASE_URL = "SP2_EDGE_AUDIT_SINK_BASE_URL"
+# The exact-origin CORS allowlist shared by the MVP public edges (comma-separated). Unset/empty
+# denies every cross-origin request.
+SP2_EDGE_ALLOWED_ORIGINS = "SP2_EDGE_ALLOWED_ORIGINS"
+# The public tenant Startup edge bind knobs (the dispatch-knob precedent). Both optional; the
+# defaults are loopback and an ephemeral port. Only consulted once the composition gate passes.
+SP2_DBR_PUBLIC_STARTUP_HOST = "SP2_DBR_PUBLIC_STARTUP_HOST"
+SP2_DBR_PUBLIC_STARTUP_PORT = "SP2_DBR_PUBLIC_STARTUP_PORT"
 
 _ROUTING_AUDIT_TIMEOUT_DEFAULT = 2.0
 _ROUTING_AUDIT_TIMEOUT_MAX = 30.0
@@ -472,6 +496,87 @@ def build_tenant_startup_server_from_env() -> Optional[Tuple[object, str]]:
     from .adapters.providers.http_tenant_startup_api import build_tenant_startup_server
 
     return build_tenant_startup_server(ops, host=host, port=port)
+
+
+def build_public_boundary_from_env() -> Optional["PublicBoundary"]:
+    """Compose the shared public-boundary kernel for this service's public edge.
+
+    The kernel is a LIBRARY, not a component: composing it adds no process, port, or hop. It
+    needs exactly two collaborators, and both are selected fail-closed:
+
+    * ``SP2_EDGE_AUTH_ROUTER_BASE_URL`` — REQUIRED. Unset/empty → ``None`` (no boundary, so no
+      public edge composes). There is deliberately no default and no fallback: an edge that
+      cannot authenticate must never bind. A malformed value raises ``ValueError`` before any
+      socket.
+    * ``SP2_EDGE_AUDIT_SINK_BASE_URL`` — OPTIONAL. Unset/empty keeps the in-memory no-sink
+      default (AD-1 Option A); a valid value selects the durable partition — the five CLM
+      classes through the bounded one-retry policy, everything else in memory.
+
+    Side-effect boundary (LOAD-BEARING): DB-inert, network-inert, serve-inert and socket-inert.
+    Both transport clients are lazy — construction performs no I/O.
+    """
+    auth_base = internal_base_url_from_env(SP2_EDGE_AUTH_ROUTER_BASE_URL)
+    if auth_base is None:
+        return None
+    audit_base = internal_base_url_from_env(SP2_EDGE_AUDIT_SINK_BASE_URL)
+    # Lazy imports keep database_router/main.py import-light at module load.
+    from shared.adapters.providers.edge_audit import BoundedEdgeAuditPolicy, DurableEdgeAuditPartition, HttpEdgeAudit, InMemoryEdgeAudit
+    from shared.adapters.providers.http_principal_authenticator import HttpPrincipalAuthenticator
+    from shared.public_edge import PublicBoundary as _PublicBoundary
+
+    audit: EdgeAuditPort = InMemoryEdgeAudit()
+    if audit_base is not None:
+        audit = DurableEdgeAuditPartition(BoundedEdgeAuditPolicy(HttpEdgeAudit(audit_base)), InMemoryEdgeAudit())
+    return _PublicBoundary(authenticator=HttpPrincipalAuthenticator(auth_base), audit=audit)
+
+
+def build_public_startup_edge_deps_from_env() -> Optional[Tuple["TenantStartupOperations", "PublicBoundary", Tuple[str, ...]]]:
+    """The public tenant Startup edge DEPENDENCY composition — the ONE construction path.
+
+    Composition-gate-first, and BOTH gates are required: the executor gate
+    (``SP2_DBR_ROUTING_READ_BASE_URL``, inherited from ``build_tenant_startup_ops_from_env``)
+    and the boundary gate (``SP2_EDGE_AUTH_ROUTER_BASE_URL``). If either is inactive this
+    returns ``None`` and no public edge is composed — there is no partial composition in which
+    the data plane is reachable but the boundary is not.
+
+    Returns ``(ops, boundary, allowed_origins)`` — everything the application needs and nothing
+    about where it listens. ``SP2_EDGE_ALLOWED_ORIGINS`` unset/empty yields an EMPTY allowlist,
+    so every cross-origin request is denied.
+
+    Side-effect boundary (LOAD-BEARING): DB-inert, network-inert, serve-inert AND socket-inert —
+    no bind knob is read here and no address is ever claimed.
+    """
+    ops = build_tenant_startup_ops_from_env()
+    if ops is None:
+        return None
+    boundary = build_public_boundary_from_env()
+    if boundary is None:
+        return None
+    return ops, boundary, allowed_origins_from_env(SP2_EDGE_ALLOWED_ORIGINS)
+
+
+def build_public_startup_edge_server_from_env() -> Optional[Tuple[object, str]]:
+    """The public tenant Startup edge SERVER composition seam.
+
+    Gate-first: ``build_public_startup_edge_deps_from_env()``; if it is inactive this returns
+    ``None`` WITHOUT consulting a bind knob. When active, ``SP2_DBR_PUBLIC_STARTUP_HOST``
+    (default ``127.0.0.1``) and ``SP2_DBR_PUBLIC_STARTUP_PORT`` (default ``0`` → ephemeral, and
+    ``ValueError`` before any bind on a malformed value) select the address.
+
+    Serve-inert but NOT socket-inert: when active, server construction binds a local listening
+    socket. Callers/tests own the socket lifecycle and must close it.
+    """
+    deps = build_public_startup_edge_deps_from_env()
+    if deps is None:
+        return None
+    ops, boundary, allowed_origins = deps
+    host = (os.environ.get(SP2_DBR_PUBLIC_STARTUP_HOST) or "").strip() or "127.0.0.1"
+    port = edge_bind_port_from_env(SP2_DBR_PUBLIC_STARTUP_PORT)
+    # Lazy relative import keeps database_router/main.py import-light (the serving stack is
+    # pulled in only when the seam is active).
+    from .adapters.providers.http_public_startup_edge import build_public_startup_edge_server
+
+    return build_public_startup_edge_server(ops, boundary, host=host, port=port, allowed_origins=allowed_origins)
 
 
 def liveness() -> Dict[str, str]:
