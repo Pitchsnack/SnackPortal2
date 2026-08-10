@@ -52,8 +52,8 @@ pre-task state.
 | `git rev-parse main` | `cdb46fc9d3b6e12c4926f23f2f6c7a9d7c56a81f` |
 | `git merge-base main HEAD` | `cdb46fc9d3b6e12c4926f23f2f6c7a9d7c56a81f` |
 | HEAD **before** this task | `8719f4f3da7db5dffda99a6bca00edd078340d0d` |
-| HEAD **after** this task | `2bdb58768` (this document is committed on top of it) |
-| commits added | **4** — `172edf2d9` *delete the API Gateway completely (zero active residue)* and `2bdb58768` *close the defects an independent adversarial review found*, `c1923d46` *result document*, `e0d1f61` *close the four CONFIRMED verify-phase findings* |
+| HEAD **after** this task | `11aed6cfa` |
+| commits added | **4** — `172edf2d9` *delete the API Gateway completely (zero active residue)* and `2bdb58768` *close the defects an independent adversarial review found*, `c1923d46` *result document*, `11aed6cf` *close the four CONFIRMED verify-phase findings* |
 | working tree | clean |
 
 `8719f4f3` is the reference point used throughout this document: every "before" figure and every
@@ -485,7 +485,7 @@ A 39/49 refutation rate is the calibration signal worth reading: the skeptics we
 stamping, and the four that survived independent re-derivation are all in the **guard-integrity**
 class — the one §16 singles out as highest-risk. **None is a live exploit**; the shipped composition
 is clean in every case. Each means a guard could be defeated silently. All four are fixed in
-`e0d1f61`, each with an executed proof:
+`11aed6cf`, each with an executed proof:
 
 | # | Severity | Confirmed finding | Fix, and how it was proved |
 |---:|---|---|---|
