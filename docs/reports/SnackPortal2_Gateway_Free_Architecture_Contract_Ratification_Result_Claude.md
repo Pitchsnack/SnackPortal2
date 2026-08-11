@@ -52,7 +52,8 @@ pre-task state.**
 | `git rev-parse main` | `cdb46fc9d3b6e12c4926f23f2f6c7a9d7c56a81f` (unchanged) |
 | `git merge-base main HEAD` | `cdb46fc9d3b6e12c4926f23f2f6c7a9d7c56a81f` (identical — `main` is not an ancestor of any new work but the base is untouched) |
 | HEAD **before** this task | `97769ddbbfee8bc44768744c1790f81b78b45688` |
-| HEAD **after** this task | `RATIFICATION_HEAD` |
+| ratification commit | `a3a504b7740e3c46d4a04301a41c0a2daa58c100` — *D-45: ratify the Gateway-free architecture in the official contracts* (35 files, +1401 / −360) |
+| HEAD **after** this task | `24d9cac0b61dd641887cbdb75faac69e6f76d79b` — the follow-up commit that stamps these SHAs into this document |
 | change composition | **35 files** — 33 modified, 2 added (`docs/D-45-…` + this result), 0 deleted |
 | working tree after commit | clean |
 
@@ -382,7 +383,7 @@ A file rename is listed in §12.
 | lint | `ruff check .` | All checks passed | 0 |
 | format | `ruff format --check .` | 345 files already formatted | 0 |
 | types | `mypy .` (strict) | no issues in **344** source files | 0 |
-| secrets | `gitleaks detect --log-opts 97769ddb..HEAD` | **no leaks found** | 0 |
+| secrets | `gitleaks detect --log-opts 97769ddb..HEAD` | **no leaks found**, 1 commit scanned | 0 |
 
 **Secret-scan positive control:** the same scanner over the full working tree reports **4 findings**,
 all inside the git-ignored `backend/.venv` third-party packages — so the clean commit-range result is
