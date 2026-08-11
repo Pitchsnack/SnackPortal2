@@ -48,6 +48,6 @@ registry/router mismatch (D-07)
 ## Invariants preserved
 
 Physical Multi-Database MVP (one Control DB + one physical DB per tenant; no shared DB, no `tenant_id` model,
-no clone-TEMPLATE DB) · Control Plane = lifecycle authority · Database Router = sole selector · API Gateway =
+no clone-TEMPLATE DB) · Control Plane = lifecycle authority · Database Router = sole selector · approved public edges (D-45) =
 sole ingress · D-14 references only · vendor-neutral standard PostgreSQL · infrastructure independent of
 `backend/`.

@@ -91,7 +91,7 @@ customer row data.
 | `SECRET_BINDING_SET_DIGEST` | `<digest — e.g. sha256; non-secret>` | mandatory; digest of the SecretRef binding set (never the values) |
 | `MIGRATION_SET_DIGEST` | `<digest>` | mandatory; digest of the applied migration set |
 | `AUDIT_SINK_IDENTITY_REF` | `ref:...` | mandatory; the Control-resident audit sink identity (references only) |
-| `SERVED_HEALTH_BASELINE_REF` | `ref:...` | mandatory; served-health baseline through the API Gateway (references only) |
+| `SERVED_HEALTH_BASELINE_REF` | `ref:...` | mandatory; served-health baseline through **every** served approved public edge (**D-45**; references only) |
 | `FAILURE_STATE_REF` | `ref:...` | mandatory; the induced governed-failure state (references only) |
 | `POST_ROLLBACK_REF` | `ref:...` | mandatory; the post-rollback served state (references only) |
 | `RESTORATION_REF` | `ref:...` | mandatory; the restoration / roll-forward reference (references only) |

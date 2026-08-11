@@ -25,7 +25,7 @@ fragments; every detector carries a non-vacuity companion that proves it fires o
  5. test_live_production_prohibited
  6. test_synthetic_nonproduction_data_only
  7. test_physical_multi_database_topology
- 8. test_api_gateway_sole_ingress
+ 8. test_api_gateway_sole_ingress (+ test_api_gateway_sole_ingress_nonvacuity)
  9. test_authentication_separate_from_routing
 10. test_database_router_sole_selector
 11. test_secretref_only_registry
@@ -269,14 +269,62 @@ def test_physical_multi_database_topology() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 8. API Gateway sole served ingress
+# 8. Approved-public-edge-only served ingress (D-45; formerly "API Gateway sole served ingress")
 # ---------------------------------------------------------------------------
+# The five STOP conditions the ratified gate must fail closed on. Naming a COMPONENT is no longer
+# the rule; the rule is an APPROVAL PROPERTY, so a second approved edge is lawful and an unapproved
+# one never is.
+_PUBLIC_EDGE_RULE = "only architecture-approved public edge modules may be served to client traffic"
+_STOP_CONDITIONS = (
+    "an unapproved public edge",
+    "an internal edge exposed publicly",
+    "a generic dispatcher / proxy reintroduced as public ingress",
+    "a public route not owned by its serving service",
+    "missing authentication / public-boundary enforcement",
+)
+# An AFFIRMATIVE restatement of the superseded component rule. It must not appear as a live
+# requirement: the amendment note quotes it, so the detector requires the affirmative verb form.
+_SUPERSEDED_COMPONENT_RULE = (
+    "the api gateway is the sole served ingress",
+    "api gateway must be the sole served ingress",
+    "a non-gateway served edge is a stop condition",
+)
+
+
 def test_api_gateway_sole_ingress() -> None:
+    """D-45: the served-ingress rule names an APPROVAL PROPERTY, not a component."""
     ct = _norm(_text(_CONTRACT))
-    assert "api gateway" in ct and "sole served ingress" in ct, "IC-011 must make the API Gateway the sole served ingress"
+    rb = _norm(_text(_RUNBOOK))
+
+    # (a) the ratified rule is stated in the contract AND carried into the runbook's H1 census
+    assert _PUBLIC_EDGE_RULE in ct, "IC-011 must restrict served client traffic to architecture-approved public edge modules"
+    assert _PUBLIC_EDGE_RULE in rb, "the hosted runbook's H1 census must carry the approved-public-edge-only rule"
+
+    # (b) every STOP condition, in both homes — a missing one is a hole in the gate
+    for stop in _STOP_CONDITIONS:
+        assert stop in ct, f"IC-011 must STOP on {stop!r}"
+        assert stop in rb, f"the hosted runbook must STOP on {stop!r}"
+
+    # (c) the isolation rule the old test protected is unchanged
     assert "one request -> one active tenant -> one database" in ct, "IC-011 must keep one request -> one active tenant -> one database"
-    # non-vacuity
-    assert "sole served ingress" not in _norm("a direct database edge bypasses the gateway"), "a Gateway bypass must be detectable"
+
+    # (d) the superseded component rule must not survive as an ACTIVE requirement
+    for stale in _SUPERSEDED_COMPONENT_RULE:
+        assert stale not in ct, f"IC-011 still asserts the superseded component rule: {stale!r}"
+        assert stale not in rb, f"the hosted runbook still asserts the superseded component rule: {stale!r}"
+
+
+def test_api_gateway_sole_ingress_nonvacuity() -> None:
+    """Five planted mutations, each of which the D-45 gate must reject."""
+    # a rewrite that drops the approval property entirely
+    assert _PUBLIC_EDGE_RULE not in _norm("any served edge is acceptable during the proof")
+    # a rewrite that re-installs the superseded component rule
+    assert _SUPERSEDED_COMPONENT_RULE[0] in _norm("The **API Gateway** is the **sole served ingress**.")
+    assert _SUPERSEDED_COMPONENT_RULE[2] in _norm("A non-Gateway served edge is a STOP condition.")
+    # each STOP condition is a distinct string, so dropping one is detectable
+    assert len(set(_STOP_CONDITIONS)) == 5, "the gate must carry exactly five distinct STOP conditions"
+    for stop in _STOP_CONDITIONS:
+        assert stop not in _norm("the proof continues regardless of which edge is served")
 
 
 # ---------------------------------------------------------------------------
@@ -491,6 +539,7 @@ if __name__ == "__main__":
             test_synthetic_nonproduction_data_only,
             test_physical_multi_database_topology,
             test_api_gateway_sole_ingress,
+            test_api_gateway_sole_ingress_nonvacuity,
             test_authentication_separate_from_routing,
             test_database_router_sole_selector,
             test_secretref_only_registry,

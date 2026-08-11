@@ -28,7 +28,7 @@ while any sub-blocker below is OPEN, B5-BLK-4 stays **OPEN**.
 | **B7-BLK-3** | Production sink reference not configured. | Major | Infra | A production sink resolving `*_REF` references at connect time; references only. | OPEN | YES |
 | **B7-BLK-4** | Fail-closed required-write not runtime-wired. | Major | Control Plane | Wiring honors the B-6 fail-closed contract. | OPEN | YES |
 | **B7-BLK-5** | Retention / redaction / hash policies not production-approved (hash optional/forward). | Minor | Control Plane / Ops | Approved policies referenced by `*_REF`. | OPEN | YES |
-| **B7-BLK-6** | Frontend / API-Gateway cutover not complete. | Major | Frontend / Gateway | Lovable integrates only through the API Gateway. | OPEN | YES |
+| **B7-BLK-6** | Frontend / public-edge cutover not complete. | Major | Frontend / public edges | Lovable integrates only through the approved authenticated public edges — under **D-45** that is **two origins**, not one (IC-010 §Y). | OPEN | YES |
 
 ## Rules
 

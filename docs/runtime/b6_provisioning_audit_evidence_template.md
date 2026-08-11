@@ -45,7 +45,7 @@ sink-availability proof     : [sink reachable/available at provisioning-completi
 ```
 provisioning audit ≠ lineage : [IC-002/D-34 distinct from IC-004/D-23 — confirmed]
 Database Router              : [sole DB selector — unchanged]
-API Gateway                 : [sole ingress — unchanged]
+Approved public edges       : [the only served client ingress — D-45; unchanged by this slice]
 audit.py / events.py / main.py : [unchanged — git scope fence]
 ```
 

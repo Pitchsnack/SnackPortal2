@@ -19,7 +19,7 @@ activate production (B-5) and is not the provisioning audit sink (B-6).
 ## 2. Architecture shape (preserved, not changed)
 
 ```
-API Gateway (sole ingress)
+approved public edges (the only served client ingress — D-45)
   → Control Plane (lifecycle / readiness authority)
   → Database Router (sole DB selector; registry-authoritative, D-07)
   → Control DB registry  → exactly one physical Tenant DB

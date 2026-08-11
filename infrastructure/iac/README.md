@@ -35,7 +35,7 @@ must not be committed).
 - **D-15 ownership boundary:** **IaC provides reusable substrate; the Control Plane owns tenant lifecycle.**
   Per-tenant physical database creation/teardown is the automated, audited **Control-Plane provisioning
   workflow** (D-15) — **not** an IaC resource per tenant, and **not** something OpenTofu/Terraform tracks as
-  long-lived state. The **Database Router** remains the sole database selector; the **API Gateway** remains
+  long-lived state. The **Database Router** remains the sole database selector; the **approved authenticated public edges** (D-45) remain
   the sole ingress.
 
 ## Tooling stance (DB3-1 / DB3-3)

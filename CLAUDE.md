@@ -9,20 +9,34 @@ SnackPortal2 is in **active build under contract-first governance**. Do **not** 
 Current state (see `docs/SnackPortal2_Canonical_Overview_and_Decisions_v2.md` for the full, authoritative picture):
 
 - **Backend (this repo):** core Phases 1–6 built and **accepted** (Control Plane, Authentication, Database Router, Import, Lineage; PostgreSQL-verified).
-- **API Gateway — REMOVED ON THIS BRANCH ONLY.** `experiment/complete-api-gateway-removal-mvp`
-  deletes the `api_gateway` package, the Database Router dispatch edge and the internal
-  tenant-Startup envelope edge, and serves each MVP route family from the service that owns its
-  records behind the shared `shared.public_edge` boundary (public edges on 8830 / 8831). On `main`
-  the Gateway is untouched and B-7 remains as described in the PRD Index. **The removal is not
-  adopted:** IC-010 (Final) still names the API Gateway as the sole approved ingress, and **IC-005**
-  (Final — 13 Gateway clauses, incl. the carrier hand-off), IC-009, IC-011 and IC-012 all carry
-  Gateway-bound clauses. IC-011's hosted-rollback gate additionally names a non-Gateway served edge
-  as a **STOP** condition, which the two-public-edge topology trips by construction, and the B5
-  production activation gate's criterion *"API Gateway remains the sole ingress"* is unsatisfiable
-  there. Ratifying that amendment set is a human governance act and is the named blocker before
-  anything on that branch may be merged. See
-  `docs/reports/SnackPortal2_Complete_API_Gateway_Zero_Residual_Removal_Result_Claude.md`.
-- **Frontend (Lovable, separate Lovable Cloud project):** ~70% of screens built, but on an **interim** Supabase data layer using *logical* (`tenant_id` + RLS) separation. Per decisions D3/D7 this data layer is **interim** and must be re-pointed to the API Gateway + physical tenant databases; not yet brought into this repo's `frontend/`.
+- **API Gateway — REMOVED, AND THE REMOVAL IS NOW RATIFIED AT THE DESIGN LEVEL (this branch only).**
+  On `experiment/complete-api-gateway-removal-mvp` the `api_gateway` package, the Database Router
+  dispatch edge and the internal tenant-Startup envelope edge are deleted, and each MVP route family
+  is served by the service that owns its records behind the shared `shared.public_edge` boundary
+  (public edges on 8830 / 8831). **On `main` the Gateway is untouched.**
+
+  **`D-45` (2026-08-11, explicit human architecture decision by Dan) ratifies the Gateway-free
+  architecture at the design/governance level.** The ratified boundary is *an approved authenticated
+  public edge owned by the service that owns the public route*; the closed approved set is the
+  **public Startup edge** (`database_router`) and the **public Workspace edge** (`control_plane`).
+  IC-010 is retargeted (now the *Public Edge Ingress Contract*), and IC-011, IC-009, IC-012, IC-005,
+  IC-002, IC-001, IC-007 and IC-008 are reconciled. Canonical Overview locked invariant **#7** is
+  superseded on the record, and **D-4** is superseded for the MVP. Read
+  [`docs/D-45-Gateway-Free-Public-Edge-Architecture.md`](docs/D-45-Gateway-Free-Public-Edge-Architecture.md)
+  **before** proposing anything that touches client ingress.
+
+  **What ratification did NOT do.** It authorized no push, PR, merge, DDL, live-PostgreSQL,
+  Keycloak, SecretRef, credential, frontend, or standing-runtime change, and it is **not a
+  production approval**. **Only Dan may explicitly authorize the specific future PR merge.**
+  Gate B remains **NOT GRANTED**; production remains **NOT READY / DO-NOT-ACTIVATE**; B5-BLK-5 and
+  B5-BLK-8 remain OPEN. Still owed, separately governed: the frontend cutover to the **two** origins
+  (IC-010 §Y), re-authoring the live proofs the removal cost (**B5-BLK-4 has lost its harness**), and
+  the DDL 012/013 + SecretRef naming migration. `source_service = 'api_gateway'`,
+  `control_gateway_audit` and the AW-1 SecretRef are **frozen compatibility artifacts** — never
+  evidence that a Gateway runtime exists. Evidence:
+  `docs/reports/SnackPortal2_Complete_API_Gateway_Zero_Residual_Removal_Result_Claude.md` and
+  `docs/reports/SnackPortal2_Gateway_Free_Architecture_Contract_Ratification_Result_Claude.md`.
+- **Frontend (Lovable, separate Lovable Cloud project):** ~70% of screens built, but on an **interim** Supabase data layer using *logical* (`tenant_id` + RLS) separation. Per decisions D3/D7 this data layer is **interim** and must be re-pointed to the approved public edges + physical tenant databases — under D-45 that is **two origins, not one** (IC-010 §Y); not yet brought into this repo's `frontend/`.
 
 This project follows a **contract-first design approach**: interface contracts are defined and agreed upon *before* the corresponding implementation begins.
 
@@ -49,7 +63,7 @@ The `contracts/` directory holds the governing specifications. All implementatio
 - **IC-007** — Deal Collaboration & Cross-Tenant Sharing Contract *(Draft / Proposed, IC-007-DRAFT-1 — opened by D-38; no positive sharing capability)*
 - **IC-008** — Ownership Contract *(Final)*
 - **IC-009** — Portal Contracts *(Final, IC-009-R1)*
-- **IC-010** — API Gateway Contract *(Final)*
+- **IC-010** — **Public Edge Ingress Contract** *(Final; retargeted 2026-08-11 by D-45 — formerly the "API Gateway Contract". The file name `IC-010-API-Gateway-Contract.md` is retained for cross-reference stability.)*
 - **IC-011** — Hosted Rollback Proof Contract *(Draft / Proposed, IC-011-DRAFT-1 — opened by D-40)*
 - **IC-012** — Service Composition & Deployment Root Contract *(Draft / Proposed, IC-012-DRAFT-1 — opened by D-44; governs the `backend/deployment/` cross-service composition root)*
 
@@ -67,7 +81,7 @@ SnackPortal2 uses **physical multi-database isolation**, not shared-schema multi
 - **Independent Tenant Databases** — one physically separate database per tenant. Tenant data must never share a database.
 
 ### Infrastructure Components
-- **API Gateway** — single entry point for backend services.
+- **Approved authenticated public edges** — the client entry points, one per route-owning service (**D-45**; this replaces the single API Gateway). Today exactly two: the public Startup edge (`database_router`) and the public Workspace edge (`control_plane`), both behind the shared `shared.public_edge` boundary. Any new one needs an IC-010 §A.2 amendment plus a register entry.
 - **Authentication Router** — routes/validates auth; governed by IC-005.
 - **Database Router** — resolves the correct control vs. tenant database per request.
 
@@ -87,7 +101,7 @@ These constraints exist to preserve portability and tenant isolation. Do not vio
 
 5. **Contracts precede code.** Backend/frontend behavior must trace back to a contract in `contracts/`. New behavior requires a contract (new or amended) first.
 
-> **Interim exception (tracked, not permanent):** the current Lovable frontend uses Supabase + RLS and therefore does **not** yet satisfy constraints 2–3. This is the agreed *interim* state under decisions D3/D7; it is resolved by re-pointing the frontend's data layer to the API Gateway + physical tenant databases at the cutover. Do not treat the Supabase data layer as the final architecture.
+> **Interim exception (tracked, not permanent):** the current Lovable frontend uses Supabase + RLS and therefore does **not** yet satisfy constraints 2–3. This is the agreed *interim* state under decisions D3/D7; it is resolved by re-pointing the frontend's data layer to the approved public edges + physical tenant databases at the cutover — **two origins under D-45**, each with its own exact-origin CORS allowlist (IC-010 §Y). Do not treat the Supabase data layer as the final architecture.
 
 ## Development Standards
 

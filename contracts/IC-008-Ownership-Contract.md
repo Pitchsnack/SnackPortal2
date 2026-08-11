@@ -28,7 +28,7 @@ Ownership is defined for exactly three record kinds, in both residencies:
 - AI behavior of any kind (IC-006 — Draft, post-MVP; see *AI Ownership Rule* for the reserved slot only).
 - Cross-tenant ownership, sharing, or visibility (IC-007 — Deferred; see *Ownership Boundaries*).
 - Ownership implementation: database schema, migrations, workflows, UI, audit persistence (execution PRDs, after this contract).
-- Portal surfaces (IC-009/D-37), API Gateway behavior (IC-010), authentication behavior (IC-005).
+- Portal surfaces (IC-009/D-37), public-edge ingress behavior (IC-010), authentication behavior (IC-005).
 
 ## Human Ownership Rule (D-36-R2 §2)
 - Every owned record has **exactly one human Owning Agent**, represented **only** by `owner_agent_ref`.
@@ -96,7 +96,7 @@ The following field obligations attach to the record shapes of the three owned k
 - Field addition follows D-17 expand/contract migration discipline at implementation time.
 
 ## API Contract
-> Operations and semantics only — no transport code; concrete bindings are implementation details (execution PRDs, surfaced only via the IC-010 gateway).
+> Operations and semantics only — no transport code; concrete bindings are implementation details (execution PRDs, surfaced only via an IC-010 approved public edge).
 
 | Operation | Purpose | Caller (authz) | Result / effect | Notes |
 |---|---|---|---|---|

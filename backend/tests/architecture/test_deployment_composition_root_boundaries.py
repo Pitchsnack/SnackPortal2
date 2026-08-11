@@ -207,7 +207,8 @@ _IC012_REVERSE = (
     "lineage_service ↛ import_service",
     "shared ↛ any service",
     "shared ↛ deployment",
-    "api_gateway ↛ deployment",
+    # D-45: `api_gateway ↛ deployment` left IC-012 §4 with the package itself — the prohibition
+    # lost its subject, it was not relaxed. The surviving reverse edges below are unchanged.
     "auth_router ↛ deployment",
     "control_plane ↛ deployment",
     "database_router ↛ deployment",

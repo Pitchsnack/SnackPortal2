@@ -28,7 +28,7 @@ This roadmap sequences the backend build into six phases. It defines *what* each
   - Service layout per PRD 8C (api-gateway, auth-router, database-router, control-plane, import-service, lineage-service, shared, plus top-level infrastructure kept independent of app code).
   - Vendor-neutral **abstraction boundaries** as interfaces only: secret store (D-14), queue, and provider adapters — no concrete provider bindings.
   - Environment/config templates (no secrets inlined; references only).
-  - **API Gateway skeleton** (thin: request entry, validation, correlation IDs, rate limiting, audit initiation; no business logic, routing, or DB access).
+  - **Approved authenticated public edges** *(replaces the former "API Gateway skeleton" — **D-45**, 2026-08-11)*: one public edge per route-owning service behind the shared public-boundary security kernel (request entry, validation, correlation IDs, bounds, audit emission; **no business logic, no routing decision, no DB selection**). The closed ratified set is IC-010 §A.2.
   - Health/readiness interface placeholder; contract-traceability + coding-standard docs; CI scaffolding that asserts portability constraints.
 - **Claude Code:** ✅ Generatable now. Fully ready; lowest risk; unblocks all later phases.
 

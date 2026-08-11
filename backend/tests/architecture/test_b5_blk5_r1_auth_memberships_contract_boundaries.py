@@ -114,9 +114,9 @@ _REQUIRED = (
     ("ic010", "tenant categories require an active tenant"),
     # Supabase JWT prohibition.
     ("ic005", "never accepts a supabase jwt"),
-    # Gateway no-mint / no-exchange.
+    # Public-edge no-mint / no-exchange (D-45: the holder is the approved public edge).
     ("ic005", "no token mint and no token exchange"),
-    ("ic010", "the gateway mints and exchanges no token"),
+    ("ic010", "the public edge mints and exchanges no token"),
     # Keycloak limited to the controlled R1 proof.
     ("ic005", "for r1's controlled proof"),
     ("ic005", "does not make keycloak the permanent production idp"),

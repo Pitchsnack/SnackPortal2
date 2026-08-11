@@ -4,7 +4,7 @@ Locks the D-34-R2 §6 operational/administrative audit taxonomy after the PRD 05
 amendment (every audit class has a *landed* contractual home; the homing contracts are
 exactly {IC-001, IC-002, IC-003, IC-005}; the amended contracts carry their section
 headers; OP-1 supersession holds) AND, since DBR-AR-2A, the two-subclass emitter
-ownership of IC-002 class 3: the gateway-edge subclass remains gateway-owned, the
+ownership of IC-002 class 3: the public-edge subclass remains route-owner-owned (D-45; formerly "gateway-edge"), the
 router-edge routing-decision subclass is Database-Router-owned with the exact frozen
 four-action set, the Auth Router is never an emitter of record, no event has more than
 one emitter, and IC-002/IC-005 agree. Every detector carries a planted non-vacuity
@@ -54,8 +54,8 @@ _CONTRACT_FILES = {
 _ROUTER_ACTION_SET = "action ∈ {route, routecontrol, routedenied, isolationanomaly}"
 _ROUTER_EDGE_HOME = "runtime operational audit — database router edge"
 _ROUTER_SOLE_EMITTER = "the database router is the sole emitter"
-_GATEWAY_SOLE_EMITTER_IC005 = "the gateway is the sole emitter of these gateway-edge events"
-_GATEWAY_EDGE_UNCHANGED_IC002 = "the gateway-edge event set in (3) above is unchanged and remains gateway-owned"
+_GATEWAY_SOLE_EMITTER_IC005 = "the route-owning authenticated public edge is the sole emitter of these public-edge events"
+_GATEWAY_EDGE_UNCHANGED_IC002 = "the public-edge event set in (3) above is unchanged and remains owned by the route-owning public edge"
 _NO_MULTI_EMITTER = "no event is emitted by more than one component"
 _DIFFERENT_SUBCLASSES = "different subclasses with different sole emitters"
 _EVENT_IDENTITY = "event identity is (edge/subclass, action)"
@@ -94,11 +94,14 @@ _AUTH_EMITS_RE = re.compile(
 )
 
 # Gateway granted the router-edge subclass (ordering-sensitive forms).
+# D-45: the public edge replaced the gateway as the class-3 public-edge emitter. The detector keeps
+# EVERY old "gateway" alternative and ADDS the "public edge" ones — a rename can never disarm it.
+_EDGE_WORD = r"(?:gateway|public[- ]edge|route-owning public edge)"
 _GATEWAY_ROUTER_EDGE_RE = re.compile(
-    r"\bgateway\b[^.;|]{0,50}?\bsole\s+emitter\b[^.;|]{0,50}?\brouter-edge\b"
-    r"|\bgateway\b[^.;|]{0,40}?\bemits\b[^.;|]{0,40}?\brouter-edge\b"
-    r"|\brouter-edge\b[^.;|]{0,60}?\bsole\s+emitter\b[^.;|]{0,40}?\bgateway\b"
-    r"|\brouter-edge\b[^.;|]{0,60}?\bemitted\s+by\b[^.;|]{0,40}?\bgateway\b"
+    rf"\b{_EDGE_WORD}\b[^.;|]{{0,50}}?\bsole\s+emitter\b[^.;|]{{0,50}}?\brouter-edge\b"
+    rf"|\b{_EDGE_WORD}\b[^.;|]{{0,40}}?\bemits\b[^.;|]{{0,40}}?\brouter-edge\b"
+    rf"|\brouter-edge\b[^.;|]{{0,60}}?\bsole\s+emitter\b[^.;|]{{0,40}}?\b{_EDGE_WORD}\b"
+    rf"|\brouter-edge\b[^.;|]{{0,60}}?\bemitted\s+by\b[^.;|]{{0,40}}?\b{_EDGE_WORD}\b"
 )
 
 
@@ -196,10 +199,10 @@ def test_exact_router_action_set_nonvacuity() -> None:
 def test_gateway_edge_remains_gateway_owned() -> None:
     ic002 = _norm(_read("IC-002"))
     ic005 = _norm(_read("IC-005"))
-    assert _GATEWAY_EDGE_UNCHANGED_IC002 in ic002, "IC-002 must state the gateway-edge set is unchanged and gateway-owned"
-    assert _GATEWAY_SOLE_EMITTER_IC005 in ic005, "IC-005 must keep the gateway as sole emitter of the gateway-edge events"
-    assert not _GATEWAY_ROUTER_EDGE_RE.search(ic002), "IC-002 must not grant the gateway the router-edge subclass"
-    assert not _GATEWAY_ROUTER_EDGE_RE.search(ic005), "IC-005 must not grant the gateway the router-edge subclass"
+    assert _GATEWAY_EDGE_UNCHANGED_IC002 in ic002, "IC-002 must state the public-edge set is unchanged and route-owner-owned"
+    assert _GATEWAY_SOLE_EMITTER_IC005 in ic005, "IC-005 must keep the route-owning public edge as sole emitter of the public-edge events"
+    assert not _GATEWAY_ROUTER_EDGE_RE.search(ic002), "IC-002 must not grant a public edge the router-edge subclass"
+    assert not _GATEWAY_ROUTER_EDGE_RE.search(ic005), "IC-005 must not grant a public edge the router-edge subclass"
 
 
 def test_gateway_edge_ownership_nonvacuity() -> None:
@@ -209,7 +212,11 @@ def test_gateway_edge_ownership_nonvacuity() -> None:
     assert _GATEWAY_ROUTER_EDGE_RE.search("the gateway is the sole emitter of the router-edge subclass")
     assert _GATEWAY_ROUTER_EDGE_RE.search("the gateway emits the router-edge routing-decision events")
     assert _GATEWAY_ROUTER_EDGE_RE.search("router-edge events may also be emitted by the gateway")
-    legit = "the gateway-edge and router-edge sets are different subclasses with different sole emitters"
+    # D-45 vocabulary must trip the SAME detector — otherwise the rename would be a silent disarm.
+    assert _GATEWAY_ROUTER_EDGE_RE.search("the public edge is the sole emitter of the router-edge subclass")
+    assert _GATEWAY_ROUTER_EDGE_RE.search("the public-edge emits the router-edge routing-decision events")
+    assert _GATEWAY_ROUTER_EDGE_RE.search("router-edge events may also be emitted by the public edge")
+    legit = "the public-edge and router-edge sets are different subclasses with different sole emitters"
     assert not _GATEWAY_ROUTER_EDGE_RE.search(_norm(legit))
 
 

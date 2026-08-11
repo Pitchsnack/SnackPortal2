@@ -55,7 +55,7 @@ Every runtime routing-audit witness in the accepted MVP evidence chain is in-mem
 - the Database Router emits `Route` / `RouteControl` / `RouteDenied` / `IsolationAnomaly` operational-audit
   events through the shared `OperationalAudit` port into `InMemoryAuditSink`
   (`backend/database_router/adapters/providers/in_memory_audit_sink.py`) — a process-lifetime Python list;
-- the API Gateway emits the four IC-002 class-3 runtime operational events (`RouteDenied`, `CarrierMismatch`,
+- the route-owning authenticated public edge emits the four IC-002 class-3 runtime operational events (**D-45**; the four action strings, the exactly-once rule and the Control-DB residency are unchanged) (`RouteDenied`, `CarrierMismatch`,
   `CarrierOnControlAnomaly`, `IsolationAnomaly`) into an in-memory emitter;
 - the Auth Router's granular `denied:<code>` outcomes (including `tenant_access_denied`, `tenant_not_ready`)
   land in its own in-memory sink.
@@ -123,7 +123,7 @@ Database (a `control_*` table beside `control_audit`, defined by created-not-app
 governed ops path). The Control Plane remains the sole writer of the Control Database. The record class is the
 IC-002 class-3 Runtime Operational Audit family, extended (by the DBR-AR-2A contract amendment, §17) with the
 router-edge routing-decision events; the Database Router is the single emission edge for the routing-decision
-events and the API Gateway remains the sole single-edge emitter of the existing four class-3 events, so no event
+events and the route-owning public edge remains the sole single-edge emitter of the existing four class-3 events for its own route, so no event
 class is emitted by more than one component.
 
 Why this option, from live evidence:
@@ -163,7 +163,7 @@ Why this option, from live evidence:
 ## 6. Service ownership
 
 - **Emit:** the Database Router is the single emission edge for routing-decision events (`Route`,
-  `RouteControl`, `RouteDenied`, `IsolationAnomaly` at router granularity). The API Gateway remains the sole
+  `RouteControl`, `RouteDenied`, `IsolationAnomaly` at router granularity). The route-owning public edge remains the sole
   single-edge emitter of the existing class-3 events (IC-005); wiring the gateway emitter to this same durable
   sink is a later slice (§16). The Auth Router never emits (IC-005: detection and signalling only); its
   in-memory sink stays a diagnostic witness.
@@ -189,7 +189,7 @@ One durable record class: **routing-decision events**, single outcome event per 
 | Route denied (any router-edge denial) | RECORD | `RouteDenied`, outcome `denied:<public_code>`, `public_code` from the router-edge canonical vocabulary (§3) |
 | Tenant not ready (router edge) | RECORD | `RouteDenied` with `public_code` = `not_ready` (IC-002 lifecycle gate; includes the dormant standing tenant) |
 | Unknown tenant (router edge) | RECORD | `RouteDenied` with `public_code` = `not_found` (consistent denial; zero dispatch, zero pool acquisition, zero tenant-DB connection) |
-| `tenant_access_denied` / `tenant_not_ready` (auth/gateway edge) | RECORD at the gateway edge | class-3 `RouteDenied` (gateway is the emitter of record; these requests never reach `route()`); durable wiring of the gateway emitter is slice scope (§16) |
+| `tenant_access_denied` / `tenant_not_ready` (auth/public edge) | RECORD at the public edge | class-3 `RouteDenied` (the route-owning public edge is the emitter of record; these requests never reach `route()`); durable wiring of the gateway emitter is slice scope (§16) |
 | Authentication failure visible to the router | NOT A ROUTER EVENT | structurally impossible — the router never authenticates (IC-005/IC-010 §H); homed at the auth/gateway edge |
 | Secret-reference resolution failure | RECORD | `RouteDenied`, `public_code` = `connection_unavailable`, optional `error_class` = `secret_resolution` (§8 note — never alters the public code) |
 | Pool acquisition failure | RECORD | `RouteDenied`, `public_code` = `connection_unavailable`, optional `error_class` = `pool` |
@@ -221,7 +221,7 @@ Field analysis for the durable routing-decision record (wire and store carry the
 | `association_store_ref` | OPTIONAL | the logical database identifier AND the secret reference: the D-14 `SecretRef.store_ref` of the tenant's database association — a reference, never a resolved value, never a DSN, never a hostname |
 | `association_version` | OPTIONAL | the association reference version bound for this route |
 | `lane` | OPTIONAL | `interactive` / `bulk` (D-13 capacity lane) |
-| `source_service` | REQUIRED | `database_router` (later: `api_gateway` for class-3 events through the same sink) |
+| `source_service` | REQUIRED | `database_router` (the public-edge class-3 producer constant through the same sink remains the **frozen** `'api_gateway'` literal pinned by the DDL 012 CHECK — a storage compatibility artifact, not a live component; see D-45 §7) |
 | `source_version` | REQUIRED | router build/version identifier (e.g. the liveness `build_phase` string) |
 | latency / timing metadata | ASSESSED — OPTIONAL FORWARD | `duration_ms` is a reserved optional forward field; no timing claim is part of the MVP record |
 | integrity / hash-chain metadata | ASSESSED — EXCLUDED | no hash chain (B-7 precedent; never conflated with IC-004/D-23 lineage); any hash policy is a forward-contract extension only |
@@ -324,7 +324,7 @@ the wire carries the sanitized status bucket only).
 
 ## 14. Access and privacy
 
-- **Emit:** Database Router (routing-decision events) and — when its wiring slice lands — the API Gateway
+- **Emit:** Database Router (routing-decision events) and — when its wiring slice lands — the route-owning public edge
   (class-3 events). No other emitter; the Auth Router never emits.
 - **Write:** Control Plane only, through its store adapter with the forward least-privilege INSERT+SELECT role.
 - **Read / query:** CONTROL-role, control-plane-scoped, audited reads. Reads are per-tenant scoped on any

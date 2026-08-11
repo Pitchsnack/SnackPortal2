@@ -14,7 +14,7 @@
 > |---|---|
 > | The **dependency order** (§2) and why each URL feeds the next composition | Every runtime description: these edges are no longer plain stdlib `HTTPServer` processes |
 > | The fail-closed configuration semantics (§6) | The three `python -c … serve_*()` commands (§5) — retained **compatibility path only**, never standing |
-> | The one-service-per-process rule (§4) | The claim that the API Gateway has no inbound HTTP edge (§1) — **it has one, and it is the only externally reachable surface** |
+> | The one-service-per-process rule (§4) | Everything about the API Gateway (§1) — the component is **DELETED** (D-45); the externally reachable surfaces are the **two approved public edges** on 8830 / 8831 |
 > | The no-overclaim status (§8) | The three-service census — the served topology is **six** standing edges |
 >
 > The supersession notice previously existed only in the *superseding* document, which an operator
@@ -50,12 +50,13 @@ env-composition seams and then serving on the calling thread.
 | Auth Router authenticate edge | `auth_router.adapters.providers.http_authenticate_api.serve_authenticate_api()` (B5-2) | `build_authenticate_server_from_env` | `SP2_AR_AUTHENTICATE_HOST` / `SP2_AR_AUTHENTICATE_PORT` |
 | Database Router dispatch edge | `database_router.adapters.providers.http_dispatch_api.serve_dispatch_api()` (B5-2) | `build_dispatch_server_from_env` | `SP2_DBR_DISPATCH_HOST` / `SP2_DBR_DISPATCH_PORT` |
 
-> ### ❌ CORRECTED: "The API Gateway has no inbound HTTP edge" — **this is now false**
+> ### ⛔ WITHDRAWN WITH ITS SUBJECT: everything §1 says about the API Gateway
 >
 > When B5-2 was written the API Gateway was driven **in-process** (`Gateway.handle`) by its caller and
-> had no listening socket. That has not been true since the *Served API Gateway Edge V1* slice.
+> had no listening socket. It later gained a served edge — and under **D-45** (2026-08-11) the component
+> is **deleted** outright, so neither statement describes anything that exists.
 >
-> **The API Gateway now has an inbound HTTP edge, and it is the only externally reachable surface in
+> **The externally reachable surfaces are the two approved public edges (8830 / 8831), and they are the only ones in
 > the topology.** It serves `GET /memberships`, `POST /import/<source_ref>`, and — since the D-42 CLM
 > slice — `GET`/`PATCH /tenant/startups/<startup_ref>`, the last of which is a **write** path into a
 > physical tenant database. Standing port **8820**.

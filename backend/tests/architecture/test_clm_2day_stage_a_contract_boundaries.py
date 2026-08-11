@@ -115,9 +115,9 @@ _REQUIRED = (
     ("ic005", "keycloak remains the selected oidc provider for the controlled-local clm rehearsal"),
     ("ic005", "does not make keycloak the permanent production idp"),
     ("adr", "does not name keycloak the permanent production idp"),
-    # IdP-minted tenant-claim tokens; Gateway non-minting.
+    # IdP-minted tenant-claim tokens; public-edge non-minting (D-45).
     ("ic005", "minted only at the idp"),
-    ("ic005", "the gateway mints and exchanges no token"),
+    ("ic005", "the public edge mints and exchanges no token"),
     # Backend-validated tenant selection + unauthorized-tenant denial.
     ("ic005", "lawfulness is decided exclusively by the backend"),
     ("ic005", "denied fail-closed 403"),
@@ -127,7 +127,7 @@ _REQUIRED = (
     ("ic010", _UPDATE_ROUTE),
     ("ic010", "exactly three business routes"),
     ("ic010", "existing tenant operations category"),
-    ("ic010", "no dispatch category is added"),
+    ("ic010", "no route family is added"),  # D-45: same closure, current vocabulary
     ("ic010", "global directory read stays edge-dark"),
     ("ic010", "no new public_code"),
     ("ic010", "exactly one tenant database"),
@@ -149,7 +149,7 @@ _REQUIRED = (
     ("ic009", "tenantstartupupdaterequestdto"),
     ("ic009", _UPDATE_DTO_FIELDS),
     ("ic009", "the served revision remains ic-009-r1"),
-    # Portal states + Gateway-only journey.
+    # Portal states + approved-public-edge-only journey (D-45).
     ("ic009", "never page -> denied-after-protected-data"),
     ("ic009", "no direct supabase business-data access"),
     ("ic009", "logout presentation is idp-owned"),
@@ -158,7 +158,7 @@ _REQUIRED = (
     ("ic010", "tenant_startup_update"),
     ("ic010", "workspace_memberships_read"),
     ("ic010", "routedenied"),
-    ("ic010", "the api gateway is the sole emitter"),
+    ("ic010", "the route-owning public startup edge is the sole emitter"),
     ("ic010", "control-db operational audit"),
     ("ic010", "class-home binding sequences under the pending ic-002 audit-section extension"),
     ("ic010", "no new denial or anomaly class"),

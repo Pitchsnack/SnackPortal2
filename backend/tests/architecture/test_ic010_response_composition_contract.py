@@ -87,9 +87,11 @@ _A_EXISTENCE: Tuple[str, ...] = (
     "response composition contract (§v",
     "prd b5-blk-6a",
 )
+# D-45: the composer is the ROUTE OWNER, not a Gateway. Same permission, same eight conditions.
 _A_PERMITTED_PHRASE: Tuple[str, ...] = (
-    "gateway-composed, contract-approved dto response — permitted",
-    "the gateway may compose and return a gateway-composed, contract-approved dto response, and only when all of the following hold",
+    "route-owner-composed, contract-approved dto response — permitted",
+    "the route-owning public edge may compose and return a route-owner-composed, "
+    "contract-approved dto response, and only when all of the following hold",
 )
 _A_PASS_THROUGH_FORBIDDEN: Tuple[str, ...] = (
     "arbitrary downstream body pass-through — forbidden",
@@ -99,9 +101,9 @@ _A_PASS_THROUGH_FORBIDDEN: Tuple[str, ...] = (
 )
 _A_ADOPTED_CONTRACT: Tuple[str, ...] = (
     "the dto must be defined by an adopted interface contract",
-    "the gateway must not compose or return a dto that no adopted interface contract defines",
-    "composition is gateway-owned and typed",
-    "the gateway may consume typed results from injected ports as composition inputs",
+    "the route owner must not compose or return a dto that no adopted interface contract defines",
+    "composition is route-owner-owned and typed",
+    "the route owner may consume typed results from injected ports as composition inputs",
 )
 _A_DETERMINISTIC: Tuple[str, ...] = (
     "serialization must be deterministic",
@@ -116,7 +118,7 @@ _A_DENIAL_PRESERVED: Tuple[str, ...] = (
     "denial and error semantics unchanged",
     "no new public_code is introduced by composition",
     "denial precedes data",
-    "on any denial, the gateway returns the §l denial and no dto",
+    "on any denial, the public edge returns the §l denial and no dto",
 )
 _A_NO_RAW_ROW: Tuple[str, ...] = ("expose a database row directly",)
 _A_NO_SECRETS: Tuple[str, ...] = (
@@ -139,7 +141,7 @@ _A_ROUTEOUTCOME: Tuple[str, ...] = (
 )
 _A_IC009_OWNERSHIP: Tuple[str, ...] = (
     "ic-009-r1 owns the approved portal dto catalogue and portal visibility rules",
-    "ic-010 §v owns the gateway's permission and mechanics for composing those dtos",
+    "ic-010 §v owns the route owner's permission and mechanics for composing those dtos",
     "does not itself implement dtos, ports, handlers, transports, or serving edges",
 )
 _A_IC007_DEFERRAL: Tuple[str, ...] = (
@@ -276,7 +278,10 @@ def test_pin01_governing_files_located_exactly() -> None:
     assert _ADR.is_file(), f"the decision register must exist at exactly {_ADR}"
     assert _CONTRACT.name == "IC-010-API-Gateway-Contract.md"
     head = _norm(_read(_CONTRACT)[:400])
-    assert "ic-010 — api gateway contract" in head, "the located file must be IC-010 itself"
+    # D-45 (2026-08-11): IC-010 is retargeted to the *Public Edge Ingress Contract*. The FILE NAME is
+    # deliberately retained (asserted above) so every cross-reference keeps resolving; the TITLE moved.
+    assert "ic-010 — public edge ingress contract" in head, "the located file must be IC-010 itself"
+    assert 'formerly "api gateway contract"' in head, "IC-010 must record its former title (D-45 supersession trail)"
 
 
 # --- Pin 2: §V exists (structurally, not by line number) ---------------------------------------
@@ -461,7 +466,7 @@ _IC002_AUDIT_REQ_HEADING = "## Audit Requirements"
 _IC002_AUDIT_EXT_HEADING = "## Audit-Section Extension"
 _IC005_EMISSION_HEADING = "## Runtime Operational Audit Emission"
 _J_HEADING = "## Audit Contract (§J"
-_Q_HEADING = "## Endpoint Dispatch Taxonomy (§Q"
+_Q_HEADING = "## Public Route-Family Taxonomy (§Q"  # D-45: §Q retargeted from "Endpoint Dispatch Taxonomy"
 _R_HEADING = "## Internal-Surface Protection (§R"
 
 
@@ -509,8 +514,10 @@ _6CA_MANDATE: Tuple[str, ...] = (
     "never zero events, never two, never one event per returned membership record, never one event per tenant",
     "the audit records the operation, not the number or contents of returned memberships",
 )
+# D-45: the emitter is the ROUTE-OWNING public edge. Single-edge and exactly-once are unchanged;
+# the anchor is still required IDENTICALLY in all three contracts, so a one-sided drift still fails.
 _6CA_EMITTER: Tuple[str, ...] = (
-    "the api gateway is the emitter",
+    "the route-owning public workspace edge is the emitter",
     "sole emitter of this success event",
 )
 _6CA_HOME: Tuple[str, ...] = (
@@ -525,7 +532,7 @@ _6CA_SHAPE: Tuple[str, ...] = (
     "for the currently bound self-scoped operation, actor_principal_ref == subject_principal_ref",
 )
 _6CA_SEPARATION: Tuple[str, ...] = (
-    "the four gateway-edge denial/anomaly classes remain exactly the historic four — "
+    "the four public-edge denial/anomaly classes remain exactly the historic four — "
     "routedenied, carriermismatch, carrieroncontrolanomaly, isolationanomaly — unchanged",
     "must not be relabelled or classified as a denial, anomaly, or routing event",
 )
@@ -554,7 +561,9 @@ _6CA_Q: Tuple[str, ...] = (
     "must emit exactly one workspace_memberships_read success-access event (§j; b5-blk-6c-a), including a successful empty enumeration",
     "membership records only (tenant id, role, display ref), never tenant-db data",
     "is not runtime-bound by b5-blk-6b and is not implemented by b5-blk-6c-a",
-    "dispatched to exactly one category",
+    # D-45: there is no dispatcher; a request BELONGS to exactly one family owned by exactly one edge.
+    "belongs to exactly one category",
+    "a route family has exactly one owner",
     "one request → one category → one database",
 )
 
@@ -578,9 +587,9 @@ _6CA_R_RETAINED: Tuple[str, ...] = (
 
 # The historic §J four-event emit sentence, pinned in full — inserting a fifth event breaks it.
 _J_HISTORIC_EMIT = (
-    "the gateway emits these audit events where applicable: carriermismatch (403 carrier/claim mismatch), "
+    "a public edge emits these audit events where applicable: carriermismatch (403 carrier/claim mismatch), "
     "carrieroncontrolanomaly (recognized tenant carrier on a tenantless control token — mandatory per d-33-e1 item 1), "
-    "routedenied (authorization/readiness denial at dispatch), and isolationanomaly "
+    "routedenied (authorization/readiness denial), and isolationanomaly "
     "(any detected attempt to cross the one-database boundary)"
 )
 # The IC-002 class-3 gateway-edge braced action set — exactly once, exactly four members.

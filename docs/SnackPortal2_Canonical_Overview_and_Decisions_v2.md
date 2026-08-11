@@ -1,19 +1,39 @@
 # SnackPortal2 — Canonical Overview & Decisions (v2)
 
-> ## ⚠️ DRIFT FLAG — `experiment/complete-api-gateway-removal-mvp` contradicts this document
+> ## ✅ RATIFIED — D-45 supersedes locked invariant #7 (`experiment/complete-api-gateway-removal-mvp`)
 >
-> **Part 2 locked invariant #7 — *"The Gateway is the boundary"* — and the Part 1 *"One doorway only: the API Gateway"* framing are both contradicted on that branch: the API Gateway package is DELETED and each MVP route family is served by the service that owns its records, behind a shared boundary library linked in-process. **D4 ("build the Gateway next") is superseded there too.** The proposed replacement invariant is *"the authenticated public edge is the boundary — the frontend reaches only route-owning public edges, never a database, an internal read API, or a router directly."*
+> **This is a recorded supersession of a LOCKED invariant, made by explicit human architecture
+> decision from Dan on 2026-08-11 (D-45).** It is not a silent edit and it is not a code-driven
+> change. The prior DRIFT flag on this document is **closed by ratification**, not by argument.
 >
-> **This document is NOT amended.** CLAUDE.md makes the Overview authoritative on scope and the
-> locked decisions, and says to *flag DRIFT before acting* — which is what this banner is. Reopening
-> a locked invariant or reversing a decision needs Dan's sign-off, not a code change. On `main`
-> nothing here has moved.
+> **What Dan decided.** The SnackPortal2 **Controlled Local MVP removes the API Gateway component**
+> and uses explicitly approved, **route-owning, authenticated public edges**. The official
+> architecture no longer requires the API Gateway as the sole ingress or as the security boundary
+> for the Controlled Local MVP.
+>
+> | | Superseded text (retained for audit) | Ratified replacement |
+> |---|---|---|
+> | **Part 2 invariant #7** | *"The Gateway is the boundary — frontend → Gateway, never directly to DB/auth/router."* | *"**The authenticated public edge is the boundary.** Client traffic reaches only explicitly approved route-owning public edges. Internal service APIs, routers, audit-ingest APIs, database transports, and databases are never direct client ingress."* |
+> | **Part 1 framing** | *"One doorway only: the API Gateway."* | *"Two approved doorways, each owned by the service that owns its records — the public Startup edge and the public Workspace edge."* |
+> | **D4** | *"Build the API Gateway next."* | **Superseded for the MVP** — the Gateway is not built; the two public edges serve the MVP route families. |
+>
+> **Every security invariant is ratified, not weakened** — they are now properties of the approved
+> public edges and route-owning services rather than of a Gateway component. The full decision,
+> its eight-point definition of an approved public edge, its closed two-edge set, its accepted
+> consequence, and its frozen residuals are in **[D-45](D-45-Gateway-Free-Public-Edge-Architecture.md)**
+> and the [Architecture Decision Register](Architecture-Decision-Register.md).
+>
+> **D-45 is a Controlled Local MVP architecture decision and is NOT a production approval.** It
+> authorizes no push, PR, merge, DDL, live-PostgreSQL, Keycloak, SecretRef, credential, or
+> standing-runtime change; **only Dan may explicitly authorize the specific future PR merge**.
+> **Gate B remains NOT GRANTED. Production remains NOT READY / DO-NOT-ACTIVATE.** On `main` nothing
+> here has moved.
 >
 > Full evidence: `docs/reports/SnackPortal2_Complete_API_Gateway_Zero_Residual_Removal_Result_Claude.md`.
 
 > **What changed in v2.** Decisions D1–D4 and D7 are recorded as made; **D6 is now formally Deferred** (with a reservation spec in Part 4B). The Lovable project-state report has been folded in as confirmed drift plus a keep/replace rework list, and registered as session **S6** so it slots into the comparison.
 
-**Version:** v2.2
+**Version:** v2.3 *(v2.3 = the D-45 locked-invariant #7 supersession, 2026-08-11)*
 **Date:** 2026-06-20
 **Status:** 🟢 Overview fully locked — all decisions D1–D8 resolved (D6 deferred), all 4 business inputs filled · ⚠️ tight timeline: target before end of July 2026 (see Part 7 schedule note)
 
@@ -25,8 +45,8 @@
 |---|---|---|---|
 | D1 | Two-layer framing (product + platform)? | **Decided** | Yes — both layers |
 | D2 | Physical multi-DB: now or later? | **Decided** | Build-now (backend-led) |
-| D3 | How much does Lovable build? | **Decided** | UI surface only, behind the Gateway |
-| D4 | API Gateway next? | **Decided** | Build the Gateway next |
+| D3 | How much does Lovable build? | **Decided** | UI surface only, behind the approved public edges (was "behind the Gateway" — D-45) |
+| D4 | API Gateway next? | **Superseded by D-45** | ~~Build the Gateway next~~ → the Gateway is **not** part of the MVP; the two approved public edges are the boundary |
 | D5 | PRD numbering scheme | **Decided** | Two prefixed tracks: P- (product) / B- (backend) — see PRD Index |
 | D6 | Control AI scope | **Deferred** | Keep ownership-AI; defer the active Control AI network to the Intelligence phase (door kept open — see Part 4B) |
 | D7 | Supabase's role | **Decided** | Interim only |
@@ -46,12 +66,12 @@ A workspace for venture deal-making. Agents manage startups, investors, and deal
 **Target customer:** Tier 1 venture capital and private equity firms that **originate and lead** investment rounds at pre-Series A and beyond. Each such firm is a tenant; its dealmakers are the agents. (This profile is why physical data isolation matters so much — see Part 6.)
 
 ## Layer 2 — The Platform (what's underneath)
-A vendor-neutral backend: one central **Control database** (platform-wide records **plus the Control-owned global registry of startups and investors** — the master pool) + a **separate physical database per tenant** (independent copies of records, imported with lineage), chosen by a **Database Router**, fronted by an **API Gateway**, with Control Plane, Authentication, Import, and Lineage services. Governed by contracts/ADRs.
+A vendor-neutral backend: one central **Control database** (platform-wide records **plus the Control-owned global registry of startups and investors** — the master pool) + a **separate physical database per tenant** (independent copies of records, imported with lineage), chosen by a **Database Router**, fronted by **approved authenticated public edges** — one per route-owning service (D-45; formerly a single API Gateway) — with Control Plane, Authentication, Import, and Lineage services. Governed by contracts/ADRs.
 
 ## How the two layers connect
-One doorway only: the **API Gateway**.
-`Lovable (UI) → API Gateway → backend services → Database Router → the correct tenant database.`
-The Gateway never picks the database (the Router does); the frontend never talks to a database directly; one request serves one tenant → one database.
+**Approved doorways only — one per route-owning service** (D-45; this replaces the former *"one doorway only: the API Gateway"*).
+`Lovable (UI) → the approved public edge that owns the route → that service → Database Router → the correct tenant database.`
+Today there are exactly two: the **public Startup edge** (tenant Startup routes) and the **public Workspace edge** (`GET /memberships`). A public edge never picks the database (the Router does); the frontend never talks to a database, an internal API, or a router directly; one request serves one tenant → one database; and **no public edge forwards a request into another service's route family**.
 
 ## Business model (how it earns)
 SnackPortal2 is an **AI-as-a-Service platform with performance-aligned, dual-sided revenue** — it earns from both capital providers and capital seekers, mostly only when a deal actually happens:
@@ -66,11 +86,11 @@ SnackPortal2 is an **AI-as-a-Service platform with performance-aligned, dual-sid
 ## Current build reality (as of the Lovable state report, 2026-06-20)
 The honest snapshot has three parts at different stages:
 - **Backend foundation (Phases 1–6): built and accepted** — including the physical-multi-database design (~88% aligned).
-- **API Gateway: not built** — scaffold-only, reviewed as READY_WITH_GUARDS; next document is PRD 04 V2.
-- **Product frontend: ~70% of screens exist in Lovable**, but on an **interim** single-database Supabase backend that uses logical (not physical) tenant separation. That data layer is temporary and is replaced at the Gateway cutover.
+- **API Gateway: REMOVED from the MVP architecture (D-45, 2026-08-11).** It was built, then deleted; the two approved public edges serve the MVP route families behind the shared public-boundary security kernel. *(The historical snapshot below is preserved: at the time this section was written the Gateway was scaffold-only and PRD 04 V2 was the next document.)*
+- **Product frontend: ~70% of screens exist in Lovable**, but on an **interim** single-database Supabase backend that uses logical (not physical) tenant separation. That data layer is temporary and is replaced at the public-edge cutover (formerly "the Gateway cutover" — D-45; B5-BLK-5 remains OPEN).
 
 ## Definition of done (two tiers)
-**MVP launch-ready when** a VC/PE firm can be onboarded as a tenant **on its own physical database**, its agents can **manage, share, email, chat/message, and book meetings (calendar)** with startups/investors about deals **through the API Gateway**, and a **manually-matched, platform-recommended deal can be attributed and billed end-to-end.**
+**MVP launch-ready when** a VC/PE firm can be onboarded as a tenant **on its own physical database**, its agents can **manage, share, email, chat/message, and book meetings (calendar)** with startups/investors about deals **through the approved authenticated public edges** (D-45), and a **manually-matched, platform-recommended deal can be attributed and billed end-to-end.**
 
 **Full product (AI-implementation phase):** **AI and AI agents plug into the MVP channels and tools** — adding AI-powered **find/discovery**, AI-assisted/automated **email outreach**, **AI chat agents**, and **AI scheduling**, plus the rest of the Control AI (Discovery, Recommendation, Communication AI; B-8 AI Gateway, B-12 Control AI).
 
@@ -85,8 +105,8 @@ The honest snapshot has three parts at different stages:
 3. **Ownership rule** — every startup/investor/deal has exactly one human owner and one AI owner. *(Confirmed built in Lovable.)*
 4. **Sharing ≠ ownership** — sharing never transfers ownership, never moves tenant, never duplicates. *(Confirmed built in Lovable.)*
 5. **Anti-vendor-lock-in** — no design that ties the business to one provider as the final architecture.
-6. **Lovable owns the surface, not the plumbing** — UI only; not the Router, Gateway, AI orchestration, or routing.
-7. **The Gateway is the boundary** — frontend → Gateway, never directly to DB/auth/router.
+6. **Lovable owns the surface, not the plumbing** — UI only; not the Router, the public edges, AI orchestration, or routing.
+7. **The authenticated public edge is the boundary** *(ratified 2026-08-11 by **D-45**, superseding the locked text "The Gateway is the boundary — frontend → Gateway, never directly to DB/auth/router." — see the banner at the head of this document)* — client traffic reaches only explicitly approved **route-owning** public edges; internal service APIs, routers, audit-ingest APIs, database transports, and databases are **never** direct client ingress. Today the approved set is exactly two: the public Startup edge and the public Workspace edge, and **any new one requires explicit architecture/governance approval**.
 8. **DEC-11 stays binding** — no ownership-audit data-location binding until the IC-002 extension lands.
 
 ---
@@ -94,11 +114,11 @@ The honest snapshot has three parts at different stages:
 # PART 3 — DECISIONS
 
 **Made:**
-- **D1 — Two-layer framing: YES.** SnackPortal2 is a product layer on a platform layer, joined at the Gateway.
-- **D2 — Physical multi-DB: BUILD-NOW (backend-led).** Physical separation is mandatory; the product connects once the backend + Gateway are ready.
-- **D3 — Lovable scope: UI SURFACE ONLY, behind the Gateway.** Keep ~70% of the screens; the data layer is interim and gets replaced. (Detail in Part 4.)
-- **D4 — API Gateway: BUILD NEXT.** It's the doorway the product waits on; already reviewed (READY_WITH_GUARDS); next artifact is PRD 04 V2.
-- **D7 — Supabase: INTERIM ONLY.** May back early Lovable UI; final business data lives behind the Gateway in the physical-multi-DB backend; plan the cut-over.
+- **D1 — Two-layer framing: YES.** SnackPortal2 is a product layer on a platform layer, joined at the approved public edges (D-45; formerly "at the Gateway").
+- **D2 — Physical multi-DB: BUILD-NOW (backend-led).** Physical separation is mandatory; the product connects once the backend + the approved public edges are ready.
+- **D3 — Lovable scope: UI SURFACE ONLY, behind the approved public edges.** Keep ~70% of the screens; the data layer is interim and gets replaced. (Detail in Part 4.)
+- **D4 — API Gateway: BUILD NEXT — ⚠️ SUPERSEDED BY D-45 (2026-08-11).** *Original text, retained for audit:* "It's the doorway the product waits on; already reviewed (READY_WITH_GUARDS); next artifact is PRD 04 V2." **Dan's D-45 decision removes the API Gateway component from the Controlled Local MVP**; the product waits instead on the approved route-owning public edges (already built on `experiment/complete-api-gateway-removal-mvp`) and on the frontend cutover to their two origins (IC-010 §Y). PRD 04 V2 is **not** authored.
+- **D7 — Supabase: INTERIM ONLY.** May back early Lovable UI; final business data lives behind the approved public edges in the physical-multi-DB backend; plan the cut-over.
 
 **Deferred (revisit at the Intelligence phase):**
 - **D6 — Control AI scope: DEFERRED.** Keep the ownership-AI (the one-AI-owner-per-record rule, already built and locked as invariant #3). Defer the *active* Control AI network — the discovery/recommendation/relationship/analytics/compliance/communication agents from S1 — to a later Intelligence phase. The Lovable report confirms it isn't built (an AI key exists but nothing calls it), so deferring changes nothing today. To keep revisiting cheap, follow the reservation spec in **Part 4B**. Note: deferring D6 does **not** weaken any AI ownership that already exists.
@@ -117,7 +137,7 @@ The honest snapshot has three parts at different stages:
 ## The confirmed drift: logical vs physical tenant separation
 Lovable keeps every tenant's data in **one shared database**, separated by a `tenant_id` label on each row plus security rules (RLS). Your D2 choice requires the opposite: a **separate physical database per tenant**, chosen by the Database Router. So the isolation method that exists today is not the final one — this is the long-warned "DRIFT-01," now confirmed concretely.
 
-**Why this is manageable, not alarming:** the frontend never writes to the database directly. Every business read/write goes through a clean server-function RPC layer, which is exactly the seam you re-point at the API Gateway later. The UI is largely portable.
+**Why this is manageable, not alarming:** the frontend never writes to the database directly. Every business read/write goes through a clean server-function RPC layer, which is exactly the seam you re-point at the approved public edges later — note that under D-45 it must be re-pointed at **two** origins, not one (IC-010 §Y). The UI is largely portable.
 
 ## What's already aligned (good news)
 - Dual Human + AI ownership is built and enforced (deal creation requires both owners).
@@ -129,7 +149,7 @@ Lovable keeps every tenant's data in **one shared database**, separated by a `te
 | Layer in Lovable today | Disposition |
 |---|---|
 | UI: components, routes, hooks, design system (~70% of screens) | **KEEP** — portable |
-| RPC seam (`src/lib/*.functions.ts` server functions) | **RE-POINT** at the API Gateway |
+| RPC seam (`src/lib/*.functions.ts` server functions) | **RE-POINT** at the approved public edges — **two** origins under D-45 (Startup + Workspace), not one |
 | Supabase clients + browser auth session + bearer attacher | **REPLACE** at cutover |
 | Isolation: single DB + `tenant_id` + RLS + cohesion triggers | **REPLACE** with physical DB-per-tenant + Router |
 | Schema (44 tables) | **REUSE** to seed backend schemas (split below) |
@@ -169,8 +189,8 @@ The active Control AI is platform-level and cross-tenant, so its data belongs in
 - **Reserve the `ai.invoke` permission** as the single gate for real model calls. It already exists in Lovable's permission model — keep it defined, leave it **unwired** to any model.
 - **Reserve an audit-event class for AI-initiated actions.** This lines up with the already-pending "runtime audit-class home for IC-010 §J emit-set" (deferred to the IC-005/IC-002 audit extension) and with DEC-11 — so reserve the class now, bind it later. No new commitment today.
 
-## C. Boundary reservation (keep it off the API Gateway being built next)
-- **Reserve a separate "AI Gateway / model router"** as a *future, distinct* component. The API Gateway you build next (PRD 04 V2) is the frontend↔backend doorway and must **not** take on AI model routing. Control AI model calls will go through the future AI Gateway, not the request API Gateway. Reserving this keeps the near-term Gateway simple.
+## C. Boundary reservation (keep it off the request boundary)
+- **Reserve a separate "AI Gateway / model router"** as a *future, distinct* component (**IC-006 — untouched by D-45; it is a different component from the removed request-ingress Gateway**). The approved authenticated public edges are the frontend↔backend boundary and must **not** take on AI model routing. Control AI model calls will go through the future AI Gateway, never a public request edge. Reserving this keeps the public edges narrow.
 
 ## D. Roadmap reservation
 - **Name a future phase: "Intelligence / Control AI."** Record S1's agent hierarchy as its spec to revisit: Startup Discovery AI, Investor Discovery AI, Recommendation AI, Relationship AI, Analytics AI, Compliance AI, Communication AI.
@@ -181,7 +201,7 @@ The active Control AI is platform-level and cross-tenant, so its data belongs in
 - Do not create the `control_ai_*` tables yet.
 - Do not wire `ai.invoke` to any model.
 - Do not add AI-initiated communication or outreach flows.
-- Do not let the API Gateway handle AI routing.
+- Do not let any approved public edge handle AI routing.
 
 ---
 
@@ -208,10 +228,10 @@ KEY STATE / DECISIONS:
 
 DRIFT FROM TARGET:
 - Logical multi-tenancy (single shared DB) vs required physical multi-DB → DRIFT-01 confirmed.
-- Lovable currently IS the backend (Supabase) — conflicts with "Lovable owns surface, not plumbing" until the Gateway cutover.
+- Lovable currently IS the backend (Supabase) — conflicts with "Lovable owns surface, not plumbing" until the public-edge cutover.
 
 OPEN ITEMS:
-- Replace isolation model and re-point server functions at the Gateway at cutover.
+- Replace isolation model and re-point server functions at the approved public edges at cutover (two origins — IC-010 §Y).
 - Decide where cross-tenant sharing tables live in the physical model.
 - Finish: notification delivery, AI invocation, document upload, access-management UI, invitations.
 === END BLOCK ===
@@ -226,8 +246,8 @@ OPEN ITEMS:
 | Control + Tenant DB | One shared DB, tenant_id column | ❌ to be split into Control + per-tenant DBs |
 | Ownership rule | Dual Human + AI, enforced | ✅ matches |
 | Deal sharing | Built, sharing ≠ transfer | ✅ matches |
-| Lovable's role | Currently owns UI **and** backend | ⚠️ to become UI-only behind the Gateway |
-| API Gateway | None — UI calls Supabase server functions | ⚠️ Gateway to be inserted (D4) |
+| Lovable's role | Currently owns UI **and** backend | ⚠️ to become UI-only behind the approved public edges |
+| Client ingress boundary | None — UI calls Supabase server functions | ⚠️ **two approved public edges** to be adopted (D-45 supersedes D4's single Gateway) |
 | AI / Control AI | Not built (key unused) | ✅ matches the deferral (D6) |
 | Status | ~70% screens; interim Supabase backend | — |
 
@@ -237,14 +257,14 @@ OPEN ITEMS:
 
 1. **Client / who it's for** — ✅ **Your own venture.** SnackPortal2 is operated by you as **Control** (the platform operator), sold to **Tier 1 VC and PE firms that originate and lead investment rounds at pre-Series A and beyond.** Each firm is a tenant; its dealmakers are the agents. Decision-maker: you.
 2. **Business / revenue model** — ✅ **Performance-aligned, dual-sided "AI-as-a-Service":** VC success fees (2–7% of deal value on platform-recommended investments) + startup matching fees (2–7%) + a minimum annual retention fee. Earns mostly on actual deals. *(Full detail in Part 1 → Business model. Raises a new decision — see D8.)*
-3. **Definition of done** — ✅ Set, two tiers (see Part 1). **MVP** = firm onboarded on its own physical DB; agents manage/share **and email/chat** about deals via the Gateway; a manually-matched, recommended deal is attributed and billed end-to-end. **AI phase** = AI agents plug into those channels (find/discovery, AI email, AI chat).
+3. **Definition of done** — ✅ Set, two tiers (see Part 1). **MVP** = firm onboarded on its own physical DB; agents manage/share **and email/chat** about deals via the approved public edges; a manually-matched, recommended deal is attributed and billed end-to-end. **AI phase** = AI agents plug into those channels (find/discovery, AI email, AI chat).
 4. **Target launch milestone** — ✅ **Before end of July 2026** (~6 weeks out). Hard date. ⚠️ Tight against committed scope — see the schedule note in Part 7.
 
 ---
 
 # PART 7 — RECOMMENDED NEXT ACTIONS
 
-1. **Build the API Gateway next** — author and review PRD 04 V2 (already your plan via D4). Keep it free of AI routing (Part 4B-C).
+1. ~~**Build the API Gateway next** — author and review PRD 04 V2 (already your plan via D4).~~ **SUPERSEDED by D-45 (2026-08-11).** The Gateway is not built. The next ingress work is the **frontend cutover to the two approved public-edge origins** (IC-010 §Y) and re-authoring the live proofs the removal cost (§9 of D-45). Keep every public edge free of AI routing (Part 4B-C).
 2. **Keep the Lovable UI; keep Supabase as interim** — and write down the cutover plan now so "interim" doesn't drift into "permanent."
 3. **Reuse Lovable's 44-table schema** to seed the Control and per-tenant database schemas; resolve where cross-tenant sharing lives; **and apply the Part 4B reservations** (reserve the `control_ai_*` cluster, the `CONTROL_AI` role, the `ai.invoke` gate, and the AI-audit class) so the deferred Control AI stays additive.
 4. **Close D5 (numbering)** — ✅ done (two tracks P-/B-, see PRD Index).
@@ -252,20 +272,20 @@ OPEN ITEMS:
 
 ## ⚠️ Schedule reality-check (target: before end of July 2026, ~6 weeks)
 The committed MVP is large for the timeframe. To reach the definition of done it needs, on the **critical path**:
-1. **API Gateway (B-7 / PRD 04 V2)** — author, review, build.
+1. ~~**API Gateway (B-7 / PRD 04 V2)** — author, review, build.~~ **Superseded by D-45** → **approved public edges (built) + the frontend cutover to their two origins + re-authoring the lost live proofs.**
 2. **Physical-DB provisioning + re-point Lovable's data layer** off the interim single-database Supabase (the logical→physical migration).
 3. **Manual matching workflow + fees/billing engine** (the revenue path).
 4. **Email + chat + calendar-booking tools** (currently gaps).
 
-The tightest tension is **D2 (build-now physical multi-DB):** because the product must connect through the Gateway to *physical* tenant databases before launch, that migration sits on the critical path — it's the slowest item, and it's load-bearing.
+The tightest tension is **D2 (build-now physical multi-DB):** because the product must connect through the approved public edges to *physical* tenant databases before launch, that migration sits on the critical path — it's the slowest item, and it's load-bearing.
 
 If end-of-July is firm, options to make it feasible:
 - **(a) Phase the launch** — go live with the revenue-critical core (onboard one tenant, manage/share deals, manual match, billing) and fast-follow the comms/calendar tools.
 - **(b) Soft-launch the first tenant(s)** while the physical backend completes as a fast-follow — but weigh this against the physical-isolation selling point for competing VC firms (the whole reason for D2).
-- **(c) Add delivery capacity** for the parallel workstreams (Gateway, migration, billing, tools).
+- **(c) Add delivery capacity** for the parallel workstreams (public-edge cutover, migration, billing, tools).
 
 *Recommended next step: build a week-by-week critical-path plan to test whether end-of-July is realistic and decide on phasing.*
 
 ---
 
-*End. This v2 is the current north star. The PRD and all sessions trace back to it; the API Gateway is the next build; Lovable's UI is kept and its data layer is interim. Target: before end of July 2026.*
+*End. This v2 is the current north star. The PRD and all sessions trace back to it; **the API Gateway is removed from the MVP architecture and the authenticated public edge is the boundary (D-45, 2026-08-11)**; Lovable's UI is kept and its data layer is interim. Target: before end of July 2026.*

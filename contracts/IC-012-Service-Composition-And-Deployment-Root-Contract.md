@@ -2,6 +2,7 @@
 
 **Status:** Draft / Proposed · **Phase:** Build under contract-first governance · **Type:** Contract-first specification
 **Opened:** by **D-44 — Deployment Cross-Service Composition Root (Edge 9 Import Edge)**. **Revision:** IC-012-DRAFT-1.
+**Amendment (2026-08-11, D-45 — Gateway-Free Controlled Local MVP Ingress Architecture; ratified by Dan):** `api_gateway` is removed from every **active service list** in this contract (§2, §3, §4, §13, §18) because **the package was deleted, not because the D-44 grant widened**. The authorized set in §3 is **unchanged and still exhaustive** (`import_service`, `database_router`, `lineage_service`, `shared`); the un-authorized forward set is still the **exact complement** of that grant over the surviving service packages. §15's IC-010 cross-reference is reconciled to the ratified public-edge boundary. **No composition authority is granted, widened, or relaxed by this amendment**, and every §4 prohibition, §5.1 governance gate, §8–§12 rule, §13 enforcement requirement and §14 guard check is preserved verbatim.
 RFC-2119 keywords **MUST / MUST NOT / SHOULD / MAY** are used normatively.
 
 > **Contract-first, no positive capability.** This contract **specifies and constrains a structural boundary**. It grants no route, no DTO, no error code, no cross-tenant capability, no audit class, and no DDL. It changes no import, lineage, routing, or authentication semantics. It grants **no blanket cross-service composition authority** — only the specific composition named in §3. IC-012 becomes **Final** only after independent verification and human merge. **Production remains NOT READY / DO-NOT-ACTIVATE.**
@@ -21,7 +22,7 @@ cross-service composition   →  deployment only
 - The root MUST re-use each service's **own published composition seam** rather than re-deriving wiring, so there is exactly one source of truth for every dependency.
 
 ## §2 — Why cross-service composition belongs ABOVE the services
-Each service package (`api_gateway`, `auth_router`, `control_plane`, `database_router`, `import_service`, `lineage_service`) is **mutually independent**, and `shared` is a dependency leaf that imports none of them. That DAG is the structural guarantee behind physical tenant isolation: no service can reach another's internals, so no service can quietly acquire a second service's database authority. Within its own boundary each service composes itself freely; the DAG constrains only what crosses a boundary.
+Each service package (`auth_router`, `control_plane`, `database_router`, `import_service`, `lineage_service`) is **mutually independent**, and `shared` is a dependency leaf that imports none of them. That DAG is the structural guarantee behind physical tenant isolation: no service can reach another's internals, so no service can quietly acquire a second service's database authority. Within its own boundary each service composes itself freely; the DAG constrains only what crosses a boundary.
 
 `ImportService` depends on two **ports** whose only implementations live in other services — `RoutedSessionProvider` (`database_router`) and `LineageEmitPort` (`lineage_service`). There are exactly three ways to satisfy that, and two are prohibited:
 
@@ -44,12 +45,16 @@ deployment ──> shared             # dependency leaf
 This list is **exhaustive and closed**. The following are **NOT authorized** and MUST NOT appear:
 
 ```
-deployment ─╳─> api_gateway
 deployment ─╳─> auth_router
 deployment ─╳─> control_plane
 ```
 
-- Each authorized edge is authorized **because Edge 9 strictly requires it**. `deployment.import_edge` imports exactly `database_router.main`, `database_router.session_provider`, `database_router.adapters.providers.env_tenant_secret_store`, `import_service.main`, `import_service.adapters.providers.http_import_api`, and `lineage_service.emit` — and nothing else. `api_gateway`, `auth_router`, and `control_plane` are **not required by it** and are therefore **not granted**.
+> **D-45 note (no widening).** This list previously also named `deployment ─╳─> api_gateway`. That
+> package was **deleted** under D-45, so the complement shrank; **the authorized set above did not
+> move**. The un-authorized list remains the **exact complement** of the §3 grant over every
+> surviving service package, and widening it still requires the §5.1 amendment path.
+
+- Each authorized edge is authorized **because Edge 9 strictly requires it**. `deployment.import_edge` imports exactly `database_router.main`, `database_router.session_provider`, `database_router.adapters.providers.env_tenant_secret_store`, `import_service.main`, `import_service.adapters.providers.http_import_api`, and `lineage_service.emit` — and nothing else. `auth_router` and `control_plane` are **not required by it** and are therefore **not granted**. *(Before D-45 this sentence also named `api_gateway`; that package no longer exists.)*
 - This contract confers **no blanket cross-service composition authority**. Widening the authorized set — for any service, for any reason — requires an IC-012 amendment under **§5.1**.
 - `deployment` MUST NOT be imported by anything (see §4).
 - The root's cross-service imports SHOULD be **function-local** (inside the factory), so the module stays inert per §1 and driver-bearing provider modules load only when a real composition is requested.
@@ -64,7 +69,6 @@ database_router   ↛ import_service
 lineage_service   ↛ import_service
 shared            ↛ any service
 shared            ↛ deployment
-api_gateway       ↛ deployment
 auth_router       ↛ deployment
 control_plane     ↛ deployment
 database_router   ↛ deployment
@@ -74,7 +78,7 @@ lineage_service   ↛ deployment
 
 Rationale for `services ↛ deployment`: without it, the root becomes a **legal back-channel** — service A could reach service B through `deployment`, and the service-independence contract would never observe the chain. The forbidden direction is therefore load-bearing, not cosmetic.
 
-**Forward direction is equally normative.** The un-authorized forward edges named in §3 — `deployment ↛ api_gateway`, `deployment ↛ auth_router`, `deployment ↛ control_plane` — are prohibited on the same footing as the reverse edges above, and are machine-enforced by their own contract (§13).
+**Forward direction is equally normative.** The un-authorized forward edges named in §3 — `deployment ↛ auth_router`, `deployment ↛ control_plane` — are prohibited on the same footing as the reverse edges above, and are machine-enforced by their own contract (§13).
 
 The pre-existing service-independence contract remains in force **verbatim and unweakened**. IC-012 adds constraints; it removes none.
 
@@ -156,7 +160,7 @@ There MUST be **no fallback** to an in-memory session provider, a lineage double
 ## §13 — Import-linter enforcement requirements
 - `deployment` MUST be listed in `[tool.importlinter] root_packages` so the package is **analyzed and policed**, not merely unlisted. An unlisted package is invisible to the graph and could silently become a back-channel.
 - A dedicated `forbidden` contract MUST name every service package and `shared` as `source_modules` and `deployment` as the sole `forbidden_module` — the reverse direction of §4.
-- A second dedicated `forbidden` contract MUST name `deployment` as the sole `source_module` and `api_gateway`, `auth_router`, `control_plane` as `forbidden_modules` — the **un-authorized forward direction** of §3, so the narrow authorization is machine-enforced and cannot be widened by editing code alone. Widening it requires the §5.1 amendment path.
+- A second dedicated `forbidden` contract MUST name `deployment` as the sole `source_module` and **every surviving service package outside the §3 authorized set** — today exactly `auth_router` and `control_plane` — as `forbidden_modules` — the **un-authorized forward direction** of §3, so the narrow authorization is machine-enforced and cannot be widened by editing code alone. Widening it requires the §5.1 amendment path.
 - The pre-existing service-independence contract MUST remain **unchanged and unweakened**: no service may be removed from it, no `ignore_imports` exemption may be added for `import_service → database_router` or `import_service → lineage_service`, and its module list MUST NOT be narrowed. `deployment` MUST NOT be added to it.
 - `lint-imports` MUST report **0 broken contracts**. The check MUST run in CI and MUST be executed via the `lint-imports` entry point.
 
@@ -171,12 +175,12 @@ A dedicated AST/text guard under `backend/tests/architecture/` MUST enforce, ind
 6. **Factory shape** — `create_app_from_env` takes no parameters, returns a `FastAPI` app, and binds no host/port.
 7. **No server binding** — `deployment` imports no concrete ASGI server (§12).
 8. **Text-drift** — the IC-012 §3/§4 direction tables and this section's guard list are pinned against drift, matching the repository's existing contract-text-drift guard precedent.
-9. **Authorized composition set** — no module in `deployment` imports any service package outside the exhaustive §3 authorized set; specifically, no import of `api_gateway`, `auth_router`, or `control_plane` appears in any form, and the module census of `deployment` matches §16. This check backstops the import-linter contract in §13 and makes an un-amended widening fail twice.
+9. **Authorized composition set** — no module in `deployment` imports any service package outside the exhaustive §3 authorized set; specifically, no import of `auth_router` or `control_plane` appears in any form, and the module census of `deployment` matches §16. This check backstops the import-linter contract in §13 and makes an un-amended widening fail twice.
 
 ## §15 — Contract impact
 - **IC-003 (Import) — amended, references-only.** A cross-reference recording that the Import edge's `RoutedSessionProvider` and `LineageEmitPort` are supplied by the deployment composition root. **No import semantic changes**: execution model (D-19), idempotency and natural-key reconciliation (D-20), re-import governance (D-20/D-34), partial-failure and batching semantics (D-21), ingress validation and PII handling (D-09 ingress), the API contract, the DTO contract, and the audit requirements are all unchanged. The composed `ImportService`, its ports, routes, and durable audit sink are the same ones the injected composition produced.
 - **IC-004 (Lineage) — amended, references-only.** A cross-reference recording that the `LineageEmitPort` implementation is injected by the composition root with the per-tenant `"tenant"` key prefix. **No lineage semantic changes**: the minimum lineage record, source/target references, actor identity, tenant-context requirements, the per-tenant hash chain and append-only model (D-23), retention/archival (D-24), unified provenance (D-25), cross-tenant isolation, and failure behaviour remain wholly owned by `lineage_service`.
-- **IC-010 (API Gateway) — amended, references-only.** A cross-reference in §H (Database Router Boundary), §K (Isolation) and §O (Physical Multi-Database Rule) recording that composition **supplies** the Database Router but **selects no database**. The Gateway remains the sole served ingress; the Database Router remains the sole database selector; one request → one active tenant → one database is unchanged. **No route, no dispatch category, no carrier, no `public_code`, and no audit class is added** (§Q taxonomy unchanged; §J unchanged).
+- **IC-010 (Public Edge Ingress Contract) — amended, references-only.** A cross-reference in §H (Database Router Boundary), §K (Isolation) and §O (Physical Multi-Database Rule) recording that composition **supplies** the Database Router but **selects no database**. **Reconciled 2026-08-11 (D-45):** the **approved authenticated public edges** are the sole served client ingress (IC-010 §A.2); the Edge 9 Import edge this root composes is an **internal, non-public** edge and is **not** a client ingress path (IC-010 §R/§M). The Database Router remains the sole database selector; one request → one active tenant → one database is unchanged. **No route, no route family, no carrier, no `public_code`, and no audit class is added** (§Q taxonomy unchanged; §J unchanged).
 - **IC-001, IC-002, IC-005, IC-006, IC-007, IC-008, IC-009, IC-011 — no change.** The root adds no global-directory behaviour, no tenant-startup behaviour, no authentication or routing authority, no AI capability, no sharing capability, no ownership rule, no portal DTO or route, and no rollback-proof term.
 - **ADR impact:** **D-44 (new).** No existing decision is amended, superseded, or reopened. D-07, D-13, D-14, D-21, D-25, and D-30 are **relied upon and preserved**, not modified.
 
@@ -206,7 +210,7 @@ backend/deployment/import_edge.py    # Edge 9 factory: create_app_from_env
 Its only permitted act is to **call published composition seams and pass the resulting objects to one another**. Nothing in this section restricts what a service may do inside its own service-local composition root.
 
 ## §18 — Services remain mutually independent (restatement — normative)
-The introduction of `deployment` **does not** create, imply, or permit any dependency between services. `api_gateway`, `auth_router`, `control_plane`, `database_router`, `import_service`, and `lineage_service` remain **mutually independent**, and `shared` remains a dependency leaf importing none of them. In particular `import_service ↛ database_router` and `import_service ↛ lineage_service` remain absolute. Each service also retains full ownership of its **own** composition — IC-012 takes no service-local authority away. `deployment` is not a shared library, not a service, not a mediator, and not a message path: it is a one-way, top-of-DAG assembler with a narrow, enumerated import set that every service is structurally forbidden to see.
+The introduction of `deployment` **does not** create, imply, or permit any dependency between services. `auth_router`, `control_plane`, `database_router`, `import_service`, and `lineage_service` remain **mutually independent**, and `shared` remains a dependency leaf importing none of them. In particular `import_service ↛ database_router` and `import_service ↛ lineage_service` remain absolute. Each service also retains full ownership of its **own** composition — IC-012 takes no service-local authority away. `deployment` is not a shared library, not a service, not a mediator, and not a message path: it is a one-way, top-of-DAG assembler with a narrow, enumerated import set that every service is structurally forbidden to see.
 
 ## §19 — Guard
 `backend/tests/architecture/` MUST hold the guard specified in §14, and `pyproject.toml` MUST hold the import-linter contracts specified in §13. Both MUST pass in CI before IC-012 may move from Draft / Proposed to Final.

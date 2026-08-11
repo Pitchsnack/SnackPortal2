@@ -5,7 +5,7 @@
 **Amendment (2026-06-12, PRD-CAP-01B):** implementing **D-35-R2** (Global Deal Directory at all five touchpoints; discovery-metadata categories; Tenant Anonymity Rule; Publication Boundary Rule) and **D-34-R2** as corrected by **D-34-E1** (operational-audit taxonomy homes for the global classes; the Global Audit Representation Rule promoted to contract law). No startup, readiness, or bootstrap behavior changes; no frozen invariant altered.
 
 ## Purpose
-Define how the platform initializes at the **global / control-plane level** before any tenant is served. Establishes the contract for bringing up the Control Database, API Gateway, Authentication Router, and Database Router into a known-good, ready-to-serve state.
+Define how the platform initializes at the **global / control-plane level** before any tenant is served. Establishes the contract for bringing up the Control Database, the approved authenticated public edges, the Authentication Router, and the Database Router into a known-good, ready-to-serve state. *(Amended 2026-08-11 under **D-45**: the client-facing surface is the approved public edge, not an API Gateway component; no startup, readiness, or disclosure rule in this contract changes.)*
 
 ## Bootstrap Phases (resolves D-01)
 
@@ -100,7 +100,7 @@ Global directory/publication records MUST NOT contain: `tenant_id`, `tenant_name
 **Control-DB audit retention (Inventory R2 item 4 / PRD-D33-D37-V2 Minor 2).** Control-resident audit records follow a **defined platform retention/expiry policy** mirroring the segmented D-24 pattern; concrete retention values are business/legal parameters governed under the D-08 process (default: retain-all until values are named). **Per-tenant D-08 compliance parameters do NOT govern Control-DB audit records** — even where such records carry a `tenant_ref`, they are platform governance metadata about actions, not tenant data (rule 3 above); their privacy exposure is bounded by the reference-only rule, and erasure of tenant data never requires erasure of governance metadata that references it.
 
 ## Scope
-- Cold-start sequence of global services (Control DB connectivity, router registration, gateway readiness).
+- Cold-start sequence of global services (Control DB connectivity, router registration, public-edge readiness).
 - Control Database availability and schema-version compatibility checks.
 - Global configuration and environment template loading.
 - Health/readiness signaling for the platform as a whole (not per-tenant).

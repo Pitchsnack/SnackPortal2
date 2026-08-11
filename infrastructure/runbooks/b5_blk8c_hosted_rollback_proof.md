@@ -2,7 +2,7 @@
 
 **Labels:** `MANUAL_ONLY` · `HOSTED NON-PRODUCTION ONLY` · `DAN START-GATE REQUIRED` · `NO LIVE PRODUCTION`
 
-**Scope:** the reviewed, non-executable operator procedure for the **B5-BLK-8C hosted, non-production rollback proof** — inducing one bounded, governed post-activation failure against a hosted, physically-separated multi-database topology behind the real API Gateway, and rolling back to the pinned **last-known-good durable composition** (emergency fail-closed target: the **deferred in-memory composition**). Governed by **IC-011 — Hosted Rollback Proof Contract** and **D-40**. This runbook authorizes nothing on its own; each execution requires an explicit human **DAN START-GATE**. This stage **closes no blocker**: **B5-BLK-8 remains OPEN**; the live blocker census remains **7 of 9 OPEN**; production remains **NOT READY / DO-NOT-ACTIVATE**. **LIVE PRODUCTION is prohibited.**
+**Scope:** the reviewed, non-executable operator procedure for the **B5-BLK-8C hosted, non-production rollback proof** — inducing one bounded, governed post-activation failure against a hosted, physically-separated multi-database topology behind the real approved public edges, and rolling back to the pinned **last-known-good durable composition** (emergency fail-closed target: the **deferred in-memory composition**). Governed by **IC-011 — Hosted Rollback Proof Contract** and **D-40**. This runbook authorizes nothing on its own; each execution requires an explicit human **DAN START-GATE**. This stage **closes no blocker**: **B5-BLK-8 remains OPEN**; the live blocker census remains **7 of 9 OPEN**; production remains **NOT READY / DO-NOT-ACTIVATE**. **LIVE PRODUCTION is prohibited.**
 
 **References (normative — DO NOT restate):**
 
@@ -45,8 +45,8 @@ Each phase records: **operator** (who acts), **control surface** (what they act 
 ### H1 — Environment and topology census
 - **Operator:** named operator. **Control surface:** the hosted control plane inventory (references only).
 - **Inputs:** the hosted Control DB identity reference; the ≥2 physically distinct hosted Tenant DB identity references.
-- **Expected:** exactly one hosted Control DB and at least two physically distinct hosted Tenant DBs are present; API Gateway is the sole served ingress; the Database Router is the sole selector; authentication is separate from routing.
-- **Failure:** fewer than two distinct Tenant DBs, a non-Gateway served edge, or a routing/auth conflation → STOP.
+- **Expected:** exactly one hosted Control DB and at least two physically distinct hosted Tenant DBs are present; **only architecture-approved public edge modules may be served to client traffic** (IC-011 §3 as amended by D-45; the closed set is IC-010 §A.2); the Database Router is the sole selector; authentication is separate from routing.
+- **Failure:** fewer than two distinct Tenant DBs, or a routing/auth conflation → STOP. **Also STOP on** an unapproved public edge, an internal edge exposed publicly, a generic dispatcher / proxy reintroduced as public ingress, a public route not owned by its serving service, or missing authentication / public-boundary enforcement.
 - **Evidence:** `CONTROL_DB_IDENTITY_REF`, `TENANT_DB_IDENTITY_REFS`.
 - **Cleanup:** none.
 
@@ -67,15 +67,15 @@ Each phase records: **operator** (who acts), **control surface** (what they act 
 - **Cleanup:** synthetic identities disposed at H12.
 
 ### H4 — Pre-state digests and served-health baseline
-- **Operator:** named operator. **Control surface:** the served API Gateway health path + a digest tool.
+- **Operator:** named operator. **Control surface:** the served public edges' health paths + a digest tool.
 - **Inputs:** the served composition; the target and adjacent tenant states.
-- **Expected:** `BEFORE_DATA_DIGEST` for the target; an adjacent-tenant digest; a served-health baseline captured through the Gateway.
+- **Expected:** `BEFORE_DATA_DIGEST` for the target; an adjacent-tenant digest; a served-health baseline captured through **every** served public edge.
 - **Failure:** an unhealthy baseline or an unreadable pre-state → STOP.
 - **Evidence:** `BEFORE_DATA_DIGEST`, `SERVED_HEALTH_BASELINE_REF`, `SECRET_BINDING_SET_DIGEST`, `MIGRATION_SET_DIGEST`, `AUDIT_SINK_IDENTITY_REF`.
 - **Cleanup:** none.
 
 ### H5 — Bounded trigger induction
-- **Operator:** named operator. **Control surface:** the served API Gateway (sole ingress).
+- **Operator:** named operator. **Control surface:** the served approved public edges (the only served client ingress).
 - **Inputs:** the preferred `secret_resolution_failure` trigger (or the documented `distinctness_regression` fallback), applied to the target tenant only.
 - **Expected:** exactly one bounded, governed post-activation failure is induced against the target; the adjacent tenant is not touched.
 - **Failure:** an out-of-scope trigger, or any effect on the adjacent tenant → STOP.
@@ -99,9 +99,9 @@ Each phase records: **operator** (who acts), **control surface** (what they act 
 - **Cleanup:** none.
 
 ### H8 — Served-path verification
-- **Operator:** named operator. **Control surface:** the served API Gateway.
+- **Operator:** named operator. **Control surface:** the served approved public edges.
 - **Inputs:** the restored composition.
-- **Expected:** a served request through the Gateway resolves one request → one active tenant → one database against the restored last-known-good composition; served health matches the H4 baseline.
+- **Expected:** a served request through the route-owning public edge resolves one request → one active tenant → one database against the restored last-known-good composition; served health matches the H4 baseline on every served edge.
 - **Failure:** a served regression, a wrong-database route, or a health mismatch → STOP; record `ROLLBACK-NOT-PROVEN`.
 - **Evidence:** `SERVED_HEALTH_BASELINE_REF` (post), `POST_ROLLBACK_REF`.
 - **Cleanup:** none.
@@ -158,7 +158,9 @@ Each phase records: **operator** (who acts), **control surface** (what they act 
 executing without an explicit human DAN START-GATE
 selecting a LIVE PRODUCTION target, live customer traffic, or live customer row data
 storing a raw DSN, password, token, or credential in the registry or any evidence artifact
-allowing any served edge other than the API Gateway, or letting the Router select more than one database
+serving any edge that is not an architecture-approved public edge module (IC-010 §A.2) — including an internal edge
+exposed publicly, a reintroduced generic dispatcher/proxy under any name, or a public route not owned by its serving
+service — or letting the Router select more than one database
 any cross-tenant fallback, or any change to the adjacent tenant
 deleting tenant business data, or any destructive recovery outside disposing temporary proof objects
 writing the authoritative evidence before H10 restoration and H12 cleanup complete

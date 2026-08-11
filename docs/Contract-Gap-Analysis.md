@@ -79,7 +79,7 @@ Every contract is intentionally a placeholder template, so all four "Requirement
 ### IC-005 — Authentication Routing
 - **Business:** Identity model — internal staff only, external customers, or B2B SSO? One tenant per principal or many (the contract's own open question)?
 - **Technical:** Auth scheme (JWT / OIDC-external-IdP / session); where the tenant identifier is carried (subdomain, header, token claim); token lifetime/refresh; how unknown vs. suspended tenants are distinguished at routing.
-- **Architecture:** Resolution of the **D-01** bootstrap cycle; responsibility split between API Gateway and Auth/DB Routers; stateless vs. stateful sessions; multi-region routing.
+- **Architecture:** Resolution of the **D-01** bootstrap cycle; responsibility split between the **approved authenticated public edges** and the Auth/DB Routers *(the ingress side of this split was settled by **D-45**, 2026-08-11 — the boundary is the route-owning public edge, not an API Gateway component)*; stateless vs. stateful sessions; multi-region routing.
 - **Security:** **Highest-risk contract.** Token validation and replay protection; enforcement that a principal can never reach another tenant's DB; session fixation; external-IdP trust establishment; portable replacement for the explicitly-banned Supabase Auth.
 
 ### IC-006 — AI Gateway

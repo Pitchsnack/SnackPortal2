@@ -77,7 +77,7 @@ The provisioning audit event set **maps to** the existing `events.py` vocabulary
 The sink does **not** select tenant databases, authenticate, authorize, route, replace the Database Router or
 Control-Plane readiness, apply DDL, activate runtime, or access Lovable/Supabase directly. It accepts only sanitized,
 references-only event payloads. **Control Plane** owns lifecycle/readiness (the sink only observes/records); **Database
-Router** is the sole DB selector; **API Gateway** is the sole ingress.
+Router** is the sole DB selector; the **approved authenticated public edges** are the only served client ingress (**D-45**, 2026-08-11).
 
 ## 8. Deferred (separate, governed gates)
 

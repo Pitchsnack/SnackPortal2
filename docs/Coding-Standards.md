@@ -8,7 +8,7 @@ Binding engineering rules for the backend. Enforced by CI (`ruff`, `mypy`,
 1. `shared` is a leaf — imports no service package.
 2. No service imports another service — inter-service comms is a **transport call**
    (network), never an **in-process import**.
-3. `api_gateway` performs no auth decision, tenant routing, or DB access.
+3. An **approved public edge** performs no auth decision, no tenant routing, and no database selection — it delegates authentication to the Auth Router and database resolution to the Database Router (**D-45**; this rule formerly named the deleted `api_gateway` package, and is unweakened by the rename).
 4. `auth_router` authentication is **DB-free** (D-01/D-05).
 5. Database drivers only under `database_router/adapters/providers/**`.
 6. Vendor/cloud SDKs only under `**/adapters/providers/**`.
