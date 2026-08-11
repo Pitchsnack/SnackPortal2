@@ -53,7 +53,7 @@ pre-task state.**
 | `git merge-base main HEAD` | `cdb46fc9d3b6e12c4926f23f2f6c7a9d7c56a81f` (identical — `main` is not an ancestor of any new work but the base is untouched) |
 | HEAD **before** this task | `97769ddbbfee8bc44768744c1790f81b78b45688` |
 | ratification commit | `a3a504b7740e3c46d4a04301a41c0a2daa58c100` — *D-45: ratify the Gateway-free architecture in the official contracts* (35 files, +1401 / −360) |
-| HEAD **after** this task | `24d9cac0b61dd641887cbdb75faac69e6f76d79b` — the follow-up commit that stamps these SHAs into this document |
+| HEAD **after** this task | the follow-up **SHA-stamp commit** that writes `a3a504b7` into this table. Its own SHA cannot appear inside itself; read it from `git log -1`. It changes this file only. |
 | change composition | **35 files** — 33 modified, 2 added (`docs/D-45-…` + this result), 0 deleted |
 | working tree after commit | clean |
 
