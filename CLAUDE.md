@@ -8,7 +8,8 @@ SnackPortal2 is in **active build under contract-first governance**. Do **not** 
 
 Current state (see `docs/SnackPortal2_Canonical_Overview_and_Decisions_v2.md` for the full, authoritative picture):
 
-- **Backend (this repo):** core Phases 1–6 built and **accepted** (Control Plane, Authentication, Database Router, Import, Lineage; PostgreSQL-verified). **API Gateway is scaffold-only** — readiness review (PRD 04 V1) = `READY_WITH_GUARDS`; next artifact is **PRD 04 V2** (implementation), not yet started.
+- **Backend (this repo):** core Phases 1–6 built and **accepted** (Control Plane, Authentication, Database Router, Import, Lineage; PostgreSQL-verified). The **API Gateway core is built** (`IMPLEMENTS_BEHAVIOR = True`, under PRD 04 V2/V3) and serves as one of **nine native FastAPI/Uvicorn HTTP edges**; production HTTP ingress, the production port adapters and live tenant-DB routing remain unbuilt (D-15 / deployment-owned). *(Corrected in Phase 0 — the earlier "scaffold-only / PRD 04 V2 not started" wording was stale.)*
+- **Target architecture (ratified Phase 0, D-45):** the FastAPI Implementation Proposal v2.2 target — one approved FastAPI ingress re-scoped from *API Gateway* to **BFF**, a distinct **Access Control** service, and the four-way separation `Authentication ≠ Access Control ≠ Tenant Routing ≠ Database Access`. See [D-45](docs/D-45-FastAPI-v2.2-Target-Architecture-Ratification.md), **IC-013** and **IC-014**. D-45 changed no runtime code; the API Gateway runtime is retained.
 - **Frontend (Lovable, separate Lovable Cloud project):** ~70% of screens built, but on an **interim** Supabase data layer using *logical* (`tenant_id` + RLS) separation. Per decisions D3/D7 this data layer is **interim** and must be re-pointed to the API Gateway + physical tenant databases; not yet brought into this repo's `frontend/`.
 
 This project follows a **contract-first design approach**: interface contracts are defined and agreed upon *before* the corresponding implementation begins.
@@ -39,6 +40,8 @@ The `contracts/` directory holds the governing specifications. All implementatio
 - **IC-010** — API Gateway Contract *(Final)*
 - **IC-011** — Hosted Rollback Proof Contract *(Draft / Proposed, IC-011-DRAFT-1 — opened by D-40)*
 - **IC-012** — Service Composition & Deployment Root Contract *(Draft / Proposed, IC-012-DRAFT-1 — opened by D-44; governs the `backend/deployment/` cross-service composition root)*
+- **IC-013** — BFF & Service Ingress Contract *(Draft / Proposed, IC-013-DRAFT-1 — opened by D-45; single approved ingress, inherits every IC-010 enforcement rule, and the independently-bootable FastAPI service shape)*
+- **IC-014** — Access Control Contract *(Draft / Proposed, IC-014-DRAFT-1 — opened by D-45; the home for cross-cutting authorization. It selects no database, re-derives no active tenant, and never fails open)*
 
 ## Architecture
 

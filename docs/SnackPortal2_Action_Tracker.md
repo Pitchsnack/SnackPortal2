@@ -72,7 +72,10 @@
 | 17 | Design recommendation/attribution records in the **same shape the AI will later populate** (ties to Lineage B-6 + `control_ai_recommendations`) | Med | ⬜ | #15 |
 | 18 | Build the **Control global registry** (`global_startups`, `global_investors`) in the Control DB — the master pool that powers recommendations/matching | High | ⬜ | B-0; revenue source |
 | 19 | Add a **Global Investor Contract** (you have IC-001 Global Startup but no global-investor contract) | Med | ⬜ | contract gap |
-| 20 | Reconcile the contract list: add **IC-009 / IC-010** (and the new global-investor contract) to CLAUDE.md's contract list | Low | ⬜ | doc gap |
+| 20 | Reconcile the contract list: add **IC-009 / IC-010** (and the new global-investor contract) to CLAUDE.md's contract list | Low | 🟡 | IC-009/IC-010 were already listed; IC-011–IC-014 now listed too. The **Global Investor Contract (#19) is still missing** — that part remains open. |
+| 21 | **Phase 0 — Architecture Ratification & Contract Reconciliation** (FastAPI Implementation Proposal v2.2) | High | ✅ | `phase/00-architecture-ratification` — **D-45** ratified R-1…R-9; **IC-013** (BFF & Service Ingress) and **IC-014** (Access Control) opened Draft / Proposed; IC-010 + IC-005 amended insert-only. No runtime change; Gateway runtime retained. Awaiting Dan's review and merge. |
+| 22 | Author the **Contacts Service contract** — the target service census (D-45 R-9) has no contract for Contacts | Med | ⬜ | contract gap surfaced by Phase 0 |
+| 23 | Promote **IC-007** Draft / Proposed → Final before any Sharing/Introduction service is built | Med | ⬜ | blocks D-45 R-9 Sharing |
 
 ---
 

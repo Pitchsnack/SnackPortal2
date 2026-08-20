@@ -5,6 +5,8 @@
 **Amendment (2026-06-12, PRD-CAP-01A):** added *Workspace Terminology & Carriers* implementing **D-33** as corrected by **D-33-E1** — workspace definition, exact carrier enumeration, prohibited carriers, and the mandatory carrier-on-CONTROL anomaly audit. No normative change to token validation, JWKS, roles, or denial semantics; no frozen invariant altered.
 **Amendment (2026-07-17, PRD B5-BLK-6C-A):** implementing Dan's **Option A** audit-obligation reconciliation — *Runtime Operational Audit Emission* gains the **gateway-edge success-access subclass** (`workspace_memberships_read`; API Gateway sole emitter; Control-DB home, IC-002 class 3b), and the *Directory-read access audit — Reserved* rule is made explicit: it reaches directory reads only and does not shelter MembershipsForPrincipal. The four gateway-edge denial/anomaly classes and the router-edge routing-decision subclass are unchanged. No normative change to token validation, JWKS, roles, or denial semantics; no frozen invariant altered. Runtime emission remains pending **B5-BLK-6C-B**; B5-BLK-6C-A adds no runtime implementation and closes no blocker.
 
+**Amendment (2026-08-20, Phase 0 — D-45 FastAPI v2.2 Target-Architecture Ratification):** governance only — a **references-only cross-reference**. Cross-cutting application authorization (role, permission, membership-derived entitlement, ownership-derived permission, workspace capability, requested action, and AI skill / tool entitlement) is homed in the new **IC-014 — Access Control Contract**, closing the long-standing delegation to "each feature contract" in *Authorization Requirements*. **This contract retains authentication in full and retains tenant-scope authorization**, which is enforced at routing time and is part of the isolation mechanism — it does **not** move to IC-014. Token validation, the two-phase bootstrap model, carrier law, membership law (D-04), active-tenant law (D-06) and the JWT lifecycle are **entirely unchanged**. **No normative change; no boundary rule, prohibition, or frozen invariant altered.** See the new trailing section *Phase 0 Ratification — Access-Control Separation (D-45)*.
+
 ## Purpose
 Define the contract for the **Authentication Router**: how incoming requests are authenticated, how tenant context is established, and how authenticated requests are routed to the correct tenant (or control plane) via the Database Router.
 
@@ -222,3 +224,27 @@ These do **not** reopen the architecture:
 - **Unauthorized-tenant denial (the CLM isolation proof).** A tenant-scoped request whose signed tenant claim names a tenant the principal is not a member of is denied **fail-closed 403** under existing IC-005 law, never routes, and exposes no tenant data and no tenant-existence detail. The denial is recorded as exactly one gateway-edge `RouteDenied` operational audit event (the existing class-3 record); the API Gateway is the sole emitter of that gateway-edge record, and the Auth Router remains detection and signalling only. No new denial or anomaly class is introduced by CLM.
 - **CLM audit evidence.** The CLM rehearsal's audit evidence set is the five events recorded in IC-010's CLM section (amended 2026-07-27 under D-43): `workspace_memberships_read` (unchanged definition above), `tenant_startup_read`, `tenant_startup_update`, the gateway-edge `RouteDenied` denial record, and the durably homed gateway-edge `CarrierMismatch` denial record (D-43 — REQUIRED opaque `carrier_ref`; no tenant routing on a mismatch). Runtime emission of the first four is implemented under the Stage B implementation slice of the D-42 START-GATE; the durable homing of `CarrierMismatch` lands under the Post-10C.3 corrective (D-43).
 - **Rollback and restore.** The rehearsal operates on synthetic local data only, captures before/after evidence, and restores the exact original local state. Rollback authority extends to no production, staging, or standing environment.
+
+
+## Phase 0 Ratification — Access-Control Separation (D-45)
+
+*Governance capture; PRD Phase 0 — Architecture Ratification & Contract Reconciliation, 2026-08-20. References-only. This section grants **no** permission, **no** role, **no** route, **no** DTO, **no** error code, **no** audit class, and **no** DDL, and authorizes **no** runtime change.*
+
+**The four-way separation.** D-45 ratifies four distinct responsibilities in four distinct components:
+
+```
+Authentication  = who is the principal?              -> IC-005 (this contract)
+Access Control  = what may this principal do?         -> IC-014
+Tenant Routing  = which single active tenant and DB?  -> IC-005 + Database Router
+Database Access = the routed session itself           -> Database Router
+```
+
+**What stays here.** This contract continues to own, unchanged: the platform authentication mechanism across both phases; the bootstrap system identity and its control-plane-only scope; OIDC stateless JWT validation and the JWT lifecycle; the recognized tenant carriers and match-or-reject; the signed tenant claim as the sole routing authority; **tenant-scope authorization** — the D-04 one-active-tenant membership law enforced at routing time so a principal can never reach a tenant they do not belong to and never more than one tenant's database per request. **Tenant-scope authorization does not move to IC-014**, because moving it out of the routing path would weaken physical isolation.
+
+**What moves to IC-014.** Only the cross-cutting per-feature authorization this contract already delegated elsewhere: role-and-permission evaluation, membership-derived and ownership-derived entitlement, workspace-scoped capability, requested-action evaluation, and the reserved AI agent / skill / tool-entitlement decision shape.
+
+**Prohibitions IC-014 carries (restated here because they protect this contract's invariants).** The Access Control Service MUST NOT select, influence, or override a database; MUST NOT re-derive, choose, or change the active tenant; MUST NOT become the tenant-isolation mechanism; MUST NOT widen what the signed claim permits; MUST NOT authenticate a caller or mint, exchange, or refresh a credential; MUST NOT carry names, emails, PII, payloads, tokens, or secrets; and MUST NOT fail open — a missing, ambiguous, unavailable, or malformed input produces a **deny**.
+
+**Audit.** IC-014 opens **no** new audit class. Access-denial auditing continues to use the classes already homed by this contract, IC-001, IC-002 and IC-010.
+
+**Non-overclaim.** IC-014 is **authored-but-inert** (Draft / Proposed, IC-014-DRAFT-1) and becomes Final only after independent verification and explicit human merge. D-45 changes no runtime code, closes no blocker, and does not change the blocker census. Production remains **NOT READY / DO-NOT-ACTIVATE**.

@@ -42,7 +42,7 @@
 | B-4 | Database Router | Backend Phase 4 | ✅ accepted |
 | B-5 | Import Service | Backend Phase 5 | ✅ accepted |
 | B-6 | Lineage Service | Backend Phase 6 | ✅ accepted |
-| B-7 | API Gateway | Backend Phase 7 / S5 PRD 16 | 🟡 scaffold; READY_WITH_GUARDS; **V2 next** |
+| B-7 | API Gateway | Backend Phase 7 / S5 PRD 16 | ✅ core built under PRD 04 V2/V3 (`IMPLEMENTS_BEHAVIOR = True`); production ingress + port adapters + live tenant-DB routing still unbuilt. **Phase 0 / D-45 re-scopes this service's role to the BFF (IC-013); the runtime is retained.** *(The earlier "scaffold; V2 next" status was stale.)* |
 | B-8 | AI Gateway & Model Router | S5 PRD 17 | ⏸ deferred (Intelligence) |
 | B-9 | Agent Framework | S5 PRD 18 | ⏸ deferred |
 | B-10 | Global Research & Discovery Engine | S5 PRD 19 | ⏸ deferred |
