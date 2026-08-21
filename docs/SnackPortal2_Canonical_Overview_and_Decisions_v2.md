@@ -1,5 +1,9 @@
 # SnackPortal2 — Canonical Overview & Decisions (v2)
 
+> **⚠ AMENDED 2026-08-21 by [D-46](D-46-Option-A-Gateway-Free-Target-Architecture-Ratification.md) — Option A Gateway-Free Target Architecture Ratification.**
+> The target architecture is now **`Frontend → FastAPI BFF → FastAPI Services`, with zero API Gateway in the target runtime.** Three effects on this document: **locked invariant #7** is revised from "the Gateway is the boundary" to "**the BFF is the boundary**" (substance preserved, holder changed); a **new invariant #9** records the four-way separation `Authentication ≠ Access Control ≠ Tenant Routing ≠ Database Access`; and **invariant #3's AI-owner clause is flagged as contested** (Phase 0 finding CONF-4 — requires Dan's ratification, see D-46 §8).
+> **IC-010 is `Superseded`** by IC-013 (BFF Ingress) + IC-014 (Access Control). **Decision D4 ("build the Gateway next") is historically accurate but no longer the live plan** — the Option A rebuild replaces it; the *reasoning* behind D4 (the product waits on one governed doorway) is preserved and now points at the BFF. Elsewhere in this document, read "API Gateway" as "**the governed public ingress**", which is now the BFF. Everything else below — the product framing, the business model, D1/D2/D3/D5/D7/D8, the D6 deferral and its Part 4B reservations, the Lovable reconciliation, and the schema split — is **unchanged and still authoritative**.
+
 > **What changed in v2.** Decisions D1–D4 and D7 are recorded as made; **D6 is now formally Deferred** (with a reservation spec in Part 4B). The Lovable project-state report has been folded in as confirmed drift plus a keep/replace rework list, and registered as session **S6** so it slots into the comparison.
 
 **Version:** v2.2
@@ -38,9 +42,9 @@ A workspace for venture deal-making. Agents manage startups, investors, and deal
 A vendor-neutral backend: one central **Control database** (platform-wide records **plus the Control-owned global registry of startups and investors** — the master pool) + a **separate physical database per tenant** (independent copies of records, imported with lineage), chosen by a **Database Router**, fronted by an **API Gateway**, with Control Plane, Authentication, Import, and Lineage services. Governed by contracts/ADRs.
 
 ## How the two layers connect
-One doorway only: the **API Gateway**.
-`Lovable (UI) → API Gateway → backend services → Database Router → the correct tenant database.`
-The Gateway never picks the database (the Router does); the frontend never talks to a database directly; one request serves one tenant → one database.
+One doorway only: the **FastAPI BFF**. *(Revised 2026-08-21 by **D-46**; previously the API Gateway — see locked invariant #7 and IC-013.)*
+`Frontend (UI) → FastAPI BFF → backend services → Database Router → the correct tenant database.`
+The BFF never picks the database (the Router does); the frontend never talks to a database directly; **Access Control decides what is allowed before the Router is reached**; one request serves one tenant → one database.
 
 ## Business model (how it earns)
 SnackPortal2 is an **AI-as-a-Service platform with performance-aligned, dual-sided revenue** — it earns from both capital providers and capital seekers, mostly only when a deal actually happens:
@@ -74,9 +78,12 @@ The honest snapshot has three parts at different stages:
 3. **Ownership rule** — every startup/investor/deal has exactly one human owner and one AI owner. *(Confirmed built in Lovable.)*
 4. **Sharing ≠ ownership** — sharing never transfers ownership, never moves tenant, never duplicates. *(Confirmed built in Lovable.)*
 5. **Anti-vendor-lock-in** — no design that ties the business to one provider as the final architecture.
-6. **Lovable owns the surface, not the plumbing** — UI only; not the Router, Gateway, AI orchestration, or routing.
-7. **The Gateway is the boundary** — frontend → Gateway, never directly to DB/auth/router.
+6. **Lovable owns the surface, not the plumbing** — UI only; not the Router, ingress, AI orchestration, or routing.
+7. **The BFF is the boundary** — frontend → FastAPI BFF, never directly to DB/auth/access-control/router. *(**Revised 2026-08-21 by [D-46](D-46-Option-A-Gateway-Free-Target-Architecture-Ratification.md) §2.** Previously: "The Gateway is the boundary — frontend → Gateway, never directly to DB/auth/router." The **substance is preserved and unweakened** — one governed public ingress, no client path around it; only the component holding that position changes. Governed by **IC-013 — BFF Ingress Contract**; IC-010 is **Superseded**. The BFF is **not** a renamed Gateway: its operation surface is enumerated by contract, and a surface that merely relays a downstream body is forbidden.)*
 8. **DEC-11 stays binding** — no ownership-audit data-location binding until the IC-002 extension lands.
+9. **The four-way separation** — `Authentication ≠ Access Control ≠ Tenant Routing ≠ Database Access`. *(Added 2026-08-21 by **D-46 §3**. Access Control is a distinct contracted service — **IC-014** — and was never built; it is the one genuinely greenfield component of the Option A rebuild.)*
+
+> ⚠ **Invariant #3 — flagged, not settled.** "Exactly one human owner **and one AI owner**" is contradicted by **IC-008 (Final)** (*at most one*, nullable, **NULL platform-wide until IC-006**) and by the tenant DDL (*zero or more distinct* AI agents, via join tables). Three sources, three cardinalities, two representations. Recorded as Phase 0 finding **CONF-4**; options and a recommendation at **D-46 §8**. **This item requires Dan's ratification and gates Phase 7 schema work** — do not treat invariant #3's AI clause as settled until then.
 
 ---
 

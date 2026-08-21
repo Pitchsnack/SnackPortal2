@@ -8,8 +8,9 @@ SnackPortal2 is in **active build under contract-first governance**. Do **not** 
 
 Current state (see `docs/SnackPortal2_Canonical_Overview_and_Decisions_v2.md` for the full, authoritative picture):
 
-- **Backend (this repo):** core Phases 1–6 built and **accepted** (Control Plane, Authentication, Database Router, Import, Lineage; PostgreSQL-verified). **API Gateway is scaffold-only** — readiness review (PRD 04 V1) = `READY_WITH_GUARDS`; next artifact is **PRD 04 V2** (implementation), not yet started.
-- **Frontend (Lovable, separate Lovable Cloud project):** ~70% of screens built, but on an **interim** Supabase data layer using *logical* (`tenant_id` + RLS) separation. Per decisions D3/D7 this data layer is **interim** and must be re-pointed to the API Gateway + physical tenant databases; not yet brought into this repo's `frontend/`.
+- **Target architecture (ratified 2026-08-21, [D-46](docs/D-46-Option-A-Gateway-Free-Target-Architecture-Ratification.md)):** **`Frontend → FastAPI BFF → FastAPI Services`, with ZERO API Gateway in the target runtime.** Under the **Option A Clean FastAPI Rebuild**, the existing backend is a source of **requirements, validated behaviour, schemas and tests — not architecture to preserve**. **IC-010 is `Superseded`** by **IC-013** (BFF Ingress) + **IC-014** (Access Control). Locked invariant #7 is revised to "**the BFF is the boundary**". The **BFF is not a renamed Gateway** — its operation surface is enumerated by contract, and a surface that merely relays a downstream body is forbidden; the names *FastAPI/BFF/Service/Routing/Compatibility Gateway* are prohibited.
+- **Backend (this repo, as-built):** core Phases 1–6 built and **accepted** (Control Plane, Authentication, Database Router, Import, Lineage; PostgreSQL-verified), plus an **API Gateway core** (`IMPLEMENTS_BEHAVIOR = True`, built under PRD 04 V2/V3) serving as one of nine native FastAPI/Uvicorn edges. **The entire public business surface is three operations** (`GET /memberships`, `POST /import/<ref>`, `GET|PATCH /tenant/startups/<ref>`). **The `api_gateway` package is classified "old architecture — do not port"** and is untouched on disk pending Phase 1+; **Access Control has never been built** (no permission engine exists in production code) and is the one genuinely greenfield service. See `docs/Phase-0-Requirements-Extraction-Report.md` (branch `phase/00-requirements-extraction`).
+- **Frontend (Lovable `snack-cosmos`, separate repo):** ~70% of screens built, but on an **interim** Supabase data layer using *logical* (`tenant_id` + RLS) separation. It expects ~86 server-function operations against a backend that serves 3. Per decisions D3/D7 this data layer is **interim** and must be re-pointed to the **BFF** + physical tenant databases; cutover is **incremental and per-operation** by contract (IC-013 §22), never big-bang, and the old Gateway must **not** be used as an intermediate compatibility layer.
 
 This project follows a **contract-first design approach**: interface contracts are defined and agreed upon *before* the corresponding implementation begins.
 
@@ -36,9 +37,12 @@ The `contracts/` directory holds the governing specifications. All implementatio
 - **IC-007** — Deal Collaboration & Cross-Tenant Sharing Contract *(Draft / Proposed, IC-007-DRAFT-1 — opened by D-38; no positive sharing capability)*
 - **IC-008** — Ownership Contract *(Final)*
 - **IC-009** — Portal Contracts *(Final, IC-009-R1)*
-- **IC-010** — API Gateway Contract *(Final)*
+- **IC-010** — API Gateway Contract *(**Superseded** 2026-08-21 by D-46 — jointly by IC-013 + IC-014. Retained as the historical record and the traceability source for its successors; **no longer normative for implementation**. D-46 §4 holds the exhaustive section-by-section re-homing map.)*
 - **IC-011** — Hosted Rollback Proof Contract *(Draft / Proposed, IC-011-DRAFT-1 — opened by D-40)*
-- **IC-012** — Service Composition & Deployment Root Contract *(Draft / Proposed, IC-012-DRAFT-1 — opened by D-44; governs the `backend/deployment/` cross-service composition root)*
+- **IC-012** — Service Composition & Deployment Root Contract *(Draft / Proposed, IC-012-DRAFT-1 — opened by D-44; amended by D-46: principles carried forward and re-scoped, Edge-9 specifics historical)*
+- **IC-013** — BFF Ingress Contract *(Draft / Proposed, IC-013-DRAFT-1 — opened by D-46; the single frontend-facing ingress, the enumerated operation surface, the re-homed carrier / `RequestContext` / audit rules, and the independently-bootable service shape)*
+- **IC-014** — Access Control Contract *(Draft / Proposed, IC-014-DRAFT-1 — opened by D-46; the home for cross-cutting authorization. It never authenticates, selects no database, re-derives no active tenant, reads no tenant business data, and never fails open)*
+- **IC-015** — Contacts Service Contract *(**Reserved / unauthored** — named prerequisite for Phase 7; Action Tracker #22)*
 
 ## Architecture
 
@@ -53,10 +57,16 @@ SnackPortal2 uses **physical multi-database isolation**, not shared-schema multi
 - **Control Database** — global/cross-tenant state, tenant registry, routing metadata.
 - **Independent Tenant Databases** — one physically separate database per tenant. Tenant data must never share a database.
 
-### Infrastructure Components
-- **API Gateway** — single entry point for backend services.
-- **Authentication Router** — routes/validates auth; governed by IC-005.
-- **Database Router** — resolves the correct control vs. tenant database per request.
+### Service Components (target — D-46 / IC-013)
+- **FastAPI BFF** — the **single frontend-facing ingress**; governed by IC-013. Application-oriented frontend orchestration with an **enumerated** operation surface — *not* a gateway, *not* a proxy.
+- **Authentication Service** — *who are you?* Validates identity/session/token, returns trusted principal context; governed by IC-005. Never authorizes, never chooses a tenant or a database.
+- **Access Control Service** — *what are you allowed to do?* Evaluates role, permission, tenant membership, ownership, requested action, record residency (and, later, AI entitlement); returns Allowed/Denied; governed by IC-014. Never authenticates, never selects a database, never fails open.
+- **Database Router** — *which active tenant and physical database?* Resolves the correct control vs. tenant database per request, registry-authoritatively from the signed claim. **The only service permitted to open a tenant database.**
+- Plus: Control Plane, Startup, Investor, Deal, Contacts, Sharing, Import, Lineage, AI Agent, and Audit services — each independently bootable with its own app factory, port, health/readiness and tests (IC-013 §21).
+
+**The four-way separation is non-negotiable:** `Authentication ≠ Access Control ≠ Tenant Routing ≠ Database Access` (D-46 §3). The request flow is `Authentication → Carrier Validation → RequestContext → Access Control → Tenant Routing → Service → Response Composition`; **Access Control runs before Tenant Routing**, so a denied request never causes a tenant-database connection.
+
+*(Historical: the **API Gateway** was previously the single entry point under IC-010. IC-010 is Superseded; the `api_gateway` package remains on disk as old architecture pending Phase 1+ and must not be ported or renamed.)*
 
 ## Architecture Constraints (Non-Negotiable)
 
@@ -74,7 +84,9 @@ These constraints exist to preserve portability and tenant isolation. Do not vio
 
 5. **Contracts precede code.** Backend/frontend behavior must trace back to a contract in `contracts/`. New behavior requires a contract (new or amended) first.
 
-> **Interim exception (tracked, not permanent):** the current Lovable frontend uses Supabase + RLS and therefore does **not** yet satisfy constraints 2–3. This is the agreed *interim* state under decisions D3/D7; it is resolved by re-pointing the frontend's data layer to the API Gateway + physical tenant databases at the cutover. Do not treat the Supabase data layer as the final architecture.
+> **Interim exception (tracked, not permanent):** the current Lovable frontend uses Supabase + RLS and therefore does **not** yet satisfy constraints 2–3. This is the agreed *interim* state under decisions D3/D7; it is resolved by re-pointing the frontend's data layer to the **FastAPI BFF** + physical tenant databases at the cutover (D-46; IC-013 §22 — **incremental and per-operation**, never big-bang, and never via the old Gateway as a bridge). Do not treat the Supabase data layer as the final architecture.
+
+> **Line 36 note:** IC-006's title says "AI **Gateway**". That is a *model-invocation* boundary for AI providers — a separate, deferred component (Canonical Overview Part 4B-C) — and is **unrelated** to the superseded API Gateway. It is not affected by D-46, and the D-46 "zero Gateway" rule does not reach it. IC-006 nonetheless remains an all-TBD placeholder and is a **named prerequisite for Phase 9**.
 
 ## Development Standards
 

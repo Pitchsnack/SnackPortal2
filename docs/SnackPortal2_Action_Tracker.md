@@ -72,7 +72,17 @@
 | 17 | Design recommendation/attribution records in the **same shape the AI will later populate** (ties to Lineage B-6 + `control_ai_recommendations`) | Med | ⬜ | #15 |
 | 18 | Build the **Control global registry** (`global_startups`, `global_investors`) in the Control DB — the master pool that powers recommendations/matching | High | ⬜ | B-0; revenue source |
 | 19 | Add a **Global Investor Contract** (you have IC-001 Global Startup but no global-investor contract) | Med | ⬜ | contract gap |
-| 20 | Reconcile the contract list: add **IC-009 / IC-010** (and the new global-investor contract) to CLAUDE.md's contract list | Low | ⬜ | doc gap |
+| 20 | Reconcile the contract list: add **IC-009 / IC-010** (and the new global-investor contract) to CLAUDE.md's contract list | Low | 🟡 | IC-009/IC-010/IC-011/IC-012 now listed; **IC-013/IC-014 added and IC-015 reserved** under D-46 (Phase 0.5). The **Global Investor Contract (#19) is still missing** — that part remains open. |
+| 21 | **Phase 0 — Option A requirements & existing-system discovery** | High | ✅ | Branch `phase/00-requirements-extraction` @ `5a2d106c3` — `docs/Phase-0-Requirements-Extraction-Report.md`. Classified the backend A–F; API Gateway = category D; 12 conflicts recorded. **Unmerged, awaiting Dan.** |
+| 22 | **Phase 0.5 — Contract Reconciliation** | High | ✅ | Branch `phase/00.5-contract-reconciliation` — **D-46** ratifies the Gateway-free target; **IC-010 `Final` → `Superseded`**; **IC-013** (BFF Ingress) + **IC-014** (Access Control) opened Draft / Proposed; IC-005 / IC-009 / IC-012 amended insert-only; locked invariant #7 revised. No runtime change; the `api_gateway` package is untouched on disk. **Unmerged, awaiting Dan's review.** |
+| 23 | **RATIFY CONF-4 — ownership cardinality** (IC-008 vs tenant DDL vs invariant #3: three cardinalities, two representations) | **High** | ❓ | **Dan's decision.** Options + recommendation at **D-46 §8**. **Gates Phase 7 schema work.** |
+| 24 | Promote **IC-007** `Draft / Proposed` → `Final` before any Sharing Service work | High | ⬜ | named prerequisite for Option A Phase 8 (D-46 §6, CONF-6) |
+| 25 | Author **IC-006** to Draft-complete (every normative section is currently `TBD`) before any AI Agent Service work; the Part 4B governance gate applies and is unwaived | High | ⬜ | named prerequisite for Option A Phase 9 (D-46 §6, CONF-5) |
+| 26 | Author **IC-015 — Contacts Service Contract** (reserved, unauthored) | Med | ⬜ | named prerequisite for Option A Phase 7 (D-46 §6, CONF-7) |
+| 27 | Author control migration **M-1** — a new append-only table for BFF ingress-edge audit (DDL 012's `CHECK (source_service='api_gateway')` physically rejects a BFF row; leave 012/013 + byte-pins intact) | High | ⬜ | **blocks all BFF audit emission** (D-46 §7) |
+| 28 | Author control migration **M-2** — `control_directory.owner_agent_ref`, per IC-008's global-ownership mandate | Med | ⬜ | D-46 §7, CONF-10 |
+| 29 | Author the **D-35 Global Deal Directory** (`DirectoryKind` has STARTUP + INVESTOR only; no `DEAL` kind, no DDL) | Med | ⬜ | D-46 §6, CONF-10 |
+| 30 | **Phase 1 — clean FastAPI runtime foundation** (14 bootable services, shared kernel, architecture guards incl. a zero-Gateway census) | High | ⬜ | **BLOCKED** on Dan's authorization; D-46 authorizes no implementation |
 
 ---
 
