@@ -235,7 +235,7 @@ The BFF MUST be **fail-closed**. Each of the following yields **Request Rejected
 - **Internal service surfaces MUST NEVER be directly client-reachable.** Internal read APIs and service-to-service transport MUST NOT be exposed to portal or client network zones.
 - Services MAY call one another over sanctioned internal transport under static cross-service import constraints that enforce **service independence** (import-linter). This internal graph is **internal-only** and is **not a portal ingress path**; it never offers a client or portal a way around the BFF.
 - **A service MUST NOT import another service's internal repository or application implementation.** Shared technical code and explicit service clients/interfaces are permitted.
-- **Deployment obligation (normative).** Because removing the Gateway removes a network position, the BFF MUST occupy that position before any service is exposed. **No backend service other than the BFF may be bound to a public interface.** A deployment in which a service other than the BFF is publicly reachable violates this contract regardless of what any application-layer check does.
+- **Deployment obligation (normative).** Because removing the Gateway removes a **network position**, the BFF MUST occupy that position before any service is exposed. **The BFF is the sole governed public application ingress; no other backend service may be publicly reachable in any environment.** The exposure rules that make this enforceable — loopback/private by default in local development, bind-internally-but-never-publish for containers, and a deployment-manifest check — are **normative at §21.1 (E-1…E-7)**. A deployment in which a service other than the BFF is publicly reachable violates this contract **regardless of what any application-layer check does**.
 
 ---
 
@@ -336,6 +336,7 @@ When the BFF is built under a separate, explicitly-authorizing execution instruc
 - **D-37 §20 V3** — data is accessed only through the BFF, verified by a **frontend-repository audit**: no database client, no Supabase data SDK, no PostgREST usage.
 - **Zero-Gateway census.** A repository census MUST return **0** occurrences of `api_gateway`, `API Gateway`, `http_gateway`, `gateway_edge`, gateway launcher and gateway config in the new runtime. Historical documentation MAY retain the word only when clearly marked historical and intentionally preserved.
 - **Re-homing proof.** Architecture tests MUST prove each of the four re-homed behaviours (§5, §7, §10, §11) is present and enforced at its new home.
+- **Exposure proof (§21.1 E-6).** A **deployment-manifest check** MUST prove that across every compose file, Kubernetes manifest, environment template and launcher script, **exactly one service publishes a port, and it is the BFF**. A source-level check MUST additionally prove that no internal service defaults its bind to `0.0.0.0`, and that `reload` is never enabled outside a local-development path. These are **configuration** properties, so a code-only test set cannot discharge them.
 
 These are acceptance criteria for the future implementation, not obligations this contract implements.
 
@@ -361,18 +362,33 @@ if __name__ == "__main__":          # development convenience only
 
 The production start path is the **factory plus an external ASGI server invocation**. This preserves the existing driver-containment guarantee rather than retiring it: a service that imports uvicorn directly is a contract violation.
 
-**Serving posture (normative — resolves CONF-9).** The production invocation MUST pin:
+### §21.1 — Exposure Model *(normative — ratified by D-47; resolves CONF-9)*
 
-| Setting | Value | Why |
-|---|---|---|
-| bind host | **loopback by default** | `0.0.0.0` is an all-interfaces bind and is **prohibited** outside a deliberately-configured deployment binding |
-| `--workers` | `1` | one OS process per service — the authorized process model |
-| `--no-access-log` | on | uvicorn's default access log leaks request detail |
-| `--no-server-header` | on | no `Server:` disclosure on every response (§17) |
-| `--no-proxy-headers` | on | forwarded headers are not a trusted input |
-| `reload` | **development only** | never enabled in a served environment |
+> **The controlling distinction is BIND versus PUBLISH.** A process *binds* an address inside whatever network namespace it runs in. A deployment *publishes* a port outward, to the host or to the internet. These are separate controls, and conflating them produces both false alarms (a container binding `0.0.0.0` inside its own namespace is normal and necessary) and real holes (a service correctly bound to a private interface, then published to the world by a compose file). **This contract governs both, separately.**
 
-**Omitting one of these silently restores a uvicorn default.** The five flags are a set; a partial application is a violation.
+**E-1 — Only the BFF is a public ingress.** The **FastAPI BFF is the sole governed public application ingress**. No other backend service — Authentication, Access Control, Control Plane, Database Router, Startup, Investor, Deal, Sharing, Import, Lineage, Contacts, AI Agent, Audit — may be a public ingress, in any environment. This restates §13 and is the rule the other clauses serve.
+
+**E-2 — Local development: loopback/private by default.** When run directly on a developer machine, every **internal** service MUST default to **loopback (`127.0.0.1`) or an otherwise private interface**. `0.0.0.0` MUST NOT be the default bind for an internal service in local development. A developer who deliberately needs a wider bind must set it explicitly; it is never what happens by omission.
+
+**E-3 — Containerized internal services: bind internally, publish never.** A containerized internal service **MAY** bind whatever address its container network namespace requires — including `0.0.0.0` **within the container** — because that binding reaches only the container network. **Its port MUST NOT be published to the host or to any public network.** Concretely: no `ports:` mapping and no `-p` / `--publish` for an internal service; container-network reachability only (`expose` / service-name DNS on a private network). **Only the BFF's port may be published.**
+
+**E-4 — `reload` is local-development only.** `reload=True` (and `--reload`) is permitted **only** on a developer machine. It MUST NOT be enabled in any shared, hosted, containerized, staging, or production environment.
+
+**E-5 — Serving flags are a set, not a menu.** Every served invocation MUST pin all five:
+
+| Flag | Why omitting it is a defect |
+|---|---|
+| `--workers 1` | one OS process per service — the authorized process model |
+| `--no-access-log` | uvicorn's default access log records request detail |
+| `--no-server-header` | otherwise every response discloses `Server: uvicorn` (§17) |
+| `--no-proxy-headers` | forwarded headers are not a trusted input |
+| `--factory` | the app-factory start path above |
+
+**Omitting one silently restores a uvicorn default.** A partial application is a violation, not a partial success.
+
+**E-6 — Exposure is a deployment property, and MUST be verifiable as one.** Because E-1 and E-3 are violated by *configuration* rather than by code, application-layer checks cannot enforce them. The Phase-1 acceptance set MUST therefore include a **deployment-manifest check** proving that, across every compose file, Kubernetes manifest, and launcher script, **exactly one service publishes a port, and it is the BFF**. A deployment in which an internal service is publicly reachable violates this contract **regardless of what any application-layer check reports**.
+
+**E-7 — Precedence.** Where any environment template, compose file, launcher, runbook, or sample code conflicts with E-1…E-6, **this section prevails** and the artefact is the defect. Option A §4's `uvicorn.run(host="0.0.0.0", …, reload=True)` sample is **superseded by this section**: it is illustrative only and MUST NOT be copied into any service as written.
 
 **Technology (Option A §3).** Python · FastAPI · Pydantic · Uvicorn only. Every backend HTTP service MUST be FastAPI. A separate Node backend, a custom REST framework, or a duplicate request/response DTO framework MUST NOT be introduced.
 
@@ -419,7 +435,10 @@ The BFF MUST NOT:
 12. introduce a shared database, shared schema, or `tenant_id` isolation architecture (§15);
 13. introduce synchronization or any automatic/scheduled/background re-import (§15);
 14. expose AI or cross-tenant sharing behaviour under this revision (§18);
-15. bind to a public interface any service other than itself (§13).
+15. permit any service other than itself to be a public ingress, or any internal service's port to be published to a host or public network (§13, §21.1 E-1/E-3);
+16. default an internal service's bind to `0.0.0.0` in local development (§21.1 E-2);
+17. enable `reload` in any shared, hosted, containerized, staging, or production environment (§21.1 E-4);
+18. serve with fewer than all five pinned uvicorn flags (§21.1 E-5).
 
 ---
 

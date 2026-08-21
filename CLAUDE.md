@@ -35,7 +35,7 @@ The `contracts/` directory holds the governing specifications. All implementatio
 - **IC-005** — Authentication Routing Contract *(Final)*
 - **IC-006** — AI Gateway Contract *(Draft — post-MVP, D-02)*
 - **IC-007** — Deal Collaboration & Cross-Tenant Sharing Contract *(Draft / Proposed, IC-007-DRAFT-1 — opened by D-38; no positive sharing capability)*
-- **IC-008** — Ownership Contract *(Final)*
+- **IC-008** — Ownership Contract *(Final; amended by **D-47**, 2026-08-21 — AI-ownership cardinality ratified: **exactly one human owner + at most one *current* AI owner**, as single references on the record, never sets or join tables. Multiple AI Agents may **contribute** — recorded via task history / provenance / audit — but contribution is **never ownership** and **never an authorization input**. Option C reserved. `owner_ai_agent_ref` stays NULL platform-wide until IC-006.)*
 - **IC-009** — Portal Contracts *(Final, IC-009-R1)*
 - **IC-010** — API Gateway Contract *(**Superseded** 2026-08-21 by D-46 — jointly by IC-013 + IC-014. Retained as the historical record and the traceability source for its successors; **no longer normative for implementation**. D-46 §4 holds the exhaustive section-by-section re-homing map.)*
 - **IC-011** — Hosted Rollback Proof Contract *(Draft / Proposed, IC-011-DRAFT-1 — opened by D-40)*
@@ -63,6 +63,8 @@ SnackPortal2 uses **physical multi-database isolation**, not shared-schema multi
 - **Access Control Service** — *what are you allowed to do?* Evaluates role, permission, tenant membership, ownership, requested action, record residency (and, later, AI entitlement); returns Allowed/Denied; governed by IC-014. Never authenticates, never selects a database, never fails open.
 - **Database Router** — *which active tenant and physical database?* Resolves the correct control vs. tenant database per request, registry-authoritatively from the signed claim. **The only service permitted to open a tenant database.**
 - Plus: Control Plane, Startup, Investor, Deal, Contacts, Sharing, Import, Lineage, AI Agent, and Audit services — each independently bootable with its own app factory, port, health/readiness and tests (IC-013 §21).
+
+**Service exposure is non-negotiable (D-47 / IC-013 §21.1).** The controlling distinction is **BIND vs PUBLISH**. **Only the BFF is a public ingress** (E-1). Internal services default to **loopback/private** in local development — `0.0.0.0` is never an internal service's default bind (E-2). Containerized internal services **MAY bind `0.0.0.0` inside the container** but **MUST NOT publish** their port — no `ports:`, no `-p`; container-network reachability only (E-3). **`reload` is local-development only** (E-4). The five uvicorn flags (`--factory --workers 1 --no-access-log --no-server-header --no-proxy-headers`) are **a set, not a menu** (E-5). Because E-1/E-3 are violated by *configuration* rather than code, Phase-1 acceptance requires a **deployment-manifest check** proving exactly one service publishes a port and it is the BFF (E-6).
 
 **The four-way separation is non-negotiable:** `Authentication ≠ Access Control ≠ Tenant Routing ≠ Database Access` (D-46 §3). The request flow is `Authentication → Carrier Validation → RequestContext → Access Control → Tenant Routing → Service → Response Composition`; **Access Control runs before Tenant Routing**, so a denied request never causes a tenant-database connection.
 

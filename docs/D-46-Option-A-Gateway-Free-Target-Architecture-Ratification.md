@@ -173,7 +173,7 @@ Request
 | **CONF-1** | IC-010 Final = "sole approved ingress" | **RESOLVED** — §2 above. IC-010 → Superseded; invariant #7 revised; IC-013 + IC-014 opened. |
 | **CONF-2** | IC-009 portal DTOs are contractually *gateway-composed* | **RESOLVED** — IC-009 amended (insert-only): the composing seam is re-pointed from the API Gateway to the **BFF** under IC-013 §19. The DTO catalogue, field sets, provenance markers and `IC-009-R1` revision identity are **unchanged**. |
 | **CONF-3** | Control DDL 012 pins `CHECK (source_service = 'api_gateway')` | **RESOLVED IN CONTRACT; MIGRATION SPECIFIED, NOT WRITTEN** — see §7. The database physically rejects a non-Gateway emitter, so a control migration is **required before any BFF audit emission**. Phase 0.5 is documentation-only, so the migration is *specified* here and authored under Phase 8. |
-| **CONF-4** | Ownership cardinality disagrees three ways | **RATIFICATION REQUIRED — Dan's call.** Recommendation and options in §8. Not resolved unilaterally: it is a product decision that changes the tenant schema. |
+| **CONF-4** | Ownership cardinality disagrees three ways | ✅ **RESOLVED 2026-08-21 by [D-47](D-47-AI-Ownership-Cardinality-And-Service-Exposure-Model.md) — Dan ratified Option A.** At most one **current** AI Owner per record; multiple AI Agents may **contribute**, recorded through task history, provenance and audit, which never creates a second ownership; Option C reserved as additive. §8 below is superseded by D-47 §1. |
 | **CONF-5** | Option A Phase 9 builds AI against the D-02/D-06 deferral and an all-TBD IC-006 | **PARTIALLY RESOLVED** — the Option A directive is Dan-authorized and **does reopen the AI deferral for the rebuild's Phase 9**; this is recorded. But **IC-006 remains an unusable placeholder** (every normative section reads TBD). **IC-006 MUST be authored to Draft-complete before Phase 9 begins** — recorded as a named prerequisite, not discharged here. The Canonical Overview Part 4B governance gate (a compliance/permissions review is a prerequisite, not an afterthought) **applies and is unwaived**. |
 | **CONF-6** | Option A Phase 8 builds Sharing against a Draft IC-007 | **NOT RESOLVED — named prerequisite.** IC-007 MUST be promoted `Draft / Proposed` → `Final` before any Sharing Service work. Promotion is a governance act requiring Dan's ratification and is out of scope for a reconciliation phase. Action Tracker #23 stands. |
 | **CONF-7** | Contacts Service has no contract | **NOT RESOLVED — named prerequisite.** A Contacts contract (next free number, **IC-015**) MUST be authored before Phase 7. Reserved here; not authored, because Contacts behaviour has no existing implementation to reconcile *from* — it is new product specification, not reconciliation. Action Tracker #22 stands. |
@@ -201,9 +201,17 @@ Both migrations MUST be reversible, MUST be tested against disposable databases 
 
 ---
 
-## §8 — CONF-4: ownership cardinality — options for ratification
+## §8 — CONF-4: ownership cardinality — ✅ RATIFIED
 
-Three sources currently disagree:
+> **RESOLVED 2026-08-21. Dan ratified Option A.** See **[D-47 §1](D-47-AI-Ownership-Cardinality-And-Service-Exposure-Model.md)** for the normative rule; that section prevails over everything below.
+>
+> **The ratified rule:** at most one ***current*** AI Owner per record, held as a single reference — never a set, never a join table. **Multiple AI Agents may contribute**; contribution is recorded through **task history, provenance (IC-004) and operational audit (IC-002)**, is **never** an authorization input, and **never** creates a second AI ownership. Succession is permitted and audited (at most one holder at any instant). **Option C is reserved** as a purely additive later decision if Phase 9 proves it necessary. Activation is unchanged — `owner_ai_agent_ref` stays NULL platform-wide until IC-006.
+>
+> **Two divergences were created and are recorded, not resolved** (D-47 §1.4): the tenant DDL still implements the rejected join-table shape, and `test_tenant_ddl_schema_guards.py::test_ownership_pk_shapes` **actively asserts** it — so the DDL and that guard must change in the **same** Phase-7 commit. Additionally, the "task history" record class named by the ruling **has no contractual home yet**.
+>
+> *The options analysis below is retained as the decision record — it is what was decided from, not what is now in force.*
+
+Three sources disagreed:
 
 | Source | Human owner | AI owner | Representation |
 |---|---|---|---|
@@ -225,7 +233,7 @@ Three sources currently disagree:
 
 **Recommendation: Option A for the MVP rebuild, with Option C reserved** as the additive path if Phase 9 proves multiple AI agents must be attributed per record. Option A is the smallest lawful step and does not foreclose C.
 
-**This item is NOT decided by D-46.** It requires Dan's ratification and gates Phase 7 schema work.
+**Outcome: Dan ratified Option A on 2026-08-21 — see D-47 §1.** The recommendation above was adopted, including the Option C reservation, with one refinement Dan added: the bound is *at most one **current*** AI Owner, and multiple AI Agents may contribute so long as contribution is recorded through task history, provenance and audit rather than as ownership.
 
 ---
 

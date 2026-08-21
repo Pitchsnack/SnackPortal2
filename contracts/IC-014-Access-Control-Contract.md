@@ -159,7 +159,11 @@ Carried forward from IC-008 and D-36, unchanged:
 - Ownership references are **references only** — no names, no emails, no identity payloads (V8).
 - `owner_ai_agent_ref` is **unpopulated platform-wide pre-IC-006** (V10). This service MUST treat a populated AI-owner reference as an error condition under this revision, not as a grant.
 
-> **Open item — CONF-4.** The ownership *cardinality and representation* remain contested across IC-008 (exactly one human + at most one AI, as record fields), the tenant DDL (at most one human + zero-or-more AI, as join tables), and Canonical Overview invariant #3. **D-46 §8 records the options; the decision is Dan's and is not made by this contract.** Until it is ratified, this service MUST treat ownership as **at most one human owner reference** — the intersection of all three sources, and the only reading that is safe under every candidate outcome.
+**Cardinality — RATIFIED (D-47, 2026-08-21; CONF-4 closed).** This service MUST read ownership as **exactly one human owner reference and at most one *current* AI owner reference**, per IC-008 as ratified. Concretely:
+- It MUST treat `owner_agent_ref` and `owner_ai_agent_ref` as **single references, never sets**. A decision path that iterates a collection of owners is a contract violation.
+- **A contribution is not an owner.** Task-history, provenance (IC-004) and operational-audit (IC-002) records MAY show any number of AI Agents having contributed to a record. **None of them is an authorization input.** This service MUST NOT read a contribution record to reach a decision, MUST NOT treat contribution as ownership, and MUST NOT grant anything on the basis of it. This follows from §6 (no tenant-data reads) and Ownership Principle 1 (**Ownership ≠ Authorization**): if ownership itself grants nothing, contribution grants strictly less than nothing.
+- Where a record's live AI-owner reference is populated at all — which it MUST NOT be pre-IC-006 (§7 above, IC-008 V10) — a **second concurrent** AI owner is an **error condition**, never a grant.
+- **Option C** (a separate, explicitly non-ownership AI-involvement relation) is **reserved and inert**. Should it later be adopted, it arrives as an *involvement* relation and MUST NOT become an authorization input without an amendment to this contract.
 
 ---
 
@@ -249,7 +253,7 @@ This service follows IC-013 §21 in full: its own package, its own entry module,
 **Additional constraints:**
 - It MUST NOT depend on `psycopg` or any database driver. It holds no database connection of any kind.
 - It MUST NOT import another service's internal implementation; it reaches the Control Plane over a governed, references-only transport port.
-- It MUST be reachable **only** internally (IC-013 §13). An Access Control Service exposed to a client network zone is a contract violation.
+- It MUST be reachable **only** internally (IC-013 §13), under the exposure model at **IC-013 §21.1**: loopback/private bind by default in local development (E-2), container-network reachability with **no published port** when containerized (E-3), and `reload` local-development only (E-4). **The BFF is the sole public ingress (E-1).** An Access Control Service reachable from a client network zone is a contract violation — and, of every service in the topology, the most consequential one to get wrong: a directly-reachable authorizer can be asked for a decision that no BFF flow ever requested.
 - It MUST be **stateless** with respect to decisions. Caching of membership/role reads is permitted with a bounded TTL and explicit tenant-scoped invalidation (D-11); a cache MUST NOT extend a grant beyond its TTL, and a cache miss or error MUST fail closed (§8.2).
 
 ---
