@@ -392,18 +392,25 @@ A service **MAY** use an application factory, and a deployment **MAY** invoke it
 
 **E-4 — `reload` is local-development only.** `reload=True` (and `--reload`) is permitted **only** on a developer machine. It MUST NOT be enabled in any shared, hosted, containerized, staging, or production environment.
 
-**E-5 — Served-invocation hygiene flags are a set, not a menu.** A **served** invocation (an external ASGI server command in any shared, hosted, containerized, staging, or production environment) MUST pin all four:
+**E-5 — Serving configuration is environment-specific, with secure defaults.** Uvicorn **process, logging, proxy-header and server-header** settings MUST be selected **per environment** from secure defaults. They are **deployment settings, not architecture invariants**.
 
-| Flag | Why omitting it is a defect |
-|---|---|
-| `--workers 1` | one OS process per service — the authorized process model |
-| `--no-access-log` | uvicorn's default access log records request detail |
-| `--no-server-header` | otherwise every response discloses `Server: uvicorn` (§17) |
-| `--no-proxy-headers` | forwarded headers are not a trusted input |
+**This contract MUST NOT** hard-code a permanent worker count, permanently prohibit access logging, or permanently prohibit trusted proxy-header handling. Worker/process topology is a capacity and supervision decision; access logging may be operationally or legally required; and a trusted reverse proxy or enterprise security product may legitimately supply forwarded headers.
 
-**Omitting one silently restores a uvicorn default.** A partial application is a violation, not a partial success.
+| Setting | Secure default | Why it is environment-specific |
+|---|---|---|
+| worker / process topology | **one process per service** | capacity, supervision and scaling are deployment decisions, not architecture |
+| access logging | **off** | some operational or regulated environments require access logs |
+| proxy / forwarded headers | **off — untrusted** | a trusted proxy or security edge may legitimately supply them, under an explicitly configured trust boundary |
+| server header | **off** *(recommended)* | avoids `Server:` version disclosure — a recommended secure default, **not** a locked invariant |
 
-`--factory` is **not** in this set: it is a start-path choice (§21 above), not a hygiene control, and is required only where a service actually exposes a factory. This clause binds the **served** path; the local-development `__main__` block of §21 is not a served invocation and is not bound by it.
+**What does bind, normatively:**
+1. **Secure default on omission.** A setting left unconfigured takes the secure default above. Departing from a secure default is a deliberate, environment-scoped decision — never something that happens by omission.
+2. **Proxy headers require an explicit trust boundary.** Any use of forwarded/proxy headers MUST be **explicitly configured for a trusted proxy or security boundary**. Forwarded headers MUST NOT be trusted by default.
+3. **A forwarded header is never a carrier.** Enabling proxy-header handling changes how the client address and scheme are derived — **nothing more**. It MUST NOT introduce a tenant carrier, a routing authority, or an identity source. **§5 and §7 are unchanged and prevail**: exactly two recognized carriers, and `RequestContext` built exclusively from `AuthContext`.
+4. **Access logs inherit the references-only discipline.** Where access logging is enabled, the log MUST NOT record a token, credential, DSN, secret, PII, or tenant business content (§10).
+5. **Production serving configuration MUST be documented and testable** for its target environment.
+
+`--factory` is likewise not mandated: it is a start-path choice (§21 above), required only where a service actually exposes a factory. This clause binds the **served** path; the local-development `__main__` block of §21 is not a served invocation and is not bound by it.
 
 **E-6 — Exposure is a deployment property, and MUST be verifiable as one.** Because E-1 and E-3 are violated by *configuration* rather than by code, application-layer checks cannot enforce them. The Phase-1 acceptance set MUST therefore include a **deployment-manifest check** proving that, across every compose file, Kubernetes manifest, and launcher script, **exactly one service publishes a port, and it is the BFF**. A deployment in which an internal service is publicly reachable violates this contract **regardless of what any application-layer check reports**.
 
@@ -457,7 +464,7 @@ The BFF MUST NOT:
 15. permit any service other than itself to be a public ingress, or any internal service's port to be published to a host or public network (§13, §21.1 E-1/E-3);
 16. default an internal service's bind to `0.0.0.0` in local development (§21.1 E-2);
 17. enable `reload` in any shared, hosted, containerized, staging, or production environment (§21.1 E-4);
-18. use a **served** invocation with fewer than all four hygiene flags (§21.1 E-5).
+18. trust forwarded/proxy headers without an explicitly configured trusted proxy or security boundary, or let any forwarded header act as a tenant carrier, routing authority, or identity source (§5, §7, §21.1 E-5).
 
 ---
 

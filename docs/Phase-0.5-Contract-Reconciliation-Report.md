@@ -115,7 +115,7 @@ IC-013 §20 additionally requires **re-homing proof** — architecture tests tha
 | **CONF-6** | Sharing Phase 8 vs Draft IC-007 | ⬜ **NAMED PREREQUISITE** — IC-007 must be promoted to `Final`; that is a governance act requiring Dan |
 | **CONF-7** | Contacts has no contract | ⬜ **RESERVED as IC-015**, unauthored — it is new product specification, not reconciliation |
 | **CONF-8** | `main.py` convention vs uvicorn containment | ✅ **RESOLVED, then CORRECTED 2026-08-21** — IC-013 §21 ratifies the **simple** convention: each service has its own `main.py` defining its own `app = FastAPI()`, starts independently, has a configurable port, and is testable independently. A service-level `import uvicorn` and a local-development `if __name__ == "__main__": uvicorn.run(..., host="127.0.0.1", reload=True)` block are **permitted**. **No shared uvicorn runtime module, no mandatory `create_app()` factory, and no mandatory `--factory`** is imposed — a factory is an option, not an obligation. Production startup **may** use an external ASGI server command; `reload=True` is local-development only. *(The earlier draft's mandatory-factory/containment wording was not separately ratified and has been removed.)* |
-| **CONF-9** | `0.0.0.0` / `reload=True` / missing flags | ✅ **RESOLVED, then FINALIZED 2026-08-21 (D-47 §2)** — restated on the **BIND vs PUBLISH** distinction at **IC-013 §21.1 E-1…E-7**: only the BFF is a public ingress; loopback/private by default in local dev; containers may bind internally but **never publish**; `reload` local-dev only; the four served-invocation hygiene flags are a set; and a **deployment-manifest check** is required because the rule is violated by configuration, not code |
+| **CONF-9** | `0.0.0.0` / `reload=True` / missing flags | ✅ **RESOLVED, then FINALIZED 2026-08-21 (D-47 §2)** — restated on the **BIND vs PUBLISH** distinction at **IC-013 §21.1 E-1…E-7**: only the BFF is a public ingress; loopback/private by default in local dev; containers may bind internally but **never publish**; `reload` local-dev only; serving configuration is **environment-specific with secure defaults** (E-5, amended 2026-08-21 — §13); and a **deployment-manifest check** is required because the rule is violated by configuration, not code |
 | **CONF-10** | Global directory gaps | 🟡 **PARTIAL** — `owner_agent_ref` recorded as migration **M-2**; Global Investor Contract and D-35 Global Deal Directory remain named prerequisites |
 | **CONF-11** | IC-012 governs a root Option A replaces | ✅ **RESOLVED** — principles carried forward and re-scoped; Edge-9 specifics historical; §13 import-linter requirement survives |
 | **CONF-12** | 3 backend operations vs 86 frontend expectations | ✅ **ADDRESSED** — IC-013 §22 makes cutover **incremental and per-operation by contract**; full parity is *not* a Phase 10 precondition, but a governed enumerated cutover set is; the old Gateway must not be used as a bridge |
@@ -254,7 +254,7 @@ The rules as applied:
 | **E-2** | Local development: loopback/private **by default**; `0.0.0.0` is never an internal service's default bind |
 | **E-3** | Containers: **bind internally, publish never** — no `ports:`, no `-p`; only the BFF's port may be published |
 | **E-4** | `reload` is local-development only |
-| **E-5** | The four **served-invocation** hygiene flags (`--workers 1 --no-access-log --no-server-header --no-proxy-headers`) are **a set, not a menu** — omitting one silently restores a uvicorn default. `--factory` is **not** in the set |
+| **E-5** | **Serving configuration is environment-specific, with secure defaults** *(amended 2026-08-21 — §13)* — process, logging, proxy-header and server-header settings are deployment decisions, not architecture invariants. Secure defaults on omission; proxy headers require an explicit trusted-proxy boundary; a forwarded header is never a carrier |
 | **E-6** | A **deployment-manifest check** is required at Phase-1 acceptance |
 | **E-7** | The contract prevails over any conflicting template, compose file, launcher, runbook or sample — Option A §4's `uvicorn.run(host="0.0.0.0", …, reload=True)` sample is **superseded** |
 
@@ -271,7 +271,7 @@ Applied under `SnackPortal2_Phase0.5_Final_Consistency_Correction_Claude_GPT.md`
 | § | Correction | Where |
 |---|---|---|
 | **§2** | **Restored the approved simple FastAPI startup convention.** Removed the wording that made a **shared uvicorn runtime module**, a **`create_app()` factory**, and **`--factory`** mandatory, and removed the rule that a service-level `import uvicorn` is always a contract violation. None had been separately ratified. The approved shape is `main.py` + `app = FastAPI()`, with a permitted local-development `__main__` block. A factory is now explicitly **an option, not an obligation**. | IC-013 §21, §21.1 E-5, §24.18 · IC-014 §12 · D-46 §6 CONF-8 · D-47 §2 E-5 · register D-46 row · `CLAUDE.md` · report §5, §9 |
-| **§3** | **D-47 BIND vs PUBLISH preserved and unweakened.** E-1…E-7 unchanged in substance. `--factory` was removed from the E-5 flag set as a *start-path choice, not a hygiene control* — the four hygiene flags stand, and now explicitly bind the **served** path rather than the local `__main__` path. The Phase-1 deployment-manifest requirement is retained. | IC-013 §21.1 · D-47 §2 |
+| **§3** | **D-47 BIND vs PUBLISH preserved and unweakened.** E-1…E-7 unchanged in substance. `--factory` was removed from the E-5 flag set as a *start-path choice, not a hygiene control* — the four hygiene flags stood at that point and bound the **served** path rather than the local `__main__` path — *that four-flag set was itself subsequently replaced by the E-5 correction of the same day; see §13*. The Phase-1 deployment-manifest requirement is retained throughout. | IC-013 §21.1 · D-47 §2 |
 | **§4** | **Stale "CONF-4 is open" text corrected.** Historical framing kept only where clearly labelled as the decision record. | D-46 §9 · register D-46 row |
 | **§5** | **IC-008 / IC-014 traceability reconciled.** IC-014's traceability table no longer describes CONF-4 as open and now agrees with its own §7; D-46 §10 records IC-008 as **amended by D-47** rather than "no change"; the register's D-46 affected-contracts column matches. | IC-014 §16 · D-46 §10 · register |
 | **§6** | **Replaced the contradictory "No blocker was closed."** — which sat beside a table recording CONF-1/4/9 as resolved — with the approved wording: *"No production-readiness claim is made. Documentation and contract reconciliation do not by themselves discharge runtime, migration, deployment, or implementation acceptance criteria."* The resolutions stand exactly where the contracts record them. | IC-013 §25 · IC-014 §15 · D-46 §9 · D-47 §5 · report §10 |
@@ -281,3 +281,40 @@ Applied under `SnackPortal2_Phase0.5_Final_Consistency_Correction_Claude_GPT.md`
 **One judgement call, recorded.** §2 required removing mandatory-factory wording *"unless Dan has separately and explicitly ratified such a design."* No such ratification exists, so the wording was removed. The **four hygiene flags** were kept: they are not among the four items §2 names for removal, they are exposure/disclosure controls rather than start-path mechanics, and §3 says not to weaken D-47. `--factory` was dropped from that set because it *is* start-path mechanics.
 
 **Scope boundary held.** No documentation guard required a runtime or test change, so the §9 stop-and-report condition was never triggered.
+
+---
+
+## 13. Final E-5 Uvicorn Correction (2026-08-21)
+
+Applied under `SnackPortal2_Phase0.5_Final_E5_Uvicorn_Correction_Claude_GPT.md`. Scoped to **IC-013 §21.1 E-5** and its dependent text. Documentation and contracts only.
+
+### What changed
+
+E-5 previously made four uvicorn flags a **mandatory fixed set** on every served invocation. That was too rigid for an architecture contract: it froze three genuinely environment-specific decisions into an invariant.
+
+| Setting | Was | Now |
+|---|---|---|
+| worker / process topology | `--workers 1` **mandatory** | secure default *one process per service*; topology is a **capacity and supervision decision** |
+| access logging | `--no-access-log` **mandatory** | secure default *off*; some operational or regulated environments **require** access logs |
+| proxy / forwarded headers | `--no-proxy-headers` **mandatory** | secure default *off, untrusted*; a **trusted reverse proxy or enterprise security product** may legitimately supply them under a separately governed trust configuration |
+| server header | `--no-server-header` **mandatory** | **recommended** secure default — no longer a locked invariant |
+
+### What still binds
+
+Relaxing a rule is where invariants leak, so the guarantees were restated explicitly rather than left implicit:
+
+1. **Secure default on omission.** An unconfigured setting takes the secure default. Departing from one is a deliberate, environment-scoped decision — never something that happens by omission.
+2. **Proxy headers require an explicit trusted boundary.** Forwarded headers MUST NOT be trusted by default.
+3. **A forwarded header is never a carrier.** This is the load-bearing one. Enabling proxy-header handling changes how client address and scheme are derived — **nothing more**. It MUST NOT become a tenant carrier, routing authority, or identity source. **§5** (exactly two recognized carriers) and **§7** (`RequestContext` from `AuthContext` only) are unchanged and prevail. Without this clause, "we now allow proxy headers" could be read as widening the carrier set — precisely the hole §5 exists to close.
+4. **Access logs inherit the references-only discipline** (§10) — no token, credential, DSN, secret, PII, or tenant business content.
+5. **Production serving configuration MUST be documented and testable** for its target environment.
+
+**§24 prohibition 18** was rewritten from a flag-count rule to the trusted-boundary rule, so the prohibition list tracks the actual risk rather than a flag inventory.
+
+### Explicitly unchanged
+
+- **The Option A Gateway-free target** — untouched.
+- **D-47's BIND-vs-PUBLISH model** — E-1…E-4, E-6 and E-7 stand verbatim: only the BFF may be publicly reachable/published; internal services default to loopback/private in local development; containers may bind internally but never publish; `reload=True` is local-development only; and **Phase 1 must still verify public exposure at the deployment-manifest level**.
+- **The simple `main.py` + `app = FastAPI()` convention** restored by the previous correction — no mandatory `create_app()`, no mandatory `--factory`, no shared uvicorn runtime, no service-level uvicorn import prohibition. Not reintroduced by any route.
+
+Recorded in the decision register as **D-47-C2**.
