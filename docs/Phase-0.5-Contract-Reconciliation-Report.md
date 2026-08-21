@@ -47,6 +47,8 @@
 
 ### Amended, insert-only (5 contracts)
 
+*(IC-013 and IC-014 were further corrected on 2026-08-21 by the Final Consistency Correction — see §12.)*
+
 | Contract | Change | Status after |
 |---|---|---|
 | **IC-010** | Supersession banner + status change. **No normative text deleted** — the contract is preserved verbatim below the banner for audit continuity. | `Final` → **`Superseded`** |
@@ -97,7 +99,7 @@ The last one is split deliberately. IC-013 §11 states the reason: *"a decision 
 
 IC-013 §20 additionally requires **re-homing proof** — architecture tests that each of the four is present and enforced at its new home — as an acceptance criterion for the future implementation.
 
-**One further protection was added, not carried forward.** Phase 0 observed that the Gateway is not only a router but a **privilege boundary**: it is the only public surface, and it is what keeps the public tier away from tenant DSNs. IC-013 §13 therefore adds a **deployment obligation**: *no backend service other than the BFF may be bound to a public interface.* A deployment in which another service is publicly reachable violates the contract regardless of what any application-layer check does.
+**One further protection was added, not carried forward.** Phase 0 observed that the Gateway is not only a router but a **privilege boundary**: it is the only public surface, and it is what keeps the public tier away from tenant DSNs. IC-013 §13 therefore adds a **deployment obligation**: *only the BFF may be publicly reachable/published; internal services may bind inside private runtime or container namespaces as required, but must not be publicly published* (§21.1 E-1/E-3, as finalized by D-47). A deployment in which another service is publicly reachable violates the contract regardless of what any application-layer check does.
 
 ---
 
@@ -112,8 +114,8 @@ IC-013 §20 additionally requires **re-homing proof** — architecture tests tha
 | **CONF-5** | AI Phase 9 vs the D-02/D6 deferral + all-TBD IC-006 | 🟡 **PARTIAL** — the Option A directive reopens the deferral for Phase 9; **IC-006 must reach Draft-complete first**; the Part 4B governance gate is unwaived |
 | **CONF-6** | Sharing Phase 8 vs Draft IC-007 | ⬜ **NAMED PREREQUISITE** — IC-007 must be promoted to `Final`; that is a governance act requiring Dan |
 | **CONF-7** | Contacts has no contract | ⬜ **RESERVED as IC-015**, unauthored — it is new product specification, not reconciliation |
-| **CONF-8** | `main.py` convention vs uvicorn containment | ✅ **RESOLVED** — IC-013 §21 ratifies the app-factory shape; uvicorn stays confined to one shared runtime module; `uvicorn.run(...)` permitted only under `if __name__ == "__main__":` as a dev convenience, never the production start path |
-| **CONF-9** | `0.0.0.0` / `reload=True` / missing flags | ✅ **RESOLVED, then FINALIZED 2026-08-21 (D-47 §2)** — restated on the **BIND vs PUBLISH** distinction at **IC-013 §21.1 E-1…E-7**: only the BFF is a public ingress; loopback/private by default in local dev; containers may bind internally but **never publish**; `reload` local-dev only; the five uvicorn flags are a set; and a **deployment-manifest check** is required because the rule is violated by configuration, not code |
+| **CONF-8** | `main.py` convention vs uvicorn containment | ✅ **RESOLVED, then CORRECTED 2026-08-21** — IC-013 §21 ratifies the **simple** convention: each service has its own `main.py` defining its own `app = FastAPI()`, starts independently, has a configurable port, and is testable independently. A service-level `import uvicorn` and a local-development `if __name__ == "__main__": uvicorn.run(..., host="127.0.0.1", reload=True)` block are **permitted**. **No shared uvicorn runtime module, no mandatory `create_app()` factory, and no mandatory `--factory`** is imposed — a factory is an option, not an obligation. Production startup **may** use an external ASGI server command; `reload=True` is local-development only. *(The earlier draft's mandatory-factory/containment wording was not separately ratified and has been removed.)* |
+| **CONF-9** | `0.0.0.0` / `reload=True` / missing flags | ✅ **RESOLVED, then FINALIZED 2026-08-21 (D-47 §2)** — restated on the **BIND vs PUBLISH** distinction at **IC-013 §21.1 E-1…E-7**: only the BFF is a public ingress; loopback/private by default in local dev; containers may bind internally but **never publish**; `reload` local-dev only; the four served-invocation hygiene flags are a set; and a **deployment-manifest check** is required because the rule is violated by configuration, not code |
 | **CONF-10** | Global directory gaps | 🟡 **PARTIAL** — `owner_agent_ref` recorded as migration **M-2**; Global Investor Contract and D-35 Global Deal Directory remain named prerequisites |
 | **CONF-11** | IC-012 governs a root Option A replaces | ✅ **RESOLVED** — principles carried forward and re-scoped; Edge-9 specifics historical; §13 import-linter requirement survives |
 | **CONF-12** | 3 backend operations vs 86 frontend expectations | ✅ **ADDRESSED** — IC-013 §22 makes cutover **incremental and per-operation by contract**; full parity is *not* a Phase 10 precondition, but a governed enumerated cutover set is; the old Gateway must not be used as a bridge |
@@ -209,7 +211,7 @@ So the artefact that is **authoritative** (the contract, just ratified by Dan) i
 When Phase 1 is authorized, the recommended order from the Phase 0 report stands, now with contract backing:
 
 1. **`shared/` first** — seeded from the existing shared kernel (16 files / 1,369 lines), plus the new `correlation/` module.
-2. **14 service skeletons**, each independently bootable per **IC-013 §21** (app-factory shape, pinned serving posture, minimally-disclosing health/readiness per §17).
+2. **14 service skeletons**, each independently bootable per **IC-013 §21** — own `main.py`, own `app = FastAPI()`, configurable port, minimally-disclosing health/readiness (§17), and the §21.1 exposure model. No factory is mandated.
 3. **Architecture guards immediately, not later** — the dependency DAG (re-expressed per IC-012 §13 against the new package graph), driver/vendor containment, references-only discipline, a **zero-Gateway census** (IC-013 §20), the **four re-homing proofs** (§4 above), and the **deployment-manifest exposure check** (P-9 — the only Phase-1-scoped prerequisite, and one a code-only test set cannot discharge).
 4. **Then the Database Router** — the one component that already fully satisfies its target contract, with the strongest test evidence (140 tests + live-PG topology proof), and the service every other one depends on for its session seam.
 
@@ -224,7 +226,7 @@ Authentication and Access Control still precede the BFF, per Option A's ordering
 - **No branch was merged. Nothing was pushed.**
 - **No database migration was authored or applied.** M-1 and M-2 are specified only.
 - **No DDL and no test was changed by the D-47 finalization.** DIV-1 (the tenant DDL still carries the rejected shape) and DIV-2 (a guard asserts it) are **recorded as Phase-7 work**, not silently fixed.
-- **No blocker was closed.** Production remains **NOT READY / DO-NOT-ACTIVATE**.
+- **No production-readiness claim is made. Documentation and contract reconciliation do not by themselves discharge runtime, migration, deployment, or implementation acceptance criteria.** Production remains **NOT READY / DO-NOT-ACTIVATE**.
 - **No test was weakened, retired, or edited.** 2054 pass and 1036 architecture guards pass, unchanged from the Phase 0 baseline. Guard coverage was **measured, not assumed** — and the measurement surfaced that IC-008 is unguarded (§6.1).
 - IC-013 and IC-014 are **`Draft / Proposed`** and authorize no implementation. Phase 1 proceeds only under a separate, explicitly-authorizing instruction from Dan.
 - The stale `phase/01-fastapi-runtime-foundation` worktree was **not touched**.
@@ -252,10 +254,30 @@ The rules as applied:
 | **E-2** | Local development: loopback/private **by default**; `0.0.0.0` is never an internal service's default bind |
 | **E-3** | Containers: **bind internally, publish never** — no `ports:`, no `-p`; only the BFF's port may be published |
 | **E-4** | `reload` is local-development only |
-| **E-5** | The five uvicorn flags are **a set, not a menu** — omitting one silently restores a uvicorn default |
+| **E-5** | The four **served-invocation** hygiene flags (`--workers 1 --no-access-log --no-server-header --no-proxy-headers`) are **a set, not a menu** — omitting one silently restores a uvicorn default. `--factory` is **not** in the set |
 | **E-6** | A **deployment-manifest check** is required at Phase-1 acceptance |
 | **E-7** | The contract prevails over any conflicting template, compose file, launcher, runbook or sample — Option A §4's `uvicorn.run(host="0.0.0.0", …, reload=True)` sample is **superseded** |
 
 **Why E-6 is not optional polish.** E-1 and E-3 are violated by **configuration**, not by code. An application-layer test can prove a service binds correctly and still miss a compose file that publishes it. The manifest check is the only place the rule is actually enforceable — which is the same lesson Phase 0 recorded about the Gateway: removing it removed a **network position**, and network positions are defended by deployment configuration, not application logic.
 
 Consequential edits: IC-013 §13 (deployment obligation re-pointed), §20 (exposure proof added to acceptance), §24 (prohibitions 15–18); IC-014 §12 — with the note that a directly-reachable *authorizer* is the most consequential exposure failure in the topology, since it can be asked for a decision no BFF flow ever requested.
+
+---
+
+## 12. Final Consistency Correction (2026-08-21)
+
+Applied under `SnackPortal2_Phase0.5_Final_Consistency_Correction_Claude_GPT.md`. Documentation and contracts only — **no backend runtime code, DDL, migration, test, or deployment manifest was touched**, and the `api_gateway` package remains untouched.
+
+| § | Correction | Where |
+|---|---|---|
+| **§2** | **Restored the approved simple FastAPI startup convention.** Removed the wording that made a **shared uvicorn runtime module**, a **`create_app()` factory**, and **`--factory`** mandatory, and removed the rule that a service-level `import uvicorn` is always a contract violation. None had been separately ratified. The approved shape is `main.py` + `app = FastAPI()`, with a permitted local-development `__main__` block. A factory is now explicitly **an option, not an obligation**. | IC-013 §21, §21.1 E-5, §24.18 · IC-014 §12 · D-46 §6 CONF-8 · D-47 §2 E-5 · register D-46 row · `CLAUDE.md` · report §5, §9 |
+| **§3** | **D-47 BIND vs PUBLISH preserved and unweakened.** E-1…E-7 unchanged in substance. `--factory` was removed from the E-5 flag set as a *start-path choice, not a hygiene control* — the four hygiene flags stand, and now explicitly bind the **served** path rather than the local `__main__` path. The Phase-1 deployment-manifest requirement is retained. | IC-013 §21.1 · D-47 §2 |
+| **§4** | **Stale "CONF-4 is open" text corrected.** Historical framing kept only where clearly labelled as the decision record. | D-46 §9 · register D-46 row |
+| **§5** | **IC-008 / IC-014 traceability reconciled.** IC-014's traceability table no longer describes CONF-4 as open and now agrees with its own §7; D-46 §10 records IC-008 as **amended by D-47** rather than "no change"; the register's D-46 affected-contracts column matches. | IC-014 §16 · D-46 §10 · register |
+| **§6** | **Replaced the contradictory "No blocker was closed."** — which sat beside a table recording CONF-1/4/9 as resolved — with the approved wording: *"No production-readiness claim is made. Documentation and contract reconciliation do not by themselves discharge runtime, migration, deployment, or implementation acceptance criteria."* The resolutions stand exactly where the contracts record them. | IC-013 §25 · IC-014 §15 · D-46 §9 · D-47 §5 · report §10 |
+| **§7** | **Bind-only formulations reconciled to BIND vs PUBLISH.** Two current-state instances corrected; the two clearly-labelled historical mentions of the superseded draft wording were left as history. | D-46 §6 CONF-9 · report §4, §5, §11 |
+| **§8** | **Gateway re-homing preserved — verified unchanged.** All four security behaviours remain re-homed: carrier validation → IC-013 §5; `RequestContext`-from-`AuthContext`-only → §7; ingress audit emit-set → §10 + Audit Service; single-database assertion → IC-014 §5.4 (decision) + IC-013 §11 (enforcement). | verified, no edit needed |
+
+**One judgement call, recorded.** §2 required removing mandatory-factory wording *"unless Dan has separately and explicitly ratified such a design."* No such ratification exists, so the wording was removed. The **four hygiene flags** were kept: they are not among the four items §2 names for removal, they are exposure/disclosure controls rather than start-path mechanics, and §3 says not to weaken D-47. `--factory` was dropped from that set because it *is* start-path mechanics.
+
+**Scope boundary held.** No documentation guard required a runtime or test change, so the §9 stop-and-report condition was never triggered.

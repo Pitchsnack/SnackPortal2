@@ -351,16 +351,34 @@ Every backend service — the BFF included — MUST:
 - expose **liveness and readiness** (§17);
 - have its own tests.
 
-**App-factory shape (normative — resolves CONF-8).** Each service exposes a FastAPI application through a **factory** (`create_app()` / a module-level `app` built by it). The concrete ASGI server (uvicorn) MUST remain confined to **one shared runtime module**; it MUST NOT be imported by each service.
-
-Option A §4's development block is permitted **only** in this form:
+**Startup convention (normative — resolves CONF-8).** The approved shape is the **simple one**: each service has its own `main.py` defining its own `app = FastAPI()`.
 
 ```python
-if __name__ == "__main__":          # development convenience only
-    ...                             # never the production start path
+import uvicorn
+from fastapi import FastAPI
+
+app = FastAPI()
+
+if __name__ == "__main__":              # local development convenience — PERMITTED
+    uvicorn.run(
+        "main:app",
+        host="127.0.0.1",               # loopback default — §21.1 E-2
+        port=8000,                      # configurable
+        reload=True,                    # local development ONLY — §21.1 E-4
+    )
 ```
 
-The production start path is the **factory plus an external ASGI server invocation**. This preserves the existing driver-containment guarantee rather than retiring it: a service that imports uvicorn directly is a contract violation.
+**A service-level `import uvicorn` is permitted.** So is the `if __name__ == "__main__":` development block above. Neither is a contract violation.
+
+**Explicitly NOT mandated by this contract:**
+- a **shared uvicorn runtime module** that every service must route through;
+- a mandatory **`create_app()` factory**;
+- a mandatory **`--factory`** invocation;
+- any rule that a service-level uvicorn import is always a violation.
+
+A service **MAY** use an application factory, and a deployment **MAY** invoke it with `--factory`, where that suits the service. Those are **options, not obligations**. This contract does not replace the simple `main.py + app = FastAPI()` model with a more complex runtime architecture by implication, and no such design is in force unless Dan separately and explicitly ratifies it.
+
+**Production startup MAY use an external ASGI server command** (e.g. `uvicorn <module>:app --host … --port …`). `reload=True` remains **development-only** in every case (§21.1 E-4).
 
 ### §21.1 — Exposure Model *(normative — ratified by D-47; resolves CONF-9)*
 
@@ -374,7 +392,7 @@ The production start path is the **factory plus an external ASGI server invocati
 
 **E-4 — `reload` is local-development only.** `reload=True` (and `--reload`) is permitted **only** on a developer machine. It MUST NOT be enabled in any shared, hosted, containerized, staging, or production environment.
 
-**E-5 — Serving flags are a set, not a menu.** Every served invocation MUST pin all five:
+**E-5 — Served-invocation hygiene flags are a set, not a menu.** A **served** invocation (an external ASGI server command in any shared, hosted, containerized, staging, or production environment) MUST pin all four:
 
 | Flag | Why omitting it is a defect |
 |---|---|
@@ -382,9 +400,10 @@ The production start path is the **factory plus an external ASGI server invocati
 | `--no-access-log` | uvicorn's default access log records request detail |
 | `--no-server-header` | otherwise every response discloses `Server: uvicorn` (§17) |
 | `--no-proxy-headers` | forwarded headers are not a trusted input |
-| `--factory` | the app-factory start path above |
 
 **Omitting one silently restores a uvicorn default.** A partial application is a violation, not a partial success.
+
+`--factory` is **not** in this set: it is a start-path choice (§21 above), not a hygiene control, and is required only where a service actually exposes a factory. This clause binds the **served** path; the local-development `__main__` block of §21 is not a served invocation and is not bound by it.
 
 **E-6 — Exposure is a deployment property, and MUST be verifiable as one.** Because E-1 and E-3 are violated by *configuration* rather than by code, application-layer checks cannot enforce them. The Phase-1 acceptance set MUST therefore include a **deployment-manifest check** proving that, across every compose file, Kubernetes manifest, and launcher script, **exactly one service publishes a port, and it is the BFF**. A deployment in which an internal service is publicly reachable violates this contract **regardless of what any application-layer check reports**.
 
@@ -438,13 +457,13 @@ The BFF MUST NOT:
 15. permit any service other than itself to be a public ingress, or any internal service's port to be published to a host or public network (§13, §21.1 E-1/E-3);
 16. default an internal service's bind to `0.0.0.0` in local development (§21.1 E-2);
 17. enable `reload` in any shared, hosted, containerized, staging, or production environment (§21.1 E-4);
-18. serve with fewer than all five pinned uvicorn flags (§21.1 E-5).
+18. use a **served** invocation with fewer than all four hygiene flags (§21.1 E-5).
 
 ---
 
 ## §25 — Not implemented · Implementation prohibited
 
-**No BFF behaviour is implemented by this contract.** No runtime is created, changed, or removed; the existing `api_gateway` package remains untouched on disk. No database migration is authored or applied. No blocker is closed. Production remains **NOT READY / DO-NOT-ACTIVATE**.
+**No BFF behaviour is implemented by this contract.** No runtime is created, changed, or removed; the existing `api_gateway` package remains untouched on disk. No database migration is authored or applied. **No production-readiness claim is made. Documentation and contract reconciliation do not by themselves discharge runtime, migration, deployment, or implementation acceptance criteria.** Production remains **NOT READY / DO-NOT-ACTIVATE**.
 
 Implementation proceeds only under a separate, explicitly-authorizing execution instruction (register entry → contract → code), inheriting the §20 acceptance criteria.
 

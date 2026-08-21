@@ -248,7 +248,7 @@ Where this service's own decisions are recorded, records are **references only**
 
 ## §12 — Service shape
 
-This service follows IC-013 §21 in full: its own package, its own entry module, independent start/stop, configurable port, liveness/readiness (minimally disclosing — IC-013 §17), its own tests, app-factory shape, and the pinned serving posture.
+This service follows IC-013 §21 in full: its own `main.py` defining its own `app = FastAPI()`, independent start/stop, a configurable port, liveness/readiness (minimally disclosing — IC-013 §17), its own tests, and the §21.1 exposure model. The simple startup convention applies — a service-level `import uvicorn` and a local-development `if __name__ == "__main__":` block are **permitted**; no application factory and no `--factory` invocation is mandated.
 
 **Additional constraints:**
 - It MUST NOT depend on `psycopg` or any database driver. It holds no database connection of any kind.
@@ -286,7 +286,7 @@ When this service is built under a separate, explicitly-authorizing execution in
 
 ## §15 — Not implemented · Implementation prohibited
 
-**No authorization behaviour is implemented by this contract.** No runtime is created or changed. No blocker is closed. Production remains **NOT READY / DO-NOT-ACTIVATE**.
+**No authorization behaviour is implemented by this contract.** No runtime is created or changed. **No production-readiness claim is made. Documentation and contract reconciliation do not by themselves discharge runtime, migration, deployment, or implementation acceptance criteria.** Production remains **NOT READY / DO-NOT-ACTIVATE**.
 
 Implementation proceeds only under a separate, explicitly-authorizing execution instruction (register entry → contract → code), inheriting the §13 acceptance criteria.
 
@@ -301,7 +301,7 @@ Implementation proceeds only under a separate, explicitly-authorizing execution 
 | **IC-013** | Co-successor — the BFF calls this service (§4) and enforces its single-domain decision (§11) |
 | **IC-005** | Authentication boundary; six-role hierarchy (D-32); denial vocabulary |
 | **IC-002** | Tenant lifecycle, readiness gating, consistent-denial semantics |
-| **IC-008** | Ownership is reference-only and never authorizes (§7); CONF-4 open |
+| **IC-008** | Ownership is reference-only and never authorizes (§7). **Amended by D-47 (2026-08-21): CONF-4 is CLOSED** — at most one *current* AI Owner, single reference; contribution ≠ ownership and is never an authorization input |
 | **IC-009** | Per-role × per-directory visibility matrix — the presentation-layer counterpart to these decisions |
 | **IC-006 / IC-007** | Deferrals (§9, §10) |
 | **D-04 / D-11 / D-30 / D-32 / D-36 / D-38** | 1:N membership with one active tenant; cache invalidation; isolation enforcement; role hierarchy; ownership architecture; dual-layer roles and "AI cannot authorize" |
