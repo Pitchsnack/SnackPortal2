@@ -418,6 +418,36 @@ Something else is bound. Note that ports 8001-8005 belong to the *legacy* standi
 It runs `docker compose exec` inside the BFF container. If the BFF is not healthy, fix that
 first: `docker compose -f infrastructure/docker/docker-compose.rebuild.yml logs bff`.
 
+**The Stage 4 live-PostgreSQL suite fails when pointed at THIS stack**
+
+Do not point `tests/snackportal2/requires_pg` at the Stage 6 clusters. It needs four
+**disposable** clusters that nothing else is touching, and it will report failures here that are
+not defects. Two distinct causes, both measured:
+
+- *The running services.* Several tests assert a session **delta** on `pg_stat_database.sessions`
+  — "a denied request opened no tenant session", "an ACME request opened a session on ACME and on
+  nothing else". Fourteen live services connecting to the same clusters make those deltas
+  meaningless. Stopping the application services removed 4 of 7 failures.
+- *This manifest's health checks.* The remaining 3 are caused by `pg_isready`, which opens a real
+  session every `interval: 5s` on **every** cluster. Measured on a completely idle stack: **+4
+  sessions per cluster over 15 seconds**, which is why the failures show `{'acme': 1, 'zeta': 1,
+  'nova': 1}` — one on each, simultaneously. No application does that; a liveness probe does.
+
+The health checks are kept, because they are what makes `up -d --wait` mean the stack is actually
+up. Run the live suite the way it is designed to be run — against four throwaway clusters with no
+other client and no health probe:
+
+```bash
+docker run -d --name sp2_disp_control -e POSTGRES_USER=sp2_disp -e POSTGRES_PASSWORD=<throwaway> -e POSTGRES_DB=snackportal2_control -p 127.0.0.1:5560:5432 postgres:17
+# ... repeat for acme/zeta/nova on 5561/5562/5563
+# then export SP2_STAGE4_CONTROL_DSN / _ACME_DSN / _ZETA_DSN / _NOVA_DSN and run:
+python -m pytest tests/snackportal2/requires_pg -q      # 235 passed
+docker rm -f sp2_disp_control sp2_disp_acme sp2_disp_zeta sp2_disp_nova
+```
+
+The supported local check for this stack is `sp2_local verify` and `sp2_local smoke`, which assert
+against the databases directly and do not depend on session counts.
+
 ---
 
 ## Appendix — the supported command set
