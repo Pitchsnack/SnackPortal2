@@ -355,3 +355,132 @@ def test_the_bff_never_names_itself_a_gateway() -> None:
                     if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
                         if argument.value.startswith("/"):
                             assert "gateway" not in argument.value.casefold(), path.name + " routes " + argument.value
+
+
+# --- Correlation identity at the ingress (Stage 4 finding F-4) ------------------------------
+#
+# These tests exist because the in-process end-to-end harness could not see the defect they
+# cover. Its authentication double substituted a fallback correlation id
+# (``correlation_id or "c-e2e"``), so an empty one never reached Access Control there; the
+# production ``HttpAuthentication`` substitutes nothing, and Access Control denies a context
+# whose correlation id is empty. The result was that **every request to the public ingress
+# without an optional X-Correlation-ID header was answered 403 access_denied**.
+#
+# The doubles below therefore record what they were handed, verbatim, and assert on it. A
+# double that repairs its input cannot catch a defect in what produces that input.
+
+def _router_client(recorder: "_RecordingAuthentication") -> Tuple[object, "_RecordingAuthentication"]:
+    from fastapi.testclient import TestClient
+
+    from snackportal2.services.bff.operations import build_router
+    from snackportal2.shared.service import build_app
+
+    pipeline = IngressPipeline(
+        authentication=recorder,
+        access_control=_AccessControl(AuthorizationResult(True, None, DatabaseDomain.CONTROL)),
+        routing=UnavailableRouting(),
+        audit=_Audit(),
+        base_domain="example.com",
+    )
+    app = build_app("bff", description="correlation regression harness")
+    app.include_router(build_router(pipeline, _ControlRead(), {}))  # type: ignore[arg-type]
+    return TestClient(app, raise_server_exceptions=False), recorder
+
+
+class _RecordingAuthentication:
+    """Records the correlation id it was handed, and repairs nothing."""
+
+    def __init__(self) -> None:
+        self.correlation_ids: List[str] = []
+
+    def authenticate(self, credential: str, carrier: Optional[str], correlation_id: str) -> Optional[AuthenticationResult]:
+        del credential, carrier
+        self.correlation_ids.append(correlation_id)
+        return AuthenticationResult(
+            auth_context=AuthContext(
+                correlation_id=correlation_id,
+                principal_ref="p-agent",
+                role=PlatformRole.TENANT_AGENT,
+                active_tenant_ref=None,
+            ),
+            carrier_verdict=CarrierVerdict.ABSENT,
+        )
+
+
+class _ControlRead:
+    def list_memberships(self, principal_ref: str) -> List[Dict[str, str]]:
+        del principal_ref
+        return []
+
+    def list_directory(self, directory: str) -> List[Dict[str, str]]:
+        del directory
+        return []
+
+    def get_directory_record(self, directory: str, record_ref: str) -> Optional[Dict[str, str]]:
+        del directory, record_ref
+        return None
+
+
+def test_a_request_without_a_correlation_header_still_carries_one() -> None:
+    """The correlation id is minted by the middleware, never left empty for the client to supply.
+
+    An empty correlation id is a malformed RequestContext, and IC-014 §8.2 makes a malformed
+    context a denial — so leaving it empty turned an optional header into a mandatory one.
+    """
+    client, recorder = _router_client(_RecordingAuthentication())
+    response = client.get("/memberships", headers={"Authorization": "Bearer token"})
+    assert response.status_code == 200, response.text
+    assert recorder.correlation_ids, "authentication was never reached"
+    assert all(value.strip() for value in recorder.correlation_ids), "the ingress passed an empty correlation id"
+
+
+def test_a_client_supplied_correlation_id_is_preserved() -> None:
+    client_id = "req-42.abc:1"
+    client, recorder = _router_client(_RecordingAuthentication())
+    response = client.get("/memberships", headers={"Authorization": "Bearer token", "X-Correlation-ID": client_id})
+    assert response.status_code == 200
+    assert recorder.correlation_ids[-1] == client_id
+    assert response.headers.get("X-Correlation-ID") == client_id
+
+
+def test_a_hostile_correlation_id_is_sanitized_before_it_travels() -> None:
+    """The value is forwarded to three services and stored in the audit trail.
+
+    Reading the raw header let an unbounded or newline-bearing value straight through the
+    ingress, which is a log-injection channel; the middleware's sanitizer replaces it with a
+    fresh id instead.
+    """
+    for hostile in ("bad value", "x" * 500, "line\nbreak", "semi;colon"):
+        client, recorder = _router_client(_RecordingAuthentication())
+        response = client.get(
+            "/memberships", headers={"Authorization": "Bearer token", "X-Correlation-ID": hostile}
+        )
+        assert response.status_code == 200, response.text
+        passed = recorder.correlation_ids[-1]
+        assert passed != hostile, "a hostile correlation id travelled unchanged: " + repr(hostile)
+        assert "\n" not in passed and len(passed) <= 128
+
+
+def test_the_ingress_reads_the_correlation_id_from_the_middleware_not_the_raw_header() -> None:
+    """Structural companion: no route may reach back to the raw header for this value.
+
+    Behavioural tests above prove the current wiring; this one stops the old wiring from
+    coming back through a different route handler.
+    """
+    import ast
+    import pathlib
+
+    from snackportal2.services.bff import operations
+
+    source = pathlib.Path(operations.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        function = node.func
+        if isinstance(function, ast.Attribute) and function.attr == "get":
+            for argument in node.args:
+                if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+                    assert argument.value.casefold() != "x-correlation-id", (
+                        "the ingress reads the correlation id from the raw header again"
+                    )

@@ -26,6 +26,7 @@ from typing import Annotated, Any, Dict, List, Mapping, Optional
 from fastapi import APIRouter, Path, Query, Request
 from pydantic import BaseModel, Field
 
+from ...shared.correlation import CORRELATION_HEADER, current_correlation_id, sanitize_correlation_id
 from ...shared.errors import error_responses, not_found
 from ...shared.operations import BffOperation
 from ...shared.security import RequestContext
@@ -200,11 +201,25 @@ def build_router(
         return value.strip() or None
 
     def establish(request: Request) -> EstablishedContext:
+        # The correlation id comes from the middleware, not from the raw header. Two reasons,
+        # both of which the header read got wrong:
+        #
+        #   * the middleware **mints** one when the client sends none, and reading the header
+        #     directly yields "" instead. An empty correlation id is a malformed context, and
+        #     the Access Control Service denies malformed contexts on its first line — so every
+        #     request without the optional header was answered 403 access_denied; and
+        #   * the middleware **sanitizes** what the client did send. The raw value is forwarded
+        #     to three services and stored in the audit trail, so an unbounded or
+        #     newline-bearing header was a log-injection channel straight through the ingress.
+        #
+        # ``sanitize_correlation_id`` is the fallback for a router mounted on an application
+        # built without the middleware; it mints a fresh id rather than returning nothing.
+        correlation_id = current_correlation_id() or sanitize_correlation_id(request.headers.get(CORRELATION_HEADER))
         return pipeline.establish(
             credential=bearer(request),
             headers=dict(request.headers),
             host=request.headers.get("host", ""),
-            correlation_id=request.headers.get("X-Correlation-ID", "") or "",
+            correlation_id=correlation_id,
         )
 
     def authorized(request: Request, operation: BffOperation, record_ref: Optional[str] = None) -> RequestContext:
