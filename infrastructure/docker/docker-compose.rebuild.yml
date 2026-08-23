@@ -191,7 +191,16 @@ services:
       SP2_IMPORT_SERVICE_HOST: "0.0.0.0"
       SP2_IMPORT_SERVICE_PORT: "8009"
       SP2_IMPORT_SERVICE_CONTROL_PLANE_URL: "http://control-plane:8003"
+      # Also the credential presented to the Database Router when asking for a tenant grant, so
+      # with PostgreSQL storage enabled this same value must appear in
+      # SP2_DATABASE_ROUTER_GRANTEES mapped to "import_service".
       SP2_IMPORT_SERVICE_SERVICE_CREDENTIAL: ${SP2_INTERNAL_SERVICE_CREDENTIAL:?set SP2_INTERNAL_SERVICE_CREDENTIAL}
+      SP2_IMPORT_SERVICE_STORAGE: ${SP2_TENANT_STORAGE:-memory}
+      SP2_IMPORT_SERVICE_DATABASE_ROUTER_URL: "http://database-router:8004"
+      # D-23 per-tenant lineage chain keys reach this service as SP2_LINEAGE_KEY_<TENANT>, the
+      # same way the router's per-tenant DSNs do: from the untracked env file, never from here.
+      # None is enumerated in this file, and with none supplied every import fails closed rather
+      # than writing a tenant record without provenance.
     expose:
       - "8009"
 
