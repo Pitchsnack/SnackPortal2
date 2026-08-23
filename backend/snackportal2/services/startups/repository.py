@@ -94,17 +94,13 @@ def _record_from_fields(tenant_ref: str, identity: str, fields: Mapping[str, Opt
 class StartupRepository(Protocol):
     """Read and write tenant Startups within exactly one tenant database."""
 
-    def list(self, tenant_ref: str, limit: int) -> List[TenantStartupRecord]:
-        ...
+    def list(self, tenant_ref: str, limit: int) -> List[TenantStartupRecord]: ...
 
-    def read(self, tenant_ref: str, record_ref: str) -> Optional[TenantStartupRecord]:
-        ...
+    def read(self, tenant_ref: str, record_ref: str) -> Optional[TenantStartupRecord]: ...
 
-    def create(self, tenant_ref: str, fields: Mapping[str, Optional[str]]) -> TenantStartupRecord:
-        ...
+    def create(self, tenant_ref: str, fields: Mapping[str, Optional[str]]) -> TenantStartupRecord: ...
 
-    def update_short_description(self, tenant_ref: str, record_ref: str, value: Optional[str]) -> TenantStartupRecord:
-        ...
+    def update_short_description(self, tenant_ref: str, record_ref: str, value: Optional[str]) -> TenantStartupRecord: ...
 
 
 class InMemoryStartupRepository:
@@ -183,8 +179,7 @@ class PostgresStartupRepository:
         with self._connect(tenant_ref) as connection:  # type: ignore[attr-defined]
             with connection.cursor() as cursor:
                 cursor.execute(
-                    "INSERT INTO " + TABLE + " (" + ", ".join(names) + ") VALUES ("
-                    + ", ".join(["%s"] * len(names)) + ") RETURNING id",
+                    "INSERT INTO " + TABLE + " (" + ", ".join(names) + ") VALUES (" + ", ".join(["%s"] * len(names)) + ") RETURNING id",
                     tuple(writable[name] for name in names),
                 )
                 row = cursor.fetchone()

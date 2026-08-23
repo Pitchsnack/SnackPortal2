@@ -60,9 +60,7 @@ class LineageEntry(BaseModel):
     operation: str = Field(description="The named operation that produced the derivation.")
     source_ref: str = Field(description="Reference to the origin. Never the origin's content.")
     target_ref: str = Field(description="Reference to the affected tenant record, in this tenant database.")
-    derivation_ref: Optional[str] = Field(
-        default=None, description="Reference to the producing process, such as an import job id."
-    )
+    derivation_ref: Optional[str] = Field(default=None, description="Reference to the producing process, such as an import job id.")
 
 
 class LineageListRequest(BaseModel):
@@ -120,8 +118,7 @@ class PostgresLineageRepository:
         with self._connect(tenant_ref) as connection:  # type: ignore[attr-defined]
             with connection.cursor() as cursor:
                 cursor.execute(
-                    "SELECT lineage_id, " + ", ".join(self.COLUMNS) + " FROM " + TABLE + where
-                    + " ORDER BY seq LIMIT %s",
+                    "SELECT lineage_id, " + ", ".join(self.COLUMNS) + " FROM " + TABLE + where + " ORDER BY seq LIMIT %s",
                     params + (limit,),
                 )
                 rows = cursor.fetchall()

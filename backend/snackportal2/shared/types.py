@@ -12,6 +12,7 @@ from enum import Enum
 
 # --- Roles -------------------------------------------------------------------------
 
+
 class PlatformRole(str, Enum):
     """The six MVP platform/token roles (IC-005 / D-32; IC-014 §5.1).
 
@@ -46,6 +47,7 @@ class WorkspaceType(str, Enum):
 
 
 # --- Isolation / dispatch ------------------------------------------------------------
+
 
 class DatabaseDomain(str, Enum):
     """The single resolution domain a request targets (IC-013 §11, IC-014 §5.4).

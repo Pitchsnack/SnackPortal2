@@ -57,9 +57,7 @@ class TenantInvestorRecord(BaseModel):
         default_factory=list,
         description="Investment stages this investor focuses on. A jsonb array in the DDL, never flattened to a string.",
     )
-    industry_focus: List[str] = Field(
-        default_factory=list, description="Industries this investor focuses on. A jsonb array in the DDL."
-    )
+    industry_focus: List[str] = Field(default_factory=list, description="Industries this investor focuses on. A jsonb array in the DDL.")
     short_description: Optional[str] = Field(default=None, description="Bounded free text, at most 500 characters.")
     lineage_reference: Optional[str] = Field(
         default=None, description="Tenant lineage row reference. Present only when the record was imported."
@@ -130,9 +128,7 @@ class InvestorListResponse(BaseModel):
     """Investors from exactly one tenant database, in deterministic order."""
 
     tenant_ref: str = Field(description="The single tenant these records came from.")
-    records: List[TenantInvestorRecord] = Field(
-        description="The records, in deterministic order. Callers MUST NOT re-sort them."
-    )
+    records: List[TenantInvestorRecord] = Field(description="The records, in deterministic order. Callers MUST NOT re-sort them.")
 
 
 __all__ = [

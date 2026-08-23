@@ -167,12 +167,9 @@ def test_the_emitting_service_is_derived_from_the_credential_and_survives_the_ro
     # a spoofed attribution to land.
     spoofed = _emit(audit, BFF_KEY, correlation_id="c-spoof", source_service="api_gateway")
     assert spoofed.status_code == 201, spoofed.text
-    assert (
-        pg.scalar(
-            pg.dsn("control"), "SELECT source_service FROM " + AUDIT_TABLE + " WHERE correlation_id = 'c-spoof'"
-        )
-        == "bff"
-    ), "a submitted source_service overrode the credential-derived one"
+    assert pg.scalar(pg.dsn("control"), "SELECT source_service FROM " + AUDIT_TABLE + " WHERE correlation_id = 'c-spoof'") == "bff", (
+        "a submitted source_service overrode the credential-derived one"
+    )
 
 
 def test_the_event_id_is_server_minted_and_unique_per_emission(audit: srv.ServiceFleet) -> None:

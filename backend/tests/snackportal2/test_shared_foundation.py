@@ -20,6 +20,7 @@ from snackportal2.shared.types import PlatformRole, WorkspaceType
 
 # --- Exposure model (IC-013 §21.1) ----------------------------------------------------
 
+
 def test_every_service_binds_loopback_by_omission() -> None:
     """E-2: ``0.0.0.0`` is never what happens when nobody configures a host."""
     for key in config.SERVICE_REGISTRY:
@@ -69,6 +70,7 @@ def test_service_ports_are_unique_and_avoid_the_retired_gateway_range() -> None:
 
 # --- RequestContext construction (IC-013 §7) -------------------------------------------
 
+
 def test_request_context_constructor_accepts_only_an_auth_context() -> None:
     """The signature IS the enforcement: no parameter can carry client-supplied tenancy."""
     signature = inspect.signature(security.RequestContext.from_auth_context)
@@ -105,6 +107,7 @@ def test_request_context_has_exactly_the_canonical_fields() -> None:
 
 
 # --- Errors: runtime shape == declared shape (§9) ---------------------------------------
+
 
 class ProbeBody(BaseModel):
     """Module-level on purpose.
@@ -173,6 +176,7 @@ def test_unknown_and_unauthorized_tenant_are_byte_identical() -> None:
 
 # --- Correlation -------------------------------------------------------------------------
 
+
 def test_correlation_id_is_echoed_and_client_supplied_values_are_bounded() -> None:
     client = _probe_app()
     supplied = client.post("/probe", json={"value": 1}, headers={"X-Correlation-ID": "abc-123"})
@@ -191,6 +195,7 @@ def test_malformed_correlation_ids_are_replaced_not_reflected() -> None:
 
 
 # --- Logging redaction --------------------------------------------------------------------
+
 
 def test_logging_drops_prohibited_fields_and_non_scalar_values() -> None:
     """Redaction is enforced in the logger, not trusted to call sites."""

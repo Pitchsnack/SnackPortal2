@@ -131,9 +131,7 @@ async def bind(request: TenantBindRequest, credential: ServiceBearer) -> TenantC
 async def list_grantees(credential: ServiceBearer) -> GranteeListResponse:
     if not credential:
         raise unauthenticated()
-    return GranteeListResponse(
-        grantees=[GranteeRegistration(service_ref=service_ref) for service_ref in _allowlist.service_refs()]
-    )
+    return GranteeListResponse(grantees=[GranteeRegistration(service_ref=service_ref) for service_ref in _allowlist.service_refs()])
 
 
 if __name__ == "__main__":  # local development convenience — IC-013 §21 permits this block

@@ -73,17 +73,13 @@ def _record_from_fields(tenant_ref: str, identity: str, fields: Mapping[str, Opt
 class InvestorRepository(Protocol):
     """Read and write tenant Investors within exactly one tenant database."""
 
-    def list(self, tenant_ref: str, limit: int) -> List[TenantInvestorRecord]:
-        ...
+    def list(self, tenant_ref: str, limit: int) -> List[TenantInvestorRecord]: ...
 
-    def read(self, tenant_ref: str, record_ref: str) -> Optional[TenantInvestorRecord]:
-        ...
+    def read(self, tenant_ref: str, record_ref: str) -> Optional[TenantInvestorRecord]: ...
 
-    def create(self, tenant_ref: str, fields: Mapping[str, Optional[str]]) -> TenantInvestorRecord:
-        ...
+    def create(self, tenant_ref: str, fields: Mapping[str, Optional[str]]) -> TenantInvestorRecord: ...
 
-    def update_short_description(self, tenant_ref: str, record_ref: str, value: Optional[str]) -> TenantInvestorRecord:
-        ...
+    def update_short_description(self, tenant_ref: str, record_ref: str, value: Optional[str]) -> TenantInvestorRecord: ...
 
 
 class InMemoryInvestorRepository:
@@ -164,14 +160,11 @@ class PostgresInvestorRepository:
             raise invalid_request()
         names = sorted(writable)
         # jsonb columns are wrapped; a bare Python list would raise at the driver layer.
-        params = tuple(
-            Jsonb(_decode_list(writable[name])) if name in JSON_COLUMNS else writable[name] for name in names
-        )
+        params = tuple(Jsonb(_decode_list(writable[name])) if name in JSON_COLUMNS else writable[name] for name in names)
         with self._connect(tenant_ref) as connection:  # type: ignore[attr-defined]
             with connection.cursor() as cursor:
                 cursor.execute(
-                    "INSERT INTO " + TABLE + " (" + ", ".join(names) + ") VALUES ("
-                    + ", ".join(["%s"] * len(names)) + ") RETURNING id",
+                    "INSERT INTO " + TABLE + " (" + ", ".join(names) + ") VALUES (" + ", ".join(["%s"] * len(names)) + ") RETURNING id",
                     params,
                 )
                 row = cursor.fetchone()

@@ -23,12 +23,8 @@ from .policy import Decision
 class AccessDecisionRequest(BaseModel):
     """Ask whether one principal may perform one enumerated operation."""
 
-    context: RequestContext = Field(
-        description="The canonical RequestContext, built by the BFF exclusively from AuthContext (IC-013 §7)."
-    )
-    operation: BffOperation = Field(
-        description="The enumerated BFF operation being attempted. An operation outside the surface is denied."
-    )
+    context: RequestContext = Field(description="The canonical RequestContext, built by the BFF exclusively from AuthContext (IC-013 §7).")
+    operation: BffOperation = Field(description="The enumerated BFF operation being attempted. An operation outside the surface is denied.")
     record_ref: Optional[str] = Field(
         default=None,
         max_length=256,

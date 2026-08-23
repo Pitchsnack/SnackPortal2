@@ -46,8 +46,7 @@ class GlobalSourceRecord:
 class GlobalDirectoryReadPort(Protocol):
     """Read one global directory record by reference."""
 
-    def read(self, source_ref: str) -> Optional[GlobalSourceRecord]:
-        ...
+    def read(self, source_ref: str) -> Optional[GlobalSourceRecord]: ...
 
 
 class StaticGlobalDirectory:
@@ -135,8 +134,7 @@ class ImportAttribution:
 class ImportStore(Protocol):
     """Persist the tenant copy, its lineage row, and the idempotency record."""
 
-    def find_existing(self, tenant_ref: str, key: str) -> Optional[ImportRecord]:
-        ...
+    def find_existing(self, tenant_ref: str, key: str) -> Optional[ImportRecord]: ...
 
     def write_import(
         self, tenant_ref: str, key: str, source: GlobalSourceRecord, attribution: ImportAttribution

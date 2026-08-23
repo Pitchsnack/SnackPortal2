@@ -90,6 +90,7 @@ def application_services(published: Dict[str, bool]) -> Dict[str, bool]:
 
 # --- E-6: exactly one application service publishes, and it is the BFF ---------------------------
 
+
 def test_the_rebuild_compose_file_exists() -> None:
     """A missing manifest would make every check below pass vacuously."""
     assert _REBUILD_COMPOSE.exists(), "the rebuild compose file is missing; the exposure check proves nothing"
@@ -316,4 +317,3 @@ if __name__ == "__main__":
 
 
 __all__ = ["application_services", "parse_compose_publishing"]
-

@@ -62,6 +62,7 @@ def _propagate(status_code: int, body: Mapping[str, Any]) -> AppError:
 
 # --- Fail-closed defaults ---------------------------------------------------------------
 
+
 class DenyAllAuthentication:
     """No Authentication Service configured, so no principal is ever established."""
 
@@ -73,9 +74,7 @@ class DenyAllAuthentication:
 class DenyAllAccessControl:
     """No Access Control Service configured, so every decision is Denied (IC-014 §8.2)."""
 
-    def decide(
-        self, context: RequestContext, operation: BffOperation, record_ref: Optional[str] = None
-    ) -> AuthorizationResult:
+    def decide(self, context: RequestContext, operation: BffOperation, record_ref: Optional[str] = None) -> AuthorizationResult:
         del context, operation, record_ref
         return AuthorizationResult(allowed=False, denial_code="access_denied", resolved_domain=None)
 
@@ -140,6 +139,7 @@ class DroppingAudit:
 
 # --- HTTP clients -------------------------------------------------------------------------
 
+
 class HttpAuthentication:
     """Calls the Authentication Service (IC-005)."""
 
@@ -180,9 +180,7 @@ class HttpAccessControl:
         self._base_url = base_url.rstrip("/")
         self._credential = credential
 
-    def decide(
-        self, context: RequestContext, operation: BffOperation, record_ref: Optional[str] = None
-    ) -> AuthorizationResult:
+    def decide(self, context: RequestContext, operation: BffOperation, record_ref: Optional[str] = None) -> AuthorizationResult:
         import httpx
 
         try:
@@ -287,9 +285,7 @@ class HttpDomainService:
         import httpx
 
         try:
-            response = httpx.post(
-                self._base_url + path, headers=_headers(self._credential), json=payload, timeout=TIMEOUT_SECONDS
-            )
+            response = httpx.post(self._base_url + path, headers=_headers(self._credential), json=payload, timeout=TIMEOUT_SECONDS)
         except Exception:
             raise tenant_unavailable() from None
         if response.status_code >= 400:

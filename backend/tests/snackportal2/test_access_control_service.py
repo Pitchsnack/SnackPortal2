@@ -28,9 +28,7 @@ _MEMBERS = StaticMemberships({"p-agent": {"acme"}, "p-admin": {"acme", "zeta"}})
 
 
 def _context(role: PlatformRole, tenant: str | None, principal: str = "p-agent") -> RequestContext:
-    return RequestContext.from_auth_context(
-        AuthContext(correlation_id="c-1", principal_ref=principal, role=role, active_tenant_ref=tenant)
-    )
+    return RequestContext.from_auth_context(AuthContext(correlation_id="c-1", principal_ref=principal, role=role, active_tenant_ref=tenant))
 
 
 def _decide(operation: BffOperation, context: RequestContext, **kwargs: object) -> policy.AccessDecision:
@@ -38,6 +36,7 @@ def _decide(operation: BffOperation, context: RequestContext, **kwargs: object) 
 
 
 # --- Taxonomy completeness ---------------------------------------------------------------
+
 
 def test_every_operation_is_classified_and_carries_a_required_permission() -> None:
     """An unclassified operation would be unauthorizable and, worse, unroutable."""
@@ -48,6 +47,7 @@ def test_every_operation_is_classified_and_carries_a_required_permission() -> No
 
 # --- §13.3 No-fall-through proof ----------------------------------------------------------
 
+
 def test_allowed_is_returned_from_exactly_one_place_in_decide() -> None:
     """§8.2: a path that could produce Allowed by omission is a contract violation.
 
@@ -57,9 +57,7 @@ def test_allowed_is_returned_from_exactly_one_place_in_decide() -> None:
     """
     source = pathlib.Path(policy.__file__).read_text(encoding="utf-8")
     tree = ast.parse(source)
-    function = next(
-        node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "decide"
-    )
+    function = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "decide")
     allow_sites = [
         node
         for node in ast.walk(function)
@@ -71,14 +69,12 @@ def test_allowed_is_returned_from_exactly_one_place_in_decide() -> None:
 def test_the_single_allow_site_is_the_last_statement_of_decide() -> None:
     """Allowed is reachable only by surviving every check, not by an early exit."""
     tree = ast.parse(pathlib.Path(policy.__file__).read_text(encoding="utf-8"))
-    function = next(
-        node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "decide"
-    )
+    function = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "decide")
     last = function.body[-1]
     assert isinstance(last, ast.Return), "decide() does not end in a return"
-    assert any(
-        isinstance(node, ast.Attribute) and node.attr == "ALLOWED" for node in ast.walk(last)
-    ), "the final statement of decide() is not the allow site"
+    assert any(isinstance(node, ast.Attribute) and node.attr == "ALLOWED" for node in ast.walk(last)), (
+        "the final statement of decide() is not the allow site"
+    )
 
 
 # --- §13.1 Separation proofs ---------------------------------------------------------------
@@ -101,9 +97,7 @@ def test_access_control_imports_no_database_driver() -> None:
     """§2/§12: it holds no connection, no DSN, and no driver — not even transitively by import."""
     for path in sorted(_AC_PACKAGE.glob("*.py")):
         for name in _imports(path):
-            assert not name.startswith(("psycopg", "sqlalchemy", "asyncpg", "sqlite3")), (
-                path.name + " imports a database driver: " + name
-            )
+            assert not name.startswith(("psycopg", "sqlalchemy", "asyncpg", "sqlite3")), path.name + " imports a database driver: " + name
 
 
 def test_access_control_validates_no_token() -> None:
@@ -116,12 +110,11 @@ def test_access_control_validates_no_token() -> None:
 def test_access_control_imports_no_other_service_implementation() -> None:
     for path in sorted(_AC_PACKAGE.glob("*.py")):
         for name in _imports(path):
-            assert "services." not in name or "services.access_control" in name, (
-                path.name + " imports another service: " + name
-            )
+            assert "services." not in name or "services.access_control" in name, path.name + " imports another service: " + name
 
 
 # --- §13.2 Fail-closed proof (by fault injection, not inspection) -----------------------------
+
 
 def test_a_raising_membership_lookup_yields_denied() -> None:
     def explode(principal_ref: str, tenant_ref: str) -> bool:
@@ -172,6 +165,7 @@ def test_an_operation_outside_the_enumerated_surface_is_denied() -> None:
 
 # --- §13.4 Membership proof --------------------------------------------------------------------
 
+
 def test_a_principal_whose_claim_names_a_tenant_they_do_not_belong_to_is_denied() -> None:
     """And denied with no resolved domain, so nothing downstream has anywhere to connect."""
     outcome = _decide(BffOperation.READ_TENANT_STARTUP, _context(PlatformRole.TENANT_AGENT, "zeta"))
@@ -197,8 +191,9 @@ def test_membership_alone_does_not_grant_a_permission() -> None:
 
 # --- §13.5 Single-domain proof ---------------------------------------------------------------
 
+
 def test_a_tenant_operation_can_never_resolve_to_the_control_domain() -> None:
-    """"ACME DB unavailable -> use Control DB" is not a policy this engine can express."""
+    """ "ACME DB unavailable -> use Control DB" is not a policy this engine can express."""
     tenant_operations = [op for op in BffOperation if domain_of(op) is DatabaseDomain.TENANT]
     assert tenant_operations, "no tenant operations to test"
     for operation in tenant_operations:
@@ -223,14 +218,13 @@ def test_a_control_operation_inside_a_tenant_workspace_resolves_control_only() -
 def test_control_holds_no_tenant_record_permission_at_all() -> None:
     """IC-009 §C: a tenantless CONTROL token can never reach a tenant DB."""
     control_permissions = policy.ROLE_PERMISSIONS[PlatformRole.CONTROL]
-    tenant_permissions = {
-        policy.REQUIRED_PERMISSION[op] for op in BffOperation if domain_of(op) is DatabaseDomain.TENANT
-    }
+    tenant_permissions = {policy.REQUIRED_PERMISSION[op] for op in BffOperation if domain_of(op) is DatabaseDomain.TENANT}
     overlap = control_permissions & tenant_permissions
     assert overlap == set(), "CONTROL holds tenant-record permissions: " + repr(sorted(p.value for p in overlap))
 
 
 # --- §13.6 Consistent denial -----------------------------------------------------------------
+
 
 def test_unknown_tenant_and_unauthorized_tenant_are_indistinguishable() -> None:
     unknown = _decide(BffOperation.READ_TENANT_STARTUP, _context(PlatformRole.TENANT_AGENT, "no-such-tenant"))
@@ -241,6 +235,7 @@ def test_unknown_tenant_and_unauthorized_tenant_are_indistinguishable() -> None:
 
 
 # --- §13.7 Ownership is not authorization ------------------------------------------------------
+
 
 def test_owning_a_record_does_not_grant_a_permission_the_role_lacks() -> None:
     outcome = _decide(
@@ -261,6 +256,7 @@ def test_ownership_reference_never_widens_an_existing_grant() -> None:
 
 # --- §13.8 Determinism --------------------------------------------------------------------------
 
+
 def test_identical_inputs_yield_identical_decisions() -> None:
     context = _context(PlatformRole.TENANT_AGENT, "acme")
     results = {(_decide(BffOperation.READ_TENANT_STARTUP, context).decision) for _ in range(25)}
@@ -268,6 +264,7 @@ def test_identical_inputs_yield_identical_decisions() -> None:
 
 
 # --- §13.10 AI inertness -------------------------------------------------------------------------
+
 
 def test_ai_invoke_is_defined_and_granted_to_nobody() -> None:
     assert Permission.AI_INVOKE in set(Permission)
@@ -345,6 +342,7 @@ def test_ownership_references_are_single_valued_not_collections() -> None:
 
 # --- Governed sharing is authored-but-inert (IC-013 §18 / IC-014 §10) --------------------------------
 
+
 def test_every_sharing_operation_is_denied_for_every_role() -> None:
     assert SHARING_INERT_OPERATIONS, "the sharing taxonomy is empty; the inertness test proves nothing"
     for operation in SHARING_INERT_OPERATIONS:
@@ -376,6 +374,7 @@ def test_sharing_stays_inert_even_if_a_sharing_permission_is_granted() -> None:
 
 
 # --- HTTP surface + OpenAPI gate -------------------------------------------------------------------
+
 
 def test_access_control_openapi_meets_the_standing_rules() -> None:
     assert_document(

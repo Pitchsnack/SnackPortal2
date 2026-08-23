@@ -120,9 +120,7 @@ def test_the_previous_marker_chains_the_row() -> None:
 
 def test_a_different_tenant_key_produces_a_different_marker() -> None:
     """Per-tenant chains: one tenant key must not verify another tenant chain."""
-    assert lineage_chain.marker_for(ACME_KEY.encode("utf-8"), _ROW, "") != lineage_chain.marker_for(
-        ZETA_KEY.encode("utf-8"), _ROW, ""
-    )
+    assert lineage_chain.marker_for(ACME_KEY.encode("utf-8"), _ROW, "") != lineage_chain.marker_for(ZETA_KEY.encode("utf-8"), _ROW, "")
 
 
 def test_an_unknown_marker_version_is_refused_not_defaulted() -> None:
@@ -278,7 +276,7 @@ def test_no_published_schema_property_is_key_secret_or_credential_shaped() -> No
     for service, document in _generated_documents().items():
         schemas = document.get("components", {}).get("schemas", {})
         for name, definition in schemas.items():
-            for property_name in (definition.get("properties") or {}):
+            for property_name in definition.get("properties") or {}:
                 folded = property_name.casefold()
                 if any(forbidden in folded for forbidden in ("key", "secret", "dsn", "password", "credential")):
                     found.add((service, name, property_name))

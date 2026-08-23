@@ -99,8 +99,17 @@ def test_operation_ids_are_globally_unique_across_services() -> None:
                     continue
                 previous = seen.get(operation_id)
                 assert previous is None, (
-                    "operationId " + operation_id + " is used by both " + str(previous) + " and "
-                    + service_key + " (" + method.upper() + " " + path + ")"
+                    "operationId "
+                    + operation_id
+                    + " is used by both "
+                    + str(previous)
+                    + " and "
+                    + service_key
+                    + " ("
+                    + method.upper()
+                    + " "
+                    + path
+                    + ")"
                 )
                 seen[operation_id] = service_key
 

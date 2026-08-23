@@ -79,14 +79,13 @@ _ZETA_DSN_VAR = EnvironmentTenantSecretStore.variable_name("assoc/zeta", "1")
 
 # --- In-process adapters: the real apps, reached over ASGI ------------------------------------
 
+
 class _Authentication:
     def __init__(self, client: TestClient) -> None:
         self._client = client
 
     def authenticate(self, credential: str, carrier: Optional[str], correlation_id: str) -> Optional[AuthenticationResult]:
-        response = self._client.post(
-            "/authenticate", headers=SERVICE_HEADERS, json={"credential": credential, "tenant_carrier": carrier}
-        )
+        response = self._client.post("/authenticate", headers=SERVICE_HEADERS, json={"credential": credential, "tenant_carrier": carrier})
         if response.status_code != 200:
             return None
         body = response.json()
@@ -221,9 +220,7 @@ class Topology:
             )
         control_store.put_membership("p-agent", "acme", PlatformRole.TENANT_AGENT)
         control_store.put_membership("p-zeta", "zeta", PlatformRole.TENANT_AGENT)
-        control_store.put_directory_record(
-            DirectoryKind.GLOBAL_STARTUP, DirectoryRecord(record_ref="gs-1", display_name="Alpha Corp")
-        )
+        control_store.put_directory_record(DirectoryKind.GLOBAL_STARTUP, DirectoryRecord(record_ref="gs-1", display_name="Alpha Corp"))
         control_store.put_directory_record(
             DirectoryKind.GLOBAL_INVESTOR, DirectoryRecord(record_ref="gi-1", display_name="Northwind Capital")
         )
@@ -266,8 +263,12 @@ class Topology:
 
         # Audit.
         audit_main._credentials = CredentialDirectory.from_json(  # type: ignore[attr-defined]
-            json.dumps({"bff-audit-key": {"emitter_ref": "bff", "scopes": ["audit:write"]},
-                        "auditor-key": {"emitter_ref": "auditor", "scopes": ["audit:read:all"]}})
+            json.dumps(
+                {
+                    "bff-audit-key": {"emitter_ref": "bff", "scopes": ["audit:write"]},
+                    "auditor-key": {"emitter_ref": "auditor", "scopes": ["audit:read:all"]},
+                }
+            )
         )
         audit_main._sink = InMemoryAuditSink()  # type: ignore[attr-defined]
 
@@ -307,12 +308,11 @@ class Topology:
 
 # --- The happy path ---------------------------------------------------------------------------
 
+
 def test_a_complete_tenant_request_traverses_every_stage() -> None:
     topology = Topology()
 
-    created = topology.bff.post(
-        "/tenant/startups", headers=topology.as_("acme-agent"), json={"display_name": "Acme Robotics"}
-    )
+    created = topology.bff.post("/tenant/startups", headers=topology.as_("acme-agent"), json={"display_name": "Acme Robotics"})
     assert created.status_code == 201, created.text
     record_ref = created.json()["record_ref"]
     assert record_ref.startswith("ref:acme:startups:")
@@ -361,9 +361,7 @@ def test_memberships_emit_exactly_one_event_even_when_empty() -> None:
 
     held = topology.bff.get("/memberships", headers=topology.as_("acme-agent"))
     assert held.status_code == 200
-    assert held.json()["memberships"] == [
-        {"tenant_id": "acme", "role": "TENANT_AGENT", "display_ref": "ref:tenant/acme/display"}
-    ]
+    assert held.json()["memberships"] == [{"tenant_id": "acme", "role": "TENANT_AGENT", "display_ref": "ref:tenant/acme/display"}]
 
     topology.audit.emitted.clear()
     empty = topology.bff.get("/memberships", headers=topology.as_("nova-agent"))
@@ -403,9 +401,7 @@ def test_an_import_produces_a_tenant_copy_whose_lineage_is_readable_end_to_end()
 def test_a_deal_links_two_records_of_the_same_tenant() -> None:
     topology = Topology()
     startup = topology.bff.post("/tenant/startups", headers=topology.as_("acme-agent"), json={"display_name": "Acme"})
-    investor = topology.bff.post(
-        "/tenant/investors", headers=topology.as_("acme-agent"), json={"display_name": "Northwind"}
-    )
+    investor = topology.bff.post("/tenant/investors", headers=topology.as_("acme-agent"), json={"display_name": "Northwind"})
     deal = topology.bff.post(
         "/tenant/deals",
         headers=topology.as_("acme-agent"),
@@ -420,6 +416,7 @@ def test_a_deal_links_two_records_of_the_same_tenant() -> None:
 
 
 # --- The fail-closed cases (plan §3.6) -----------------------------------------------------------
+
 
 def test_invalid_authentication_is_a_canonical_401_and_reaches_no_router() -> None:
     topology = Topology()
@@ -448,9 +445,7 @@ def test_a_denied_authorization_never_reaches_the_router_and_is_audited() -> Non
 
 def test_a_wrong_tenant_carrier_is_rejected_before_any_routing() -> None:
     topology = Topology()
-    response = topology.bff.get(
-        "/tenant/startups", headers={**topology.as_("acme-agent"), "X-Tenant-Id": "zeta"}
-    )
+    response = topology.bff.get("/tenant/startups", headers={**topology.as_("acme-agent"), "X-Tenant-Id": "zeta"})
     assert response.status_code == 403
     assert response.json() == {"status": 403, "code": "carrier_mismatch"}
     assert topology.routing.resolutions == []
@@ -517,9 +512,9 @@ def test_two_tenants_records_never_appear_in_one_anothers_lists() -> None:
 
 def test_a_deal_cannot_be_created_across_tenants_end_to_end() -> None:
     topology = Topology()
-    acme_startup = topology.bff.post(
-        "/tenant/startups", headers=topology.as_("acme-agent"), json={"display_name": "Acme"}
-    ).json()["record_ref"]
+    acme_startup = topology.bff.post("/tenant/startups", headers=topology.as_("acme-agent"), json={"display_name": "Acme"}).json()[
+        "record_ref"
+    ]
 
     response = topology.bff.post(
         "/tenant/deals",
@@ -530,6 +525,7 @@ def test_a_deal_cannot_be_created_across_tenants_end_to_end() -> None:
 
 
 # --- Audit lands durably ---------------------------------------------------------------------------
+
 
 def test_ingress_audit_reaches_the_audit_service_with_a_server_derived_emitter() -> None:
     topology = Topology()

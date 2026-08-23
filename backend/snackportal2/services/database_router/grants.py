@@ -24,9 +24,7 @@ from typing import Dict, FrozenSet, Mapping, Optional
 ENV_GRANTEES = "SP2_DATABASE_ROUTER_GRANTEES"
 
 #: The tenant-resident services that may legitimately hold a tenant connection.
-TENANT_RESIDENT_SERVICES: FrozenSet[str] = frozenset(
-    {"startups", "investors", "deals", "contacts", "lineage", "import_service", "sharing"}
-)
+TENANT_RESIDENT_SERVICES: FrozenSet[str] = frozenset({"startups", "investors", "deals", "contacts", "lineage", "import_service", "sharing"})
 
 #: Never grantees, in any environment, for any reason (D-48 C-1).
 PERMANENTLY_EXCLUDED: FrozenSet[str] = frozenset({"bff", "access_control", "authentication", "control_plane", "audit"})

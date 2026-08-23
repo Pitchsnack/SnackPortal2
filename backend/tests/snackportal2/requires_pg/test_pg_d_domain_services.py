@@ -51,8 +51,7 @@ GRANT_CREDENTIALS = {
 #: would make every tenant's chain verifiable with one secret and the per-tenant property would
 #: be untested. Long enough to clear the resolver's configured floor.
 LINEAGE_KEYS = {
-    EnvironmentLineageKeyResolver.variable_name(tenant): "stage5-chain-key-" + tenant + "-" + ("0" * 20)
-    for tenant in pg.TENANTS
+    EnvironmentLineageKeyResolver.variable_name(tenant): "stage5-chain-key-" + tenant + "-" + ("0" * 20) for tenant in pg.TENANTS
 }
 
 #: The tenant whose chain the import section starts from genesis. Nothing seeds lineage here.
@@ -130,9 +129,7 @@ def fleet(tmp_path_factory: pytest.TempPathFactory) -> Iterator[srv.ServiceFleet
             {
                 "SP2_DATABASE_ROUTER_CONTROL_PLANE_URL": control.base_url,
                 "SP2_DATABASE_ROUTER_SERVICE_CREDENTIAL": ROUTER_CREDENTIAL,
-                "SP2_DATABASE_ROUTER_GRANTEES": json.dumps(
-                    {credential: service for service, credential in GRANT_CREDENTIALS.items()}
-                ),
+                "SP2_DATABASE_ROUTER_GRANTEES": json.dumps({credential: service for service, credential in GRANT_CREDENTIALS.items()}),
                 **{_dsn_variable("assoc/" + tenant): pg.dsn(tenant) for tenant in pg.TENANTS},
             },
         )
@@ -214,8 +211,7 @@ def test_a_startup_created_through_the_service_is_physically_in_that_tenants_dat
 
     stored = pg.rows(
         pg.dsn("acme"),
-        "SELECT company_name, company_url, industry, investment_stage, short_description FROM startups "
-        "WHERE company_name = %s",
+        "SELECT company_name, company_url, industry, investment_stage, short_description FROM startups WHERE company_name = %s",
         ("Acme Robotics",),
     )
     assert stored == [("Acme Robotics", "https://acme-robotics.example.com", "robotics", "seed", "Warehouse automation.")]
@@ -231,9 +227,9 @@ def test_website_normalization_happens_on_write_not_on_read(fleet: srv.ServiceFl
             {"context": _context("acme"), "company_name": "Nordwind Labs", "company_url": "www.Nordwind.example.org/"},
         )
     )
-    assert pg.scalar(
-        pg.dsn("acme"), "SELECT company_url FROM startups WHERE company_name = 'Nordwind Labs'"
-    ) == "https://nordwind.example.org"
+    assert (
+        pg.scalar(pg.dsn("acme"), "SELECT company_url FROM startups WHERE company_name = 'Nordwind Labs'") == "https://nordwind.example.org"
+    )
 
 
 def test_a_created_startup_reads_back_identically_through_postgresql(fleet: srv.ServiceFleet) -> None:
@@ -261,9 +257,7 @@ def test_a_created_startup_reads_back_identically_through_postgresql(fleet: srv.
             },
         )
     )
-    read = _call(
-        fleet, "startups", "/internal/startups/read", {"context": _context("acme"), "record_ref": created["record_ref"]}
-    )
+    read = _call(fleet, "startups", "/internal/startups/read", {"context": _context("acme"), "record_ref": created["record_ref"]})
     assert read.status_code == 200, read.text
     assert read.json() == created, "create and read disagree about the same record"
 
@@ -297,9 +291,7 @@ def test_year_founded_reaches_postgresql_as_an_integer_and_reads_back_as_one(
     )
     assert stored == [(1999, "integer")], "the value did not reach PostgreSQL as an integer"
 
-    read = _call(
-        fleet, "startups", "/internal/startups/read", {"context": _context("acme"), "record_ref": accepted["record_ref"]}
-    )
+    read = _call(fleet, "startups", "/internal/startups/read", {"context": _context("acme"), "record_ref": accepted["record_ref"]})
     assert read.status_code == 200, read.text
     assert read.json()["year_founded"] == 1999
 
@@ -378,9 +370,7 @@ def test_the_single_mutable_field_updates_in_the_database(fleet: srv.ServiceFlee
 
 
 def test_updating_a_record_reference_from_another_tenant_is_not_found(fleet: srv.ServiceFleet) -> None:
-    created = _created(
-        _call(fleet, "startups", "/internal/startups/create", {"context": _context("zeta"), "company_name": "Zeta Only"})
-    )
+    created = _created(_call(fleet, "startups", "/internal/startups/create", {"context": _context("zeta"), "company_name": "Zeta Only"}))
     response = _call(
         fleet,
         "startups",
@@ -519,13 +509,11 @@ def test_investor_jsonb_focus_lists_round_trip_as_arrays(fleet: srv.ServiceFleet
         "FROM investors WHERE investor_name = %s",
         ("Northwind Capital",),
     )
-    assert stored == [
-        (["seed", "series_a"], ["robotics", "energy"], "https://northwind.example.com", "array", "array")
-    ], "the focus lists did not reach PostgreSQL as jsonb arrays"
-
-    read = _call(
-        fleet, "investors", "/internal/investors/read", {"context": _context("acme"), "record_ref": created["record_ref"]}
+    assert stored == [(["seed", "series_a"], ["robotics", "energy"], "https://northwind.example.com", "array", "array")], (
+        "the focus lists did not reach PostgreSQL as jsonb arrays"
     )
+
+    read = _call(fleet, "investors", "/internal/investors/read", {"context": _context("acme"), "record_ref": created["record_ref"]})
     assert read.status_code == 200
     assert read.json() == created
 
@@ -568,9 +556,7 @@ def test_an_investor_created_in_one_tenant_is_invisible_to_another(fleet: srv.Se
             {"context": _context("zeta"), "investor_name": "Zeta Ventures", "industry_focus": ["fintech"]},
         )
     )
-    other = _call(
-        fleet, "investors", "/internal/investors/read", {"context": _context("acme"), "record_ref": created["record_ref"]}
-    )
+    other = _call(fleet, "investors", "/internal/investors/read", {"context": _context("acme"), "record_ref": created["record_ref"]})
     assert other.status_code == 404
     assert pg.scalar(pg.dsn("acme"), "SELECT count(*) FROM investors WHERE investor_name = 'Zeta Ventures'") == 0
     assert pg.scalar(pg.dsn("zeta"), "SELECT count(*) FROM investors WHERE investor_name = 'Zeta Ventures'") == 1
@@ -580,9 +566,7 @@ def test_an_investor_created_in_one_tenant_is_invisible_to_another(fleet: srv.Se
 
 
 def test_a_deal_binds_two_records_of_the_same_tenant(fleet: srv.ServiceFleet) -> None:
-    startup = _created(
-        _call(fleet, "startups", "/internal/startups/create", {"context": _context("nova"), "company_name": "Nova Startup"})
-    )
+    startup = _created(_call(fleet, "startups", "/internal/startups/create", {"context": _context("nova"), "company_name": "Nova Startup"}))
     investor = _created(
         _call(fleet, "investors", "/internal/investors/create", {"context": _context("nova"), "investor_name": "Nova Fund"})
     )
@@ -691,9 +675,7 @@ def test_a_deal_update_changes_stage_and_status_and_never_its_parties(fleet: srv
     assert updated.status_code == 200, updated.text
     assert updated.json()["status"] == "in_diligence"
     assert updated.json()["startup_ref"] == deal["startup_ref"]
-    assert pg.rows(pg.dsn("nova"), "SELECT stage, status FROM deals WHERE deal_name = 'Updatable'") == [
-        ("diligence", "in_diligence")
-    ]
+    assert pg.rows(pg.dsn("nova"), "SELECT stage, status FROM deals WHERE deal_name = 'Updatable'") == [("diligence", "in_diligence")]
 
 
 def test_sharing_is_not_deal_duplication(fleet: srv.ServiceFleet) -> None:
@@ -774,9 +756,7 @@ def test_lineage_for_a_record_returns_only_that_records_provenance(fleet: srv.Se
     )
     _seed_lineage("acme", 3, subject["record_ref"], "gs-9", "global_startup_import")
 
-    response = _call(
-        fleet, "lineage", "/internal/lineage/for-record", {"context": _context("acme"), "target_ref": subject["record_ref"]}
-    )
+    response = _call(fleet, "lineage", "/internal/lineage/for-record", {"context": _context("acme"), "target_ref": subject["record_ref"]})
     assert response.status_code == 200, response.text
     entries = response.json()["entries"]
     assert [entry["source_ref"] for entry in entries] == ["gs-9"]
@@ -905,8 +885,7 @@ def test_a_first_import_writes_the_copy_its_lineage_and_its_idempotency_row(flee
     # 1 — the independent tenant copy, carrying a soft reference to its global source.
     copy = pg.rows(
         pg.dsn(tenant),
-        "SELECT id, global_startup_id, company_name, industry, headquarters_country FROM startups "
-        "WHERE global_startup_id = %s",
+        "SELECT id, global_startup_id, company_name, industry, headquarters_country FROM startups WHERE global_startup_id = %s",
         (DOMAIN_SOURCE,),
     )
     assert len(copy) == 1, "the import wrote no tenant startup row"
@@ -931,12 +910,12 @@ def test_a_first_import_writes_the_copy_its_lineage_and_its_idempotency_row(flee
     key = operation_key(tenant, DOMAIN_SOURCE)
     assert body["import_id"] == key
     assert record["derivation_ref"] == key
-    assert pg.rows(
-        pg.dsn(tenant), "SELECT job_id, status, applied FROM import_idempotency WHERE operation_key = %s", (key,)
-    ) == [(key, "completed", 1)]
-    assert pg.rows(
-        pg.dsn(tenant), "SELECT operation_key, tenant_id, state FROM import_job WHERE job_id = %s", (key,)
-    ) == [(key, tenant, "completed")]
+    assert pg.rows(pg.dsn(tenant), "SELECT job_id, status, applied FROM import_idempotency WHERE operation_key = %s", (key,)) == [
+        (key, "completed", 1)
+    ]
+    assert pg.rows(pg.dsn(tenant), "SELECT operation_key, tenant_id, state FROM import_job WHERE job_id = %s", (key,)) == [
+        (key, tenant, "completed")
+    ]
 
 
 def test_the_lineage_marker_is_a_real_d23_marker_and_not_a_placeholder(fleet: srv.ServiceFleet) -> None:
@@ -1080,9 +1059,9 @@ def test_a_failed_lineage_write_rolls_back_the_startup_copy(fleet: srv.ServiceFl
     finally:
         pg.execute(pg.dsn(tenant), "ALTER TABLE lineage DROP CONSTRAINT stage5_lineage_probe")
 
-    assert pg.scalar(
-        pg.dsn(tenant), "SELECT count(*) FROM startups WHERE global_startup_id = %s", (ROLLBACK_LINEAGE_SOURCE,)
-    ) == 0, "the tenant copy survived a failed lineage write"
+    assert pg.scalar(pg.dsn(tenant), "SELECT count(*) FROM startups WHERE global_startup_id = %s", (ROLLBACK_LINEAGE_SOURCE,)) == 0, (
+        "the tenant copy survived a failed lineage write"
+    )
     assert pg.scalar(pg.dsn(tenant), "SELECT count(*) FROM lineage WHERE source_ref = %s", (ROLLBACK_LINEAGE_SOURCE,)) == 0
     assert pg.scalar(pg.dsn(tenant), "SELECT count(*) FROM import_idempotency WHERE operation_key = %s", (key,)) == 0
     assert pg.scalar(pg.dsn(tenant), "SELECT count(*) FROM import_job WHERE job_id = %s", (key,)) == 0
@@ -1100,8 +1079,7 @@ def test_a_failed_startup_write_leaves_no_idempotency_or_lineage_row(fleet: srv.
     key = operation_key(tenant, ROLLBACK_STARTUP_SOURCE)
     pg.execute(
         pg.dsn(tenant),
-        "ALTER TABLE startups ADD CONSTRAINT stage5_startup_probe CHECK (company_name <> %s)"
-        % ("'" + ROLLBACK_STARTUP_NAME + "'"),
+        "ALTER TABLE startups ADD CONSTRAINT stage5_startup_probe CHECK (company_name <> %s)" % ("'" + ROLLBACK_STARTUP_NAME + "'"),
     )
     try:
         response = _import(fleet, tenant, ROLLBACK_STARTUP_SOURCE)
@@ -1139,9 +1117,9 @@ def test_a_tenant_that_already_holds_a_copy_of_the_source_is_refused_not_updated
     assert response.status_code == 422, response.text
     assert response.json() == {"status": 422, "code": "invalid_request"}
 
-    assert pg.rows(
-        pg.dsn(tenant), "SELECT company_name FROM startups WHERE global_startup_id = 'gs-preexisting'"
-    ) == [("Hand Made Copy",)], "the import updated an existing record instead of refusing"
+    assert pg.rows(pg.dsn(tenant), "SELECT company_name FROM startups WHERE global_startup_id = 'gs-preexisting'") == [
+        ("Hand Made Copy",)
+    ], "the import updated an existing record instead of refusing"
     assert pg.scalar(pg.dsn(tenant), "SELECT count(*) FROM lineage") == before
     del created
 
@@ -1188,9 +1166,7 @@ def test_no_lineage_row_written_by_an_import_carries_an_empty_marker(fleet: srv.
     del fleet
     written = 0
     for tenant in pg.TENANTS:
-        written += int(
-            pg.scalar(pg.dsn(tenant), "SELECT count(*) FROM lineage WHERE derivation_ref LIKE %s", (IMPORT_KEY_PREFIX,)) or 0
-        )
+        written += int(pg.scalar(pg.dsn(tenant), "SELECT count(*) FROM lineage WHERE derivation_ref LIKE %s", (IMPORT_KEY_PREFIX,)) or 0)
         empty = pg.scalar(
             pg.dsn(tenant),
             "SELECT count(*) FROM lineage WHERE derivation_ref LIKE %s "
@@ -1231,7 +1207,7 @@ def test_configuring_postgresql_added_no_operation_and_no_secret_field(fleet: sr
     document = httpx.get(fleet.url("import_service") + "/openapi.json", timeout=10.0).json()
 
     for name, definition in (document.get("components", {}).get("schemas", {}) or {}).items():
-        for property_name in (definition.get("properties") or {}):
+        for property_name in definition.get("properties") or {}:
             folded = property_name.casefold()
             for forbidden in ("key", "secret", "dsn", "password", "credential", "grant"):
                 assert forbidden not in folded, "the import contract publishes " + name + "." + property_name

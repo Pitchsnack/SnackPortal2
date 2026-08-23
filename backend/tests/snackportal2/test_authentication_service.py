@@ -41,6 +41,7 @@ def _service() -> AuthenticationService:
 
 # --- Verification --------------------------------------------------------------------
 
+
 def test_valid_credential_yields_a_references_only_identity() -> None:
     response = _service().authenticate("acme-agent-token", None)
     assert response.principal_ref == "p-agent"
@@ -113,6 +114,7 @@ def test_static_configuration_rejects_an_unknown_role() -> None:
 
 # --- Carrier match (IC-013 §5 / IC-005) ------------------------------------------------
 
+
 def test_carrier_verdicts() -> None:
     tenant_identity = VerifiedIdentity("p-agent", PlatformRole.TENANT_AGENT, "acme")
     control_identity = VerifiedIdentity("p-control", PlatformRole.CONTROL, None)
@@ -161,6 +163,7 @@ def test_authentication_imports_no_database_driver_and_no_other_service() -> Non
 
 
 # --- OpenAPI gate ------------------------------------------------------------------------
+
 
 def test_authentication_openapi_meets_the_standing_rules() -> None:
     assert_document(

@@ -142,12 +142,8 @@ ROLE_PERMISSIONS: Mapping[PlatformRole, FrozenSet[Permission]] = {
     PlatformRole.MASTER_AGENT: _TENANT_AGENT_PERMISSIONS,
     PlatformRole.TENANT_ADMIN: _TENANT_AGENT_PERMISSIONS,
     PlatformRole.TENANT_AGENT: _TENANT_AGENT_PERMISSIONS,
-    PlatformRole.STARTUP_USER: frozenset(
-        {Permission.MEMBERSHIPS_READ, Permission.DIRECTORY_GLOBAL_STARTUP_READ}
-    ),
-    PlatformRole.INVESTOR_USER: frozenset(
-        {Permission.MEMBERSHIPS_READ, Permission.DIRECTORY_GLOBAL_INVESTOR_READ}
-    ),
+    PlatformRole.STARTUP_USER: frozenset({Permission.MEMBERSHIPS_READ, Permission.DIRECTORY_GLOBAL_STARTUP_READ}),
+    PlatformRole.INVESTOR_USER: frozenset({Permission.MEMBERSHIPS_READ, Permission.DIRECTORY_GLOBAL_INVESTOR_READ}),
 }
 
 

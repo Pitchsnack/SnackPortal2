@@ -96,9 +96,7 @@ class ServiceFleet:
 
     # -- lifecycle ---------------------------------------------------------------------
 
-    def start(
-        self, key: str, env: Mapping[str, str], port: Optional[int] = None, alias: Optional[str] = None
-    ) -> ServiceProcess:
+    def start(self, key: str, env: Mapping[str, str], port: Optional[int] = None, alias: Optional[str] = None) -> ServiceProcess:
         """Start one service with exactly the supplied environment additions.
 
         The child inherits the parent environment so that PATH and the Python install work,

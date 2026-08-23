@@ -89,9 +89,7 @@ OPERATION_CATEGORY: dict[BffOperation, OperationCategory] = {
 #: The IC-013 §18 inert set. These operations are authored so the taxonomy is complete and
 #: so their denial is deliberate and tested — not so they can be performed. They stay denied
 #: until IC-007 is promoted from ``Draft / Proposed`` to ``Final``.
-SHARING_INERT_OPERATIONS = frozenset(
-    op for op, category in OPERATION_CATEGORY.items() if category is OperationCategory.GOVERNED_SHARING
-)
+SHARING_INERT_OPERATIONS = frozenset(op for op, category in OPERATION_CATEGORY.items() if category is OperationCategory.GOVERNED_SHARING)
 
 
 class UnknownOperation(Exception):

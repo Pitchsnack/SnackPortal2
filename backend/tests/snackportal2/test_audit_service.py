@@ -52,6 +52,7 @@ def _submission(**overrides: object) -> dict[str, object]:
 
 # --- The audit vocabulary (IC-013 §10) ----------------------------------------------------
 
+
 def test_the_four_denial_and_anomaly_classes_are_exactly_the_historic_set() -> None:
     """None added, none removed, none renamed. Only the emitter moved."""
     assert {action.value for action in DENIAL_ANOMALY_ACTIONS} == {
@@ -83,6 +84,7 @@ def test_an_audit_submission_cannot_carry_a_payload_field() -> None:
 
 
 # --- Server-derived identity (3-day plan §10) ------------------------------------------------
+
 
 def test_the_emitter_cannot_name_itself() -> None:
     """``source_service`` comes from the credential, and there is no field to override it."""
@@ -147,6 +149,7 @@ def test_an_unknown_scope_fails_at_configuration_time() -> None:
 
 # --- Read scoping and scoped delegation --------------------------------------------------------
 
+
 def test_read_all_sees_every_event_and_plain_read_sees_only_its_own() -> None:
     client = _client()
     client.post("/audit/events", headers={"Authorization": "Bearer bff-key"}, json=_submission(actor_ref="p-agent"))
@@ -183,6 +186,7 @@ def test_delegation_requires_the_scope_as_well_as_the_target() -> None:
 
 
 # --- Sink -------------------------------------------------------------------------------------
+
 
 def test_the_durable_sink_targets_the_new_table_not_the_retired_gateway_one() -> None:
     """DDL 012 pins CHECK (source_service = 'api_gateway'), which rejects a BFF row outright."""
@@ -223,6 +227,7 @@ def test_the_in_memory_sink_preserves_insertion_order() -> None:
 
 
 # --- OpenAPI gate --------------------------------------------------------------------------------
+
 
 def test_audit_openapi_meets_the_standing_rules() -> None:
     assert_document(

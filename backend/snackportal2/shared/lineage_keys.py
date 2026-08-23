@@ -74,8 +74,7 @@ class LineageKeyResolver(Protocol):
     tenant's key* and *a denial*.
     """
 
-    def resolve_lineage_key(self, tenant_ref: str) -> LineageChainKey:
-        ...
+    def resolve_lineage_key(self, tenant_ref: str) -> LineageChainKey: ...
 
 
 class EnvironmentLineageKeyResolver:

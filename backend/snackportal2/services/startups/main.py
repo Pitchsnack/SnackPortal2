@@ -67,9 +67,7 @@ def _build_repository() -> StartupRepository:
 _repository = _build_repository()
 
 
-AnyStartupRequest = Union[
-    StartupListRequest, StartupReadRequest, StartupCreateRequest, StartupUpdateRequest, DuplicateCheckRequest
-]
+AnyStartupRequest = Union[StartupListRequest, StartupReadRequest, StartupCreateRequest, StartupUpdateRequest, DuplicateCheckRequest]
 
 
 def _tenant_of(request: AnyStartupRequest) -> str:
@@ -186,8 +184,7 @@ async def check_duplicates(request: DuplicateCheckRequest, _credential: ServiceB
     matches = find_duplicates(_repository, tenant_ref, request.company_name, request.company_url)
     return DuplicateCheckResponse(
         candidates=[
-            DuplicateCandidate(record_ref=record.record_ref, display_name=record.company_name, reason=reason)
-            for record, reason in matches
+            DuplicateCandidate(record_ref=record.record_ref, display_name=record.company_name, reason=reason) for record, reason in matches
         ],
         blocking=bool(matches),
     )

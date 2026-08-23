@@ -79,12 +79,8 @@ class AiGovernanceResponse(BaseModel):
     implemented: bool = Field(description="Whether any AI operation is available. False until IC-006 is Draft-complete.")
     blocked_on: List[str] = Field(description="The named prerequisites outstanding before AI behaviour may be built.")
     separations: List[str] = Field(description="The normative separations any AI implementation must preserve.")
-    draft_lifecycle: List[DraftState] = Field(
-        description="The approved lifecycle from research to an approved Global record, in order."
-    )
-    approval_preconditions: List[str] = Field(
-        description="What must hold before an approval may create a Global record."
-    )
+    draft_lifecycle: List[DraftState] = Field(description="The approved lifecycle from research to an approved Global record, in order.")
+    approval_preconditions: List[str] = Field(description="What must hold before an approval may create a Global record.")
 
 
 class AiTaskRequest(BaseModel):

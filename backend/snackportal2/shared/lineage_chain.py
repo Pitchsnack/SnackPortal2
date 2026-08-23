@@ -90,9 +90,7 @@ class LineageIntent:
     correlation_id: Optional[str] = None
 
 
-def canonical_content(
-    record: Mapping[str, Any], prev_marker: str, *, marker_version: int = CURRENT_MARKER_VERSION
-) -> bytes:
+def canonical_content(record: Mapping[str, Any], prev_marker: str, *, marker_version: int = CURRENT_MARKER_VERSION) -> bytes:
     """Deterministic bytes for ``record`` chained onto ``prev_marker``.
 
     ``None`` serializes as the empty string so that an absent optional field and an empty one

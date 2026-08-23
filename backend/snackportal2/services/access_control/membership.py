@@ -33,8 +33,7 @@ LOOKUP_TIMEOUT_SECONDS = 2.0
 class MembershipPort(Protocol):
     """Is this principal a member of this tenant?"""
 
-    def is_member(self, principal_ref: str, tenant_ref: str) -> bool:
-        ...
+    def is_member(self, principal_ref: str, tenant_ref: str) -> bool: ...
 
 
 class DenyAllMemberships:
@@ -49,9 +48,7 @@ class StaticMemberships:
     """A fixed membership map for local development and tests, selected only explicitly."""
 
     def __init__(self, memberships: Mapping[str, Set[str]]) -> None:
-        self._pairs: Set[Tuple[str, str]] = {
-            (principal, tenant) for principal, tenants in memberships.items() for tenant in tenants
-        }
+        self._pairs: Set[Tuple[str, str]] = {(principal, tenant) for principal, tenants in memberships.items() for tenant in tenants}
 
     def is_member(self, principal_ref: str, tenant_ref: str) -> bool:
         return (principal_ref, tenant_ref) in self._pairs

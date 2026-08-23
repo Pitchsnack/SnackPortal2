@@ -229,6 +229,7 @@ def assert_document(schema: Mapping[str, Any], **kwargs: Any) -> None:
 # The validator is the gate, so the gate itself is tested: a deliberately broken document
 # must produce the specific violations, or a real service could pass by accident.
 
+
 def _self_test() -> None:
     broken: Dict[str, Any] = {
         "openapi": "3.0.2",
@@ -253,9 +254,7 @@ def _self_test() -> None:
                     "description": "d",
                     "tags": ["Health"],
                     "security": [{"ClientBearer": []}],
-                    "responses": {
-                        "200": {"description": "ok", "content": {"application/json": {"schema": {"type": "object"}}}}
-                    },
+                    "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"type": "object"}}}}},
                 }
             },
         },

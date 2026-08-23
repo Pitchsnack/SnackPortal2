@@ -54,8 +54,7 @@ class TenantRegistryEntry:
 class TenantRegistry(Protocol):
     """Registry-authoritative tenant lookup (D-07 / D-30)."""
 
-    def lookup(self, tenant_ref: str) -> Optional[TenantRegistryEntry]:
-        ...
+    def lookup(self, tenant_ref: str) -> Optional[TenantRegistryEntry]: ...
 
 
 class TenantSecretStore(Protocol):
@@ -65,8 +64,7 @@ class TenantSecretStore(Protocol):
     exactly why it lives inside the only service permitted to open a tenant database.
     """
 
-    def resolve(self, store_ref: str, version: str) -> Optional[str]:
-        ...
+    def resolve(self, store_ref: str, version: str) -> Optional[str]: ...
 
 
 class StaticTenantRegistry:

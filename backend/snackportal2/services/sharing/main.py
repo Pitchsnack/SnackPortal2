@@ -59,9 +59,7 @@ class SharingCapabilityResponse(BaseModel):
 
     implemented: bool = Field(description="Whether any positive sharing capability exists. False until IC-007 is Final.")
     blocked_on: List[str] = Field(description="The named prerequisites outstanding before sharing may be implemented.")
-    invariants: List[str] = Field(
-        description="The invariants any future sharing implementation must preserve, whatever IC-007 settles."
-    )
+    invariants: List[str] = Field(description="The invariants any future sharing implementation must preserve, whatever IC-007 settles.")
 
 
 @app.get(

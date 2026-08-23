@@ -33,9 +33,7 @@ class RoutingResolution(BaseModel):
     """
 
     tenant_ref: str = Field(description="The single active tenant this request resolved to, from the signed claim.")
-    target_ref: str = Field(
-        description="Opaque reference to the bound physical database. Never a DSN, host, database name, or credential."
-    )
+    target_ref: str = Field(description="Opaque reference to the bound physical database. Never a DSN, host, database name, or credential.")
     expected_schema_version: str = Field(description="Schema version the registry expects of that tenant database.")
 
 

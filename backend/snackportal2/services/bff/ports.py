@@ -73,8 +73,7 @@ class AccessControlPort(Protocol):
         context: RequestContext,
         operation: BffOperation,
         record_ref: Optional[str] = None,
-    ) -> AuthorizationResult:
-        ...
+    ) -> AuthorizationResult: ...
 
 
 class TenantRoutingPort(Protocol):
@@ -84,21 +83,17 @@ class TenantRoutingPort(Protocol):
     here through which it could read or write tenant data even if a future route tried.
     """
 
-    def resolve(self, context: RequestContext) -> RoutedTenant:
-        ...
+    def resolve(self, context: RequestContext) -> RoutedTenant: ...
 
 
 class ControlReadPort(Protocol):
     """Read Control-resident data: memberships and the global directories."""
 
-    def list_memberships(self, principal_ref: str) -> List[Dict[str, str]]:
-        ...
+    def list_memberships(self, principal_ref: str) -> List[Dict[str, str]]: ...
 
-    def list_directory(self, directory: str) -> List[Dict[str, str]]:
-        ...
+    def list_directory(self, directory: str) -> List[Dict[str, str]]: ...
 
-    def get_directory_record(self, directory: str, record_ref: str) -> Optional[Dict[str, str]]:
-        ...
+    def get_directory_record(self, directory: str, record_ref: str) -> Optional[Dict[str, str]]: ...
 
 
 class DomainServicePort(Protocol):
@@ -110,8 +105,7 @@ class DomainServicePort(Protocol):
     route may hand a caller what it returns without composing.
     """
 
-    def call(self, path: str, payload: Dict[str, Any]) -> Any:
-        ...
+    def call(self, path: str, payload: Dict[str, Any]) -> Any: ...
 
 
 class AuditPort(Protocol):
@@ -127,8 +121,7 @@ class AuditPort(Protocol):
         tenant_ref: Optional[str] = None,
         record_ref: Optional[str] = None,
         carrier_ref: Optional[str] = None,
-    ) -> None:
-        ...
+    ) -> None: ...
 
 
 __all__ = [

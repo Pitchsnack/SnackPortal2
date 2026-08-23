@@ -239,9 +239,7 @@ def test_a_database_created_from_zero_reaches_the_same_schema() -> None:
             fresh = pg.swap_database(admin, database)
             applied = pg.apply_chain(fresh, chain)
             assert len(applied) == len(chain)
-            assert pg.table_names(fresh) == pg.table_names(reference), (
-                database + " schema differs from the provisioned reference"
-            )
+            assert pg.table_names(fresh) == pg.table_names(reference), database + " schema differs from the provisioned reference"
         finally:
             pg.execute_outside_transaction(admin, "DROP DATABASE IF EXISTS " + database + " WITH (FORCE)")
 

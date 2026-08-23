@@ -30,6 +30,7 @@ from ._openapi_rules import assert_document
 
 # --- Carrier contract (IC-013 §5) --------------------------------------------------------
 
+
 def test_x_tenant_id_is_the_only_recognized_carrier_header() -> None:
     assert carrier_from_header({"X-Tenant-Id": "acme"}) == "acme"
     assert carrier_from_header({"x-tenant-id": "acme"}) == "acme"
@@ -76,6 +77,7 @@ def test_two_disagreeing_carriers_are_a_conflict_not_a_precedence_contest() -> N
 
 # --- Pipeline doubles ----------------------------------------------------------------------
 
+
 class _Authentication:
     def __init__(self, result: Optional[AuthenticationResult]) -> None:
         self._result = result
@@ -92,9 +94,7 @@ class _AccessControl:
         self._result = result
         self.calls: List[Tuple[str, Optional[str]]] = []
 
-    def decide(
-        self, context: RequestContext, operation: BffOperation, record_ref: Optional[str] = None
-    ) -> AuthorizationResult:
+    def decide(self, context: RequestContext, operation: BffOperation, record_ref: Optional[str] = None) -> AuthorizationResult:
         self.calls.append((operation.value, context.tenant_context))
         return self._result
 
@@ -143,9 +143,7 @@ def _auth_result(tenant: Optional[str], verdict: CarrierVerdict, role: PlatformR
     )
 
 
-def _pipeline(
-    auth: object, access: object, audit: object, routing: object = None, base_domain: str = ""
-) -> IngressPipeline:
+def _pipeline(auth: object, access: object, audit: object, routing: object = None, base_domain: str = "") -> IngressPipeline:
     return IngressPipeline(
         authentication=auth,  # type: ignore[arg-type]
         access_control=access,  # type: ignore[arg-type]
@@ -164,6 +162,7 @@ def _expect_denial(pipeline: IngressPipeline, **kwargs: object) -> AppError:
 
 
 # --- Flow order and fail-closed behaviour --------------------------------------------------
+
 
 def test_a_missing_credential_is_a_canonical_401_before_anything_else() -> None:
     auth = _Authentication(None)
@@ -242,6 +241,7 @@ def test_the_request_context_is_built_only_from_the_signed_claim() -> None:
 
 # --- Access Control precedes routing (IC-014 §3) -----------------------------------------------
 
+
 def test_a_denied_request_never_reaches_the_router() -> None:
     auth = _Authentication(_auth_result("acme", CarrierVerdict.MATCHED))
     audit = _Audit()
@@ -307,6 +307,7 @@ def test_an_allowed_request_returns_the_single_agreed_domain() -> None:
 
 # --- The BFF application -------------------------------------------------------------------
 
+
 def test_bff_openapi_meets_the_standing_rules() -> None:
     assert_document(
         bff_main.app.openapi(),
@@ -368,6 +369,7 @@ def test_the_bff_never_names_itself_a_gateway() -> None:
 #
 # The doubles below therefore record what they were handed, verbatim, and assert on it. A
 # double that repairs its input cannot catch a defect in what produces that input.
+
 
 def _router_client(recorder: "_RecordingAuthentication") -> Tuple[object, "_RecordingAuthentication"]:
     from fastapi.testclient import TestClient
@@ -452,9 +454,7 @@ def test_a_hostile_correlation_id_is_sanitized_before_it_travels() -> None:
     """
     for hostile in ("bad value", "x" * 500, "line\nbreak", "semi;colon"):
         client, recorder = _router_client(_RecordingAuthentication())
-        response = client.get(
-            "/memberships", headers={"Authorization": "Bearer token", "X-Correlation-ID": hostile}
-        )
+        response = client.get("/memberships", headers={"Authorization": "Bearer token", "X-Correlation-ID": hostile})
         assert response.status_code == 200, response.text
         passed = recorder.correlation_ids[-1]
         assert passed != hostile, "a hostile correlation id travelled unchanged: " + repr(hostile)
@@ -481,6 +481,4 @@ def test_the_ingress_reads_the_correlation_id_from_the_middleware_not_the_raw_he
         if isinstance(function, ast.Attribute) and function.attr == "get":
             for argument in node.args:
                 if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
-                    assert argument.value.casefold() != "x-correlation-id", (
-                        "the ingress reads the correlation id from the raw header again"
-                    )
+                    assert argument.value.casefold() != "x-correlation-id", "the ingress reads the correlation id from the raw header again"

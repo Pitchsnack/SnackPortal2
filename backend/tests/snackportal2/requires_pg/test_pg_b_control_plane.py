@@ -222,9 +222,7 @@ def test_the_registry_records_real_timestamps_and_preserves_the_creation_time(cl
     store = _live_store()
 
     def stamps() -> tuple:
-        return pg.rows(
-            pg.dsn("control"), "SELECT created_at, updated_at FROM control_tenants WHERE tenant_id = %s", ("stamped",)
-        )[0]
+        return pg.rows(pg.dsn("control"), "SELECT created_at, updated_at FROM control_tenants WHERE tenant_id = %s", ("stamped",))[0]
 
     descriptor = TenantDescriptor(
         tenant_ref="stamped",
@@ -281,9 +279,7 @@ def test_membership_write_is_an_upsert_not_a_duplicate(client: TestClient) -> No
     store = _live_store()
     store.put_membership("p-upsert", "acme", PlatformRole.TENANT_AGENT)
     store.put_membership("p-upsert", "acme", PlatformRole.TENANT_ADMIN)
-    assert pg.scalar(
-        pg.dsn("control"), "SELECT count(*) FROM control_memberships WHERE principal_ref = 'p-upsert'"
-    ) == 1
+    assert pg.scalar(pg.dsn("control"), "SELECT count(*) FROM control_memberships WHERE principal_ref = 'p-upsert'") == 1
     assert store.list_memberships("p-upsert") == [
         type(store.list_memberships("p-upsert")[0])(tenant_ref="acme", role=PlatformRole.TENANT_ADMIN)
     ]

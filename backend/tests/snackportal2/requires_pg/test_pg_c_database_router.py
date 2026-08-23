@@ -475,9 +475,7 @@ def test_a_service_with_no_router_configured_can_reach_no_tenant_database() -> N
 
 
 def test_a_router_url_without_a_credential_is_not_a_configured_router(fleet: srv.ServiceFleet) -> None:
-    provider = build_grant_provider(
-        "startups", env={"SP2_STARTUPS_DATABASE_ROUTER_URL": fleet.url("database_router")}
-    )
+    provider = build_grant_provider("startups", env={"SP2_STARTUPS_DATABASE_ROUTER_URL": fleet.url("database_router")})
     assert isinstance(provider, NoGrantProvider)
 
 
@@ -501,7 +499,7 @@ def test_a_grant_request_for_a_tenantless_context_is_refused_before_any_call() -
 
 
 def test_the_router_denial_propagates_unchanged_through_the_grant_provider(fleet: srv.ServiceFleet) -> None:
-    """"Not ready" must not become "not found" on the way back (D-48 C-4)."""
+    """ "Not ready" must not become "not found" on the way back (D-48 C-4)."""
     provider = RouterGrantProvider(fleet.url("database_router"), STARTUPS_CREDENTIAL)
     for tenant, status, code in (
         ("no-such-tenant", 404, "tenant_not_found"),

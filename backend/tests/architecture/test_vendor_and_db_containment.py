@@ -99,11 +99,7 @@ def _jwt_crypto_allowed(rp: str) -> bool:
     """True iff `rp` may import a JWT/crypto vendor: the provider containment zone, the ONE
     blessed fixture file, or a named Option A rebuild verifier — the latter two by exact-path
     equality (never a prefix/directory/glob match)."""
-    return (
-        "/adapters/providers/" in ("/" + rp)
-        or rp == JWT_CRYPTO_FIXTURE_ALLOW
-        or rp in REBUILD_JWT_CRYPTO_ALLOW
-    )
+    return "/adapters/providers/" in ("/" + rp) or rp == JWT_CRYPTO_FIXTURE_ALLOW or rp in REBUILD_JWT_CRYPTO_ALLOW
 
 
 def test_jwt_crypto_vendors_only_in_providers_or_the_one_blessed_fixture() -> None:

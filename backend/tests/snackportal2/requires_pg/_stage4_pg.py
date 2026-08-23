@@ -212,10 +212,7 @@ def reset_database(target_dsn: str) -> None:
 def table_names(target_dsn: str) -> List[str]:
     with connect_dsn(target_dsn) as connection:
         with connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT table_name FROM information_schema.tables "
-                "WHERE table_schema = 'public' ORDER BY table_name"
-            )
+            cursor.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name")
             return [str(row[0]) for row in cursor.fetchall()]
 
 
@@ -223,8 +220,7 @@ def column_names(target_dsn: str, table: str) -> List[str]:
     with connect_dsn(target_dsn) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_schema = 'public' AND table_name = %s ORDER BY column_name",
+                "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = %s ORDER BY column_name",
                 (table,),
             )
             return [str(row[0]) for row in cursor.fetchall()]

@@ -46,6 +46,7 @@ def _context(tenant: str | None = "acme") -> dict[str, object]:
 
 # --- Website normalization (shared, used by Startups and Investors) --------------------------
 
+
 def test_website_normalization_makes_equal_things_compare_equal() -> None:
     """Two records differing only by scheme, case, 'www.' or a trailing slash are one company."""
     canonical = "https://acme.example"
@@ -69,6 +70,7 @@ def test_an_absent_website_stays_absent() -> None:
 
 
 # --- Startup Service -------------------------------------------------------------------------
+
 
 def _startups_client() -> TestClient:
     startups_main._repository = InMemoryStartupRepository()  # type: ignore[attr-defined]
@@ -207,23 +209,17 @@ def test_the_published_year_founded_schema_is_a_bounded_integer() -> None:
 
 def test_a_startup_reference_does_not_travel_between_tenants() -> None:
     client = _startups_client()
-    created = client.post(
-        "/internal/startups/create", headers=_CREDENTIAL, json={"context": _context("acme"), "company_name": "Acme"}
-    )
+    created = client.post("/internal/startups/create", headers=_CREDENTIAL, json={"context": _context("acme"), "company_name": "Acme"})
     record_ref = created.json()["record_ref"]
 
-    elsewhere = client.post(
-        "/internal/startups/read", headers=_CREDENTIAL, json={"context": _context("zeta"), "record_ref": record_ref}
-    )
+    elsewhere = client.post("/internal/startups/read", headers=_CREDENTIAL, json={"context": _context("zeta"), "record_ref": record_ref})
     assert elsewhere.status_code == 404
 
 
 def test_the_bounded_update_accepts_exactly_one_field() -> None:
     """IC-009 CLM: short_description is the sole mutable field, bounded at 500 characters."""
     client = _startups_client()
-    created = client.post(
-        "/internal/startups/create", headers=_CREDENTIAL, json={"context": _context(), "company_name": "Acme"}
-    )
+    created = client.post("/internal/startups/create", headers=_CREDENTIAL, json={"context": _context(), "company_name": "Acme"})
     record_ref = created.json()["record_ref"]
 
     over_bound = client.post(
@@ -269,6 +265,7 @@ def test_a_tenantless_context_cannot_reach_a_tenant_record() -> None:
 
 # --- Investor Service --------------------------------------------------------------------------
 
+
 def _investors_client() -> TestClient:
     investors_main._repository = InMemoryInvestorRepository()  # type: ignore[attr-defined]
     return TestClient(investors_main.app, raise_server_exceptions=False)
@@ -301,13 +298,12 @@ def test_investor_records_do_not_travel_between_tenants() -> None:
         "/internal/investors/create", headers=_CREDENTIAL, json={"context": _context("acme"), "investor_name": "Northwind"}
     )
     record_ref = created.json()["record_ref"]
-    elsewhere = client.post(
-        "/internal/investors/read", headers=_CREDENTIAL, json={"context": _context("zeta"), "record_ref": record_ref}
-    )
+    elsewhere = client.post("/internal/investors/read", headers=_CREDENTIAL, json={"context": _context("zeta"), "record_ref": record_ref})
     assert elsewhere.status_code == 404
 
 
 # --- Deal Service --------------------------------------------------------------------------------
+
 
 def _deals_client() -> TestClient:
     deals_main._repository = InMemoryDealRepository()  # type: ignore[attr-defined]
@@ -382,6 +378,7 @@ def test_the_deal_service_exposes_no_operation_that_copies_a_deal() -> None:
 
 # --- Contacts Service (blocked on IC-015) ---------------------------------------------------------
 
+
 def test_contacts_exposes_no_business_operation_and_names_its_blockers() -> None:
     client = TestClient(contacts_main.app, raise_server_exceptions=False)
     response = client.get("/internal/contacts/capabilities", headers=_CREDENTIAL)
@@ -408,6 +405,7 @@ def test_no_contacts_table_exists_in_the_accepted_ddl() -> None:
 
 # --- Sharing Service (inert until IC-007 is Final) -------------------------------------------------
 
+
 def test_sharing_refuses_every_proposal_and_says_why() -> None:
     client = TestClient(sharing_main.app, raise_server_exceptions=False)
     capabilities = client.get("/internal/sharing/capabilities", headers=_CREDENTIAL).json()
@@ -426,14 +424,11 @@ def test_sharing_refuses_every_proposal_and_says_why() -> None:
 
 # --- Import Service (IC-003) --------------------------------------------------------------------------
 
+
 def _import_client() -> TestClient:
     store = import_service.InMemoryImportStore()
     directory = import_service.StaticGlobalDirectory(
-        {
-            "gs-1": import_service.GlobalSourceRecord(
-                record_ref="gs-1", display_name="Alpha Corp", attributes={"industry": "robotics"}
-            )
-        }
+        {"gs-1": import_service.GlobalSourceRecord(record_ref="gs-1", display_name="Alpha Corp", attributes={"industry": "robotics"})}
     )
     import_main._store = store  # type: ignore[attr-defined]
     import_main._service = import_service.ImportService(directory, store)  # type: ignore[attr-defined]
@@ -516,6 +511,7 @@ def test_the_idempotency_key_is_derived_never_supplied() -> None:
 
 
 # --- Import Service storage composition (Stage 5) ----------------------------------------------------
+
 
 def test_the_import_store_is_in_memory_by_omission_and_postgresql_only_when_asked() -> None:
     """A silent fallback would turn a database outage into an import that writes nothing."""
@@ -605,6 +601,7 @@ def test_the_actor_and_correlation_cannot_be_chosen_by_the_caller() -> None:
 
 # --- Lineage Service (IC-004) ------------------------------------------------------------------------
 
+
 def test_lineage_exposes_no_update_or_delete() -> None:
     """Append-only. An audit-adjacent record that can be rewritten is not provenance."""
     for path, item in lineage_main.app.openapi()["paths"].items():
@@ -629,6 +626,7 @@ def test_a_lineage_target_from_another_tenant_is_not_found() -> None:
 
 # --- AI Agent Service (inert under IC-006) --------------------------------------------------------------
 
+
 def test_the_ai_service_is_inert_and_records_the_approved_lifecycle() -> None:
     client = TestClient(ai_main.app, raise_server_exceptions=False)
     governance = client.get("/internal/ai/governance", headers=_CREDENTIAL).json()
@@ -651,6 +649,7 @@ def test_the_ai_service_is_inert_and_records_the_approved_lifecycle() -> None:
 
 
 # --- OpenAPI gate for every Day 2 and Day 3 service -------------------------------------------------------
+
 
 def test_domain_service_openapi_documents_meet_the_standing_rules() -> None:
     for service, module, paths in (

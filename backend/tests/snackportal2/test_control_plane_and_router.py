@@ -46,6 +46,7 @@ _CREDENTIAL = {"Authorization": "Bearer internal-service-credential"}
 
 # --- Control Plane ---------------------------------------------------------------------
 
+
 def _seeded_control_store() -> InMemoryControlStore:
     store = InMemoryControlStore()
     store.put_tenant(
@@ -67,12 +68,8 @@ def _seeded_control_store() -> InMemoryControlStore:
         )
     )
     store.put_membership("p-agent", "acme", PlatformRole.TENANT_AGENT)
-    store.put_directory_record(
-        DirectoryKind.GLOBAL_STARTUP, DirectoryRecord(record_ref="gs-2", display_name="Beta Corp")
-    )
-    store.put_directory_record(
-        DirectoryKind.GLOBAL_STARTUP, DirectoryRecord(record_ref="gs-1", display_name="Alpha Corp")
-    )
+    store.put_directory_record(DirectoryKind.GLOBAL_STARTUP, DirectoryRecord(record_ref="gs-2", display_name="Beta Corp"))
+    store.put_directory_record(DirectoryKind.GLOBAL_STARTUP, DirectoryRecord(record_ref="gs-1", display_name="Alpha Corp"))
     return store
 
 
@@ -112,9 +109,7 @@ def test_memberships_are_deterministic_and_an_empty_list_is_a_success() -> None:
 
 
 def test_directory_records_are_tenant_anonymous_and_deterministically_ordered() -> None:
-    body = _control_client().get(
-        "/internal/directories/GlobalStartupDirectory/records", headers=_CREDENTIAL
-    ).json()
+    body = _control_client().get("/internal/directories/GlobalStartupDirectory/records", headers=_CREDENTIAL).json()
     assert [record["record_ref"] for record in body["records"]] == ["gs-1", "gs-2"]
     for record in body["records"]:
         assert set(record) == {"record_ref", "display_name", "attributes"}
@@ -165,6 +160,7 @@ def test_control_plane_openapi_meets_the_standing_rules() -> None:
 
 
 # --- Database Router: the six required resolution cases ------------------------------------
+
 
 def _registry() -> StaticTenantRegistry:
     return StaticTenantRegistry(
@@ -242,9 +238,8 @@ def test_no_control_database_fallback_exists_in_the_resolver_source() -> None:
     assert "sp2_control_plane_dsn" not in source, "the resolver can reach the Control database credential"
 
 
-
-
 # --- Database Router: connection grants (D-48) ----------------------------------------------
+
 
 def test_the_grant_allowlist_permanently_excludes_the_bff_and_the_authorizer() -> None:
     """D-48 C-1, enforced at CONFIGURATION time rather than at request time.

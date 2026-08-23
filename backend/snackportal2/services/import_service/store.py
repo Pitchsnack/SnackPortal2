@@ -223,8 +223,7 @@ class PostgresImportStore:
         nothing re-reads the global one.
         """
         cursor.execute(
-            "INSERT INTO " + STARTUPS_TABLE
-            + " (global_startup_id, company_name, industry, headquarters_country) "
+            "INSERT INTO " + STARTUPS_TABLE + " (global_startup_id, company_name, industry, headquarters_country) "
             "VALUES (%s, %s, %s, %s) RETURNING id",
             (
                 source.record_ref,
@@ -271,8 +270,13 @@ class PostgresImportStore:
         row["integrity_marker"] = marker_for(chain_key, row, prev_marker, marker_version=CURRENT_MARKER_VERSION)
 
         cursor.execute(
-            "INSERT INTO " + LINEAGE_TABLE + " (" + ", ".join(_LINEAGE_COLUMNS) + ") VALUES ("
-            + ", ".join(["%s"] * len(_LINEAGE_COLUMNS)) + ")",
+            "INSERT INTO "
+            + LINEAGE_TABLE
+            + " ("
+            + ", ".join(_LINEAGE_COLUMNS)
+            + ") VALUES ("
+            + ", ".join(["%s"] * len(_LINEAGE_COLUMNS))
+            + ")",
             tuple(row[name] for name in _LINEAGE_COLUMNS),
         )
         return str(row["lineage_id"])
@@ -286,13 +290,11 @@ class PostgresImportStore:
         removed — the second transaction fails and takes its own copy and lineage row with it.
         """
         cursor.execute(
-            "INSERT INTO " + JOB_TABLE + " (job_id, operation_key, tenant_id, state, correlation_id) "
-            "VALUES (%s, %s, %s, %s, %s)",
+            "INSERT INTO " + JOB_TABLE + " (job_id, operation_key, tenant_id, state, correlation_id) VALUES (%s, %s, %s, %s, %s)",
             (key, key, tenant_ref, COMPLETED, attribution.correlation_id),
         )
         cursor.execute(
-            "INSERT INTO " + IDEMPOTENCY_TABLE + " (operation_key, job_id, status, applied, noop, rejected) "
-            "VALUES (%s, %s, %s, 1, 0, 0)",
+            "INSERT INTO " + IDEMPOTENCY_TABLE + " (operation_key, job_id, status, applied, noop, rejected) VALUES (%s, %s, %s, 1, 0, 0)",
             (key, key, COMPLETED),
         )
 

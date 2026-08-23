@@ -40,9 +40,7 @@ class TenantDealRecord(BaseModel):
     record_ref: str = Field(description="Opaque reference to the tenant-resident Deal record.")
     deal_name: str = Field(description="Deal display name.")
     startup_ref: str = Field(description="Reference to the tenant Startup this deal concerns. Same tenant, always.")
-    investor_ref: Optional[str] = Field(
-        default=None, description="Reference to the tenant Investor, or null while the deal is unmatched."
-    )
+    investor_ref: Optional[str] = Field(default=None, description="Reference to the tenant Investor, or null while the deal is unmatched.")
     stage: Optional[str] = Field(default=None, description="Deal stage label.")
     amount: Optional[str] = Field(default=None, description="Deal amount as stored. A string, so no precision is lost in transit.")
     currency: Optional[str] = Field(default=None, description="ISO currency code for the amount.")

@@ -44,9 +44,7 @@ def _live_environment() -> Dict[str, str]:
         "SP2_CONTROL_PLANE_DSN": pg.dsn("control"),
         "SP2_AUDIT_DSN": pg.dsn("control"),
         "SP2_AUDIT_CREDENTIALS": json.dumps({"k": {"emitter_ref": "bff", "scopes": ["audit:write"]}}),
-        "SP2_AUTHENTICATION_STATIC_PRINCIPALS": json.dumps(
-            {"t": {"principal_ref": "p", "role": "TENANT_AGENT", "active_tenant": "acme"}}
-        ),
+        "SP2_AUTHENTICATION_STATIC_PRINCIPALS": json.dumps({"t": {"principal_ref": "p", "role": "TENANT_AGENT", "active_tenant": "acme"}}),
         "SP2_ACCESS_CONTROL_CONTROL_PLANE_URL": _UNREACHABLE,
         "SP2_ACCESS_CONTROL_SERVICE_CREDENTIAL": "c",
         "SP2_DATABASE_ROUTER_CONTROL_PLANE_URL": _UNREACHABLE,
@@ -133,9 +131,7 @@ def test_all_fourteen_services_generate_a_document_under_live_configuration(conf
 
 
 @pytest.mark.parametrize("service", SERVICES)
-def test_every_document_is_openapi_31_with_an_explicit_title_and_version(
-    configured: Dict[str, Any], service: str
-) -> None:
+def test_every_document_is_openapi_31_with_an_explicit_title_and_version(configured: Dict[str, Any], service: str) -> None:
     document = configured[service]
     assert str(document["openapi"]).startswith("3.1"), service + " -> " + str(document["openapi"])
     assert document["info"]["title"].startswith("SnackPortal2 ")
@@ -143,9 +139,7 @@ def test_every_document_is_openapi_31_with_an_explicit_title_and_version(
 
 
 @pytest.mark.parametrize("service", SERVICES)
-def test_every_document_satisfies_every_standing_rule_under_live_configuration(
-    configured: Dict[str, Any], service: str
-) -> None:
+def test_every_document_satisfies_every_standing_rule_under_live_configuration(configured: Dict[str, Any], service: str) -> None:
     """The same validator the default suite uses, applied to the live-configured document."""
     problems = _openapi_rules.check_document(configured[service], service=service)
     assert not problems, "\n  ".join(problems)
@@ -177,9 +171,7 @@ def test_no_success_response_regresses_to_an_empty_schema(configured: Dict[str, 
                 content = response.get("content") or {}
                 assert content, service + " " + method.upper() + " " + path + " " + str(status) + " has no content"
                 for media in content.values():
-                    assert media.get("schema"), (
-                        service + " " + method.upper() + " " + path + " " + str(status) + " has an empty schema"
-                    )
+                    assert media.get("schema"), service + " " + method.upper() + " " + path + " " + str(status) + " has an empty schema"
 
 
 def test_operation_ids_are_globally_unique_across_all_fourteen_documents(configured: Dict[str, Any]) -> None:
@@ -368,11 +360,7 @@ def test_the_driver_containment_check_detects_a_planted_reference() -> None:
 def _literal_strings(source: str) -> Any:
     import ast
 
-    return [
-        node.value
-        for node in ast.walk(ast.parse(source))
-        if isinstance(node, ast.Constant) and isinstance(node.value, str)
-    ]
+    return [node.value for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Constant) and isinstance(node.value, str)]
 
 
 #: Reserved top-level domains that can never name a real host (RFC 2606 / RFC 6761).

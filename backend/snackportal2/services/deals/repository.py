@@ -60,17 +60,13 @@ def _record_from_fields(tenant_ref: str, identity: str, fields: Mapping[str, Opt
 class DealRepository(Protocol):
     """Read and write tenant Deals within exactly one tenant database."""
 
-    def list(self, tenant_ref: str, limit: int) -> List[TenantDealRecord]:
-        ...
+    def list(self, tenant_ref: str, limit: int) -> List[TenantDealRecord]: ...
 
-    def read(self, tenant_ref: str, record_ref: str) -> Optional[TenantDealRecord]:
-        ...
+    def read(self, tenant_ref: str, record_ref: str) -> Optional[TenantDealRecord]: ...
 
-    def create(self, tenant_ref: str, fields: Mapping[str, Optional[str]]) -> TenantDealRecord:
-        ...
+    def create(self, tenant_ref: str, fields: Mapping[str, Optional[str]]) -> TenantDealRecord: ...
 
-    def update(self, tenant_ref: str, record_ref: str, fields: Mapping[str, Optional[str]]) -> TenantDealRecord:
-        ...
+    def update(self, tenant_ref: str, record_ref: str, fields: Mapping[str, Optional[str]]) -> TenantDealRecord: ...
 
 
 class InMemoryDealRepository:
@@ -121,9 +117,7 @@ class PostgresDealRepository:
     def list(self, tenant_ref: str, limit: int) -> List[TenantDealRecord]:
         with self._connect(tenant_ref) as connection:  # type: ignore[attr-defined]
             with connection.cursor() as cursor:
-                cursor.execute(
-                    "SELECT id, " + ", ".join(COLUMNS) + " FROM " + TABLE + " ORDER BY id LIMIT %s", (limit,)
-                )
+                cursor.execute("SELECT id, " + ", ".join(COLUMNS) + " FROM " + TABLE + " ORDER BY id LIMIT %s", (limit,))
                 rows = cursor.fetchall()
         return [_record_from_fields(tenant_ref, str(row[0]), self._fields(row)) for row in rows]
 
@@ -145,8 +139,7 @@ class PostgresDealRepository:
         with self._connect(tenant_ref) as connection:  # type: ignore[attr-defined]
             with connection.cursor() as cursor:
                 cursor.execute(
-                    "INSERT INTO " + TABLE + " (" + ", ".join(names) + ") VALUES ("
-                    + ", ".join(["%s"] * len(names)) + ") RETURNING id",
+                    "INSERT INTO " + TABLE + " (" + ", ".join(names) + ") VALUES (" + ", ".join(["%s"] * len(names)) + ") RETURNING id",
                     tuple(writable[name] for name in names),
                 )
                 row = cursor.fetchone()

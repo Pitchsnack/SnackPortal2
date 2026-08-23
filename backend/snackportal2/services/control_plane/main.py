@@ -151,9 +151,7 @@ async def read_directory(directory: DirectoryPath, _credential: ServiceBearer) -
     response_description="The requested global directory record.",
     responses=error_responses(401, 404, 422),
 )
-async def read_directory_record(
-    directory: DirectoryPath, record_ref: RecordRef, _credential: ServiceBearer
-) -> DirectoryRecord:
+async def read_directory_record(directory: DirectoryPath, record_ref: RecordRef, _credential: ServiceBearer) -> DirectoryRecord:
     record = _store.get_directory_record(directory, record_ref)
     if record is None:
         raise consistent_tenant_denial()

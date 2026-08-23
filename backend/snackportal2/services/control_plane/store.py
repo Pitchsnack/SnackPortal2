@@ -43,23 +43,17 @@ def looks_like_a_connection_string(value: str) -> bool:
 class ControlStore(Protocol):
     """The Control-database port."""
 
-    def get_tenant(self, tenant_ref: str) -> Optional[TenantDescriptor]:
-        ...
+    def get_tenant(self, tenant_ref: str) -> Optional[TenantDescriptor]: ...
 
-    def put_tenant(self, descriptor: TenantDescriptor) -> None:
-        ...
+    def put_tenant(self, descriptor: TenantDescriptor) -> None: ...
 
-    def list_memberships(self, principal_ref: str) -> List[MembershipEntry]:
-        ...
+    def list_memberships(self, principal_ref: str) -> List[MembershipEntry]: ...
 
-    def put_membership(self, principal_ref: str, tenant_ref: str, role: PlatformRole) -> None:
-        ...
+    def put_membership(self, principal_ref: str, tenant_ref: str, role: PlatformRole) -> None: ...
 
-    def list_directory(self, directory: DirectoryKind) -> List[DirectoryRecord]:
-        ...
+    def list_directory(self, directory: DirectoryKind) -> List[DirectoryRecord]: ...
 
-    def get_directory_record(self, directory: DirectoryKind, record_ref: str) -> Optional[DirectoryRecord]:
-        ...
+    def get_directory_record(self, directory: DirectoryKind, record_ref: str) -> Optional[DirectoryRecord]: ...
 
 
 class InMemoryControlStore:
@@ -204,8 +198,7 @@ class PostgresControlStore:
         with self._connect() as connection:  # type: ignore[attr-defined]
             with connection.cursor() as cursor:
                 cursor.execute(
-                    "SELECT record_id, display_name, attributes FROM control_directory "
-                    "WHERE directory = %s ORDER BY record_id",
+                    "SELECT record_id, display_name, attributes FROM control_directory WHERE directory = %s ORDER BY record_id",
                     (directory.value,),
                 )
                 rows = cursor.fetchall()
@@ -215,8 +208,7 @@ class PostgresControlStore:
         with self._connect() as connection:  # type: ignore[attr-defined]
             with connection.cursor() as cursor:
                 cursor.execute(
-                    "SELECT record_id, display_name, attributes FROM control_directory "
-                    "WHERE directory = %s AND record_id = %s",
+                    "SELECT record_id, display_name, attributes FROM control_directory WHERE directory = %s AND record_id = %s",
                     (directory.value, record_ref),
                 )
                 row = cursor.fetchone()

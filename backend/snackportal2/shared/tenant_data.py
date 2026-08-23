@@ -57,8 +57,7 @@ class TenantConnectionGrant:
 class GrantProvider(Protocol):
     """Obtain a connection grant for the request's single active tenant."""
 
-    def grant_for(self, tenant_ref: Optional[str]) -> TenantConnectionGrant:
-        ...
+    def grant_for(self, tenant_ref: Optional[str]) -> TenantConnectionGrant: ...
 
 
 class NoGrantProvider:

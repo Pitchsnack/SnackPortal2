@@ -55,9 +55,7 @@ class CapabilityResponse(BaseModel):
     """What this service can currently do, and what is stopping it doing more."""
 
     implemented: bool = Field(description="Whether any business operation is available. False until IC-015 lands.")
-    blocked_on: List[str] = Field(
-        description="The named prerequisites that must be satisfied before contact operations can be authored."
-    )
+    blocked_on: List[str] = Field(description="The named prerequisites that must be satisfied before contact operations can be authored.")
     detail: str = Field(description="Plain statement of the gap, for an operator reading this without the contracts to hand.")
 
 

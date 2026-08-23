@@ -93,9 +93,7 @@ class DirectoryListResponse(BaseModel):
     """A directory read, in the store's deterministic order."""
 
     directory: DirectoryKind = Field(description="Which global directory was read.")
-    records: List[DirectoryRecord] = Field(
-        description="The directory records in deterministic order. Callers MUST NOT re-sort them."
-    )
+    records: List[DirectoryRecord] = Field(description="The directory records in deterministic order. Callers MUST NOT re-sort them.")
 
 
 class TenantReadinessResponse(BaseModel):

@@ -32,11 +32,9 @@ AUDIT_TABLE = "control_ingress_audit"
 class AuditSink(Protocol):
     """Append one event; read events back."""
 
-    def append(self, event: AuditEvent) -> None:
-        ...
+    def append(self, event: AuditEvent) -> None: ...
 
-    def read(self, tenant_ref: Optional[str], actor_ref: Optional[str], limit: int) -> List[AuditEvent]:
-        ...
+    def read(self, tenant_ref: Optional[str], actor_ref: Optional[str], limit: int) -> List[AuditEvent]: ...
 
 
 class InMemoryAuditSink:
@@ -52,8 +50,7 @@ class InMemoryAuditSink:
         selected = [
             event
             for event in self._events
-            if (tenant_ref is None or event.tenant_ref == tenant_ref)
-            and (actor_ref is None or event.actor_ref == actor_ref)
+            if (tenant_ref is None or event.tenant_ref == tenant_ref) and (actor_ref is None or event.actor_ref == actor_ref)
         ]
         return selected[-limit:]
 
@@ -109,7 +106,9 @@ class PostgresAuditSink:
             with connection.cursor() as cursor:
                 cursor.execute(
                     "SELECT event_id, occurred_at, source_service, action, outcome, correlation_id, actor_ref, "
-                    "subject_ref, tenant_ref, record_ref, carrier_ref FROM " + AUDIT_TABLE + where
+                    "subject_ref, tenant_ref, record_ref, carrier_ref FROM "
+                    + AUDIT_TABLE
+                    + where
                     + " ORDER BY occurred_at, event_id LIMIT %s",
                     tuple(params),
                 )

@@ -179,9 +179,7 @@ class StartupListResponse(BaseModel):
     """Startups from exactly one tenant database, in deterministic order."""
 
     tenant_ref: str = Field(description="The single tenant these records came from.")
-    records: List[TenantStartupRecord] = Field(
-        description="The records, in deterministic order. Callers MUST NOT re-sort them."
-    )
+    records: List[TenantStartupRecord] = Field(description="The records, in deterministic order. Callers MUST NOT re-sort them.")
 
 
 class DuplicateCandidate(BaseModel):

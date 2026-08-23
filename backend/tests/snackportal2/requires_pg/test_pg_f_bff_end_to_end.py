@@ -60,8 +60,7 @@ E2E_SOURCE = "gs-ingress-import"
 #: Per-tenant D-23 chain keys for the Import Service, so an import through the ingress writes
 #: a real lineage row rather than being refused. Distinct per tenant; test material only.
 LINEAGE_KEYS = {
-    EnvironmentLineageKeyResolver.variable_name(tenant): "stage5-e2e-chain-key-" + tenant + "-" + ("0" * 16)
-    for tenant in pg.TENANTS
+    EnvironmentLineageKeyResolver.variable_name(tenant): "stage5-e2e-chain-key-" + tenant + "-" + ("0" * 16) for tenant in pg.TENANTS
 }
 
 #: Development-posture principals. The Authentication Service selects this verifier only on
@@ -125,9 +124,7 @@ def stack(tmp_path_factory: pytest.TempPathFactory) -> Iterator[srv.ServiceFleet
     running = srv.ServiceFleet(log_dir)
     try:
         control = running.start("control_plane", {"SP2_CONTROL_PLANE_DSN": pg.dsn("control")})
-        authentication = running.start(
-            "authentication", {"SP2_AUTHENTICATION_STATIC_PRINCIPALS": json.dumps(PRINCIPALS)}
-        )
+        authentication = running.start("authentication", {"SP2_AUTHENTICATION_STATIC_PRINCIPALS": json.dumps(PRINCIPALS)})
         access_control = running.start(
             "access_control",
             {
@@ -135,9 +132,7 @@ def stack(tmp_path_factory: pytest.TempPathFactory) -> Iterator[srv.ServiceFleet
                 "SP2_ACCESS_CONTROL_SERVICE_CREDENTIAL": ACCESS_CONTROL_CREDENTIAL,
             },
         )
-        audit = running.start(
-            "audit", {"SP2_AUDIT_DSN": pg.dsn("control"), "SP2_AUDIT_CREDENTIALS": json.dumps(AUDIT_CREDENTIALS)}
-        )
+        audit = running.start("audit", {"SP2_AUDIT_DSN": pg.dsn("control"), "SP2_AUDIT_CREDENTIALS": json.dumps(AUDIT_CREDENTIALS)})
 
         unreachable = "postgresql://absent@127.0.0.1:" + str(srv.free_port()) + "/sp2_offline"
         router = running.start(
@@ -146,9 +141,7 @@ def stack(tmp_path_factory: pytest.TempPathFactory) -> Iterator[srv.ServiceFleet
                 "SP2_DATABASE_ROUTER_CONTROL_PLANE_URL": control.base_url,
                 "SP2_DATABASE_ROUTER_SERVICE_CREDENTIAL": ROUTER_CREDENTIAL,
                 # The BFF's own credential is deliberately NOT here (D-48 C-1).
-                "SP2_DATABASE_ROUTER_GRANTEES": json.dumps(
-                    {credential: service for service, credential in GRANT_CREDENTIALS.items()}
-                ),
+                "SP2_DATABASE_ROUTER_GRANTEES": json.dumps({credential: service for service, credential in GRANT_CREDENTIALS.items()}),
                 **{_dsn_variable("assoc/" + tenant): pg.dsn(tenant) for tenant in pg.TENANTS},
                 _dsn_variable("assoc/offline"): unreachable,
             },
@@ -237,9 +230,7 @@ def _audit_events(stack: srv.ServiceFleet, **params: Any) -> List[Dict[str, Any]
 
 
 def test_a_complete_tenant_write_and_read_traverses_every_stage_to_postgresql(stack: srv.ServiceFleet) -> None:
-    created = _post(
-        stack, "/tenant/startups", "token-acme", {"display_name": "Endgame Robotics", "short_description": "Pickers."}
-    )
+    created = _post(stack, "/tenant/startups", "token-acme", {"display_name": "Endgame Robotics", "short_description": "Pickers."})
     assert created.status_code == 201, created.text
     record_ref = created.json()["record_ref"]
     assert record_ref.startswith("ref:acme:startups:")
@@ -306,9 +297,7 @@ def test_the_update_operation_writes_through_to_postgresql_and_is_audited(stack:
 def test_a_control_domain_read_serves_from_the_control_database(stack: srv.ServiceFleet) -> None:
     response = _get(stack, "/memberships", "token-acme")
     assert response.status_code == 200, response.text
-    assert response.json() == {
-        "memberships": [{"tenant_id": "acme", "role": "TENANT_AGENT", "display_ref": compose_display_ref("acme")}]
-    }
+    assert response.json() == {"memberships": [{"tenant_id": "acme", "role": "TENANT_AGENT", "display_ref": compose_display_ref("acme")}]}
 
     directory = _get(stack, "/directories/startups", "token-control")
     assert directory.status_code == 200, directory.text
@@ -348,9 +337,7 @@ def test_investors_and_deals_traverse_the_same_path_to_the_same_tenant_database(
     )
     assert deal.status_code == 201, deal.text
     assert pg.scalar(pg.dsn("nova"), "SELECT count(*) FROM deals WHERE deal_name = 'Nova Round'") == 1
-    assert pg.rows(pg.dsn("nova"), "SELECT investment_stage_focus FROM investors WHERE investor_name = 'Nova Capital'") == [
-        (["seed"],)
-    ]
+    assert pg.rows(pg.dsn("nova"), "SELECT investment_stage_focus FROM investors WHERE investor_name = 'Nova Capital'") == [(["seed"],)]
 
     listed = _get(stack, "/tenant/deals", "token-nova")
     assert listed.status_code == 200
@@ -598,8 +585,7 @@ def test_an_import_through_the_ingress_writes_the_copy_and_its_lineage_to_the_te
 
     chain = pg.rows(
         pg.dsn("acme"),
-        "SELECT lineage_id, event_type, actor_ref, target_ref, length(integrity_marker) FROM lineage "
-        "WHERE source_ref = %s",
+        "SELECT lineage_id, event_type, actor_ref, target_ref, length(integrity_marker) FROM lineage WHERE source_ref = %s",
         (E2E_SOURCE,),
     )
     assert len(chain) == 1, "the ingress import wrote no lineage row"

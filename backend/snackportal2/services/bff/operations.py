@@ -70,6 +70,7 @@ PageLimit = Annotated[int, Query(ge=1, le=500, description="Maximum records to r
 
 # --- Client request models (no identity, no tenancy, no role — all server-derived) -----------
 
+
 class CreateStartupRequest(BaseModel):
     """Create a Startup in the caller's active tenant. The tenant is never a field here."""
 
@@ -142,6 +143,7 @@ class UpdateDealRequest(BaseModel):
 
 
 # --- Composition helpers ------------------------------------------------------------------------
+
 
 def _startup_detail(record: Mapping[str, Any]) -> TenantStartupDetailDTO:
     """Compose the contract-pinned Startup DTO field by field.
@@ -304,10 +306,7 @@ def build_router(
         del context
         records = control_read.list_directory(STARTUP_DIRECTORY)
         dto = GlobalStartupSummaryDTO(
-            records=[
-                DirectoryEntryDTO(record_ref=str(entry["record_ref"]), display_name=str(entry["display_name"]))
-                for entry in records
-            ]
+            records=[DirectoryEntryDTO(record_ref=str(entry["record_ref"]), display_name=str(entry["display_name"])) for entry in records]
         )
         result = compose(dto)
         assert isinstance(result, GlobalStartupSummaryDTO)
@@ -331,10 +330,7 @@ def build_router(
         del context
         records = control_read.list_directory(INVESTOR_DIRECTORY)
         dto = GlobalInvestorSummaryDTO(
-            records=[
-                DirectoryEntryDTO(record_ref=str(entry["record_ref"]), display_name=str(entry["display_name"]))
-                for entry in records
-            ]
+            records=[DirectoryEntryDTO(record_ref=str(entry["record_ref"]), display_name=str(entry["display_name"])) for entry in records]
         )
         result = compose(dto)
         assert isinstance(result, GlobalInvestorSummaryDTO)
