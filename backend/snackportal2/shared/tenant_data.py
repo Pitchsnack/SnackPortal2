@@ -21,6 +21,7 @@ import os
 from dataclasses import dataclass
 from typing import Dict, Iterator, List, Mapping, Optional, Protocol
 
+from .config import db_connect_timeout
 from .errors import AppError, ErrorCode, tenant_unavailable
 
 #: Internal Database Router base URL, per service. Non-secret internal configuration.
@@ -133,11 +134,18 @@ def open_tenant_connection(grant: TenantConnectionGrant) -> object:
 
     A failure is ``tenant_unavailable`` — an outage of *this* tenant. It is never a reason to
     serve a different one and never a reason to reach the Control database.
+
+    The attempt is time-bounded (:func:`snackportal2.shared.config.db_connect_timeout`). Left
+    unbounded it takes over two minutes to give up on an unreachable database, which turns one
+    tenant's outage into a worker-exhaustion problem for every tenant this service serves.
+
+    ``from None`` is not incidental: it drops the driver exception rather than chaining it, so
+    no traceback can carry the connection string into a log (D-48 C-3).
     """
     import psycopg
 
     try:
-        return psycopg.connect(grant.dsn)
+        return psycopg.connect(grant.dsn, connect_timeout=db_connect_timeout())
     except Exception:
         raise tenant_unavailable() from None
 

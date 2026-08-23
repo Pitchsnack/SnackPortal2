@@ -15,8 +15,10 @@ turn one into a connection.
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from typing import Dict, List, Mapping, Optional, Protocol, Tuple
 
+from ...shared.config import db_connect_timeout
 from ...shared.types import PlatformRole, TenantLifecycleState
 from .models import DirectoryKind, DirectoryRecord, MembershipEntry, SecretReference, TenantDescriptor
 
@@ -113,7 +115,10 @@ class PostgresControlStore:
     def _connect(self) -> object:
         import psycopg
 
-        return psycopg.connect(self._dsn)
+        # Time-bounded: an unreachable Control database must fail rather than block. Left
+        # unbounded the driver spends over two minutes before giving up (Stage 4 measurement),
+        # which would hold a worker open on every read the registry serves.
+        return psycopg.connect(self._dsn, connect_timeout=db_connect_timeout())
 
     def get_tenant(self, tenant_ref: str) -> Optional[TenantDescriptor]:
         with self._connect() as connection:  # type: ignore[attr-defined]
@@ -135,6 +140,20 @@ class PostgresControlStore:
         )
 
     def put_tenant(self, descriptor: TenantDescriptor) -> None:
+        """Upsert one registry row.
+
+        ``created_at`` and ``updated_at`` are ISO-8601 UTC strings, not empty ones. DDL 004
+        types them ``text`` rather than ``timestamptz`` so the value round-trips as a string,
+        and a ``text NOT NULL`` column accepts ``''`` quite happily — which is precisely why
+        the empty write was invisible until a real database held the row. It is server-derived
+        here rather than carried on :class:`TenantDescriptor`, because a registry timestamp a
+        caller could supply is a registry timestamp a caller could backdate.
+
+        ``created_at`` is deliberately absent from the ``DO UPDATE`` list: an update must not
+        restamp when the tenant was first registered. ``updated_at`` is in it, so the two
+        columns mean what their names say.
+        """
+        now = datetime.now(timezone.utc).isoformat()
         with self._connect() as connection:  # type: ignore[attr-defined]
             with connection.cursor() as cursor:
                 cursor.execute(
@@ -153,9 +172,12 @@ class PostgresControlStore:
                         descriptor.expected_schema_version,
                         descriptor.database_association_ref.store_ref,
                         descriptor.database_association_ref.version,
+                        # Federation configuration is a separate contract (DDL 006) that this
+                        # service does not yet carry; the column is NOT NULL, so an empty
+                        # reference is the honest value for "none recorded".
                         "",
-                        "",
-                        "",
+                        now,
+                        now,
                     ),
                 )
 

@@ -143,6 +143,46 @@ def load_settings(service_key: str, env: Optional[Mapping[str, str]] = None) -> 
     )
 
 
+#: How long any service may spend trying to open a PostgreSQL connection before the attempt
+#: is abandoned, in seconds.
+#:
+#: Stage 4 measured the alternative: with no timeout set, ``psycopg.connect`` to an
+#: unreachable database took **130 seconds** to raise — even for a refused port on loopback.
+#: The canonical "tenant unavailable" denial was still correct at the end of it, but a denial
+#: that arrives two minutes late is not a fail-closed response in any operational sense: it
+#: pins a worker for the whole interval, so a single unreachable tenant database degrades the
+#: service for every other tenant it serves. The BFF's own downstream timeout is 5 seconds, so
+#: without this bound the caller has long since been answered while the callee is still
+#: blocked.
+#:
+#: Deliberately shorter than that 5-second client timeout, so the database attempt fails and
+#: the canonical denial is composed *before* the caller gives up — a request that fails should
+#: fail with an answer, not with a hang.
+DEFAULT_DB_CONNECT_TIMEOUT_SECONDS = 4
+
+#: Environment override. A deployment on a slower network may raise it; omission takes the
+#: secure default above (E-5 rule 1).
+ENV_DB_CONNECT_TIMEOUT = "SP2_DB_CONNECT_TIMEOUT_SECONDS"
+
+
+def db_connect_timeout(env: Optional[Mapping[str, str]] = None) -> int:
+    """The configured PostgreSQL connect timeout, in seconds.
+
+    An unparseable or non-positive value takes the default rather than disabling the bound:
+    a typo in configuration must not silently restore the unbounded behaviour this exists to
+    prevent.
+    """
+    source: Mapping[str, str] = os.environ if env is None else env
+    raw = source.get(ENV_DB_CONNECT_TIMEOUT, "").strip()
+    if not raw:
+        return DEFAULT_DB_CONNECT_TIMEOUT_SECONDS
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_DB_CONNECT_TIMEOUT_SECONDS
+    return value if value > 0 else DEFAULT_DB_CONNECT_TIMEOUT_SECONDS
+
+
 def default_ports() -> Dict[str, int]:
     """The service-to-default-port map, for launchers, runbooks and manifest checks."""
     return {key: svc.default_port for key, svc in SERVICE_REGISTRY.items()}
@@ -150,11 +190,14 @@ def default_ports() -> Dict[str, int]:
 
 __all__ = [
     "BACKEND_VERSION",
+    "DEFAULT_DB_CONNECT_TIMEOUT_SECONDS",
+    "ENV_DB_CONNECT_TIMEOUT",
     "LOOPBACK",
     "PUBLIC_INGRESS_SERVICE",
     "SERVICE_REGISTRY",
     "ServiceDescriptor",
     "ServiceSettings",
+    "db_connect_timeout",
     "default_ports",
     "load_settings",
 ]

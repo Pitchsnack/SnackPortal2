@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 from typing import List, Mapping, Optional, Protocol
 
+from ...shared.config import db_connect_timeout
 from .models import AuditEvent
 
 #: Control-database DSN for the durable sink. Unset selects the in-memory sink.
@@ -66,7 +67,10 @@ class PostgresAuditSink:
     def _connect(self) -> object:
         import psycopg
 
-        return psycopg.connect(self._dsn)
+        # Time-bounded, for the same reason as every other connect in the rebuild: an audit
+        # write that blocks for two minutes on an unreachable Control database would hold the
+        # emitting request open far past the point where its caller has given up.
+        return psycopg.connect(self._dsn, connect_timeout=db_connect_timeout())
 
     def append(self, event: AuditEvent) -> None:
         with self._connect() as connection:  # type: ignore[attr-defined]
