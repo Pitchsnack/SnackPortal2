@@ -58,6 +58,20 @@ def _fields_from_row(row: object) -> Dict[str, Optional[str]]:
     return {name: (None if values[i + 1] is None else str(values[i + 1])) for i, name in enumerate(READABLE_COLUMNS)}
 
 
+def _as_year(value: Optional[str]) -> Optional[int]:
+    """The stored year as the integer the contract publishes.
+
+    Both storage paths hold this column's value as text — PostgreSQL returns the ``integer``
+    column and :func:`_fields_from_row` stringifies it; the in-memory table is typed
+    ``Optional[str]`` throughout. The conversion happens once, here, so the record the service
+    composes is an integer whichever store produced it.
+
+    Deliberately strict. Silently answering ``None`` for a value that would not parse would
+    turn corrupt data into missing data, which is the harder failure to notice.
+    """
+    return None if value is None else int(value)
+
+
 def _record_from_fields(tenant_ref: str, identity: str, fields: Mapping[str, Optional[str]]) -> TenantStartupRecord:
     return TenantStartupRecord(
         record_ref=compose_record_ref(tenant_ref, FAMILY, identity),
@@ -68,7 +82,7 @@ def _record_from_fields(tenant_ref: str, identity: str, fields: Mapping[str, Opt
         headquarters_country=fields.get("headquarters_country"),
         headquarters_city=fields.get("headquarters_city"),
         region=fields.get("region"),
-        year_founded=fields.get("year_founded"),
+        year_founded=_as_year(fields.get("year_founded")),
         industry=fields.get("industry"),
         investment_stage=fields.get("investment_stage"),
         short_description=fields.get("short_description"),

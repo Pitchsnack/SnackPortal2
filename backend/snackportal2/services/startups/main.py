@@ -141,6 +141,11 @@ async def create_startup(request: StartupCreateRequest, _credential: ServiceBear
     tenant_ref = _tenant_of(request)
     fields = request.model_dump(exclude={"context"})
     fields["company_url"] = normalize_website(request.company_url)
+    # The repositories carry column values as text — the in-memory table is typed that way and
+    # psycopg casts the parameter into the DDL's ``integer`` column. Validation has already
+    # happened against the published integer contract, so this is a storage representation, not
+    # a second, looser acceptance of the value.
+    fields["year_founded"] = None if request.year_founded is None else str(request.year_founded)
     return _repository.create(tenant_ref, fields)
 
 

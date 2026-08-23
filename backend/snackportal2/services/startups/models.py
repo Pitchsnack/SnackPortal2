@@ -16,6 +16,7 @@ directory record, never a foreign key, and a tenant edit never mutates the globa
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
@@ -25,6 +26,23 @@ from ...shared.types import RecordResidency
 
 #: The sole CLM-mutable field bound: at most 500 characters (IC-009 CLM section).
 SHORT_DESCRIPTION_MAX_CHARS = 500
+
+#: ``year_founded`` bounds.
+#:
+#: The accepted tenant DDL (``003_startups.sql``) types this column ``integer``. Publishing it
+#: as free text let a value like ``"circa"`` pass contract validation and fail at the driver,
+#: which answered 500 for what was really a rejected input — Stage 4 finding F-3. The contract
+#: now says what the storage can actually hold, so the rejection happens where the request is
+#: validated and the declared 422 is the real outcome.
+#:
+#: The upper bound is the current calendar year in UTC, resolved once when this module is
+#: imported. UTC rather than local time so two hosts in different zones publish the same
+#: contract on the same day; resolved at import so the bound is a constant in the generated
+#: document rather than something that could differ between two calls in one process. It does
+#: mean the published maximum advances on the first of January, which is the intended
+#: behaviour: a company cannot have been founded in a year that has not started.
+YEAR_FOUNDED_MIN = 1800
+YEAR_FOUNDED_MAX = datetime.now(timezone.utc).year
 
 
 class TenantStartupDetail(BaseModel):
@@ -64,7 +82,13 @@ class TenantStartupRecord(BaseModel):
     headquarters_country: Optional[str] = Field(default=None, description="Headquarters country label.")
     headquarters_city: Optional[str] = Field(default=None, description="Headquarters city label.")
     region: Optional[str] = Field(default=None, description="Region label.")
-    year_founded: Optional[str] = Field(default=None, description="Year founded, as stored.")
+    year_founded: Optional[int] = Field(
+        default=None,
+        description=(
+            "Year the company was founded, as an integer, or null. Deliberately unbounded on the way out: a "
+            "stored value outside the accepted input range is data to be read, not a reason to fail a read."
+        ),
+    )
     industry: Optional[str] = Field(default=None, description="Industry label.")
     investment_stage: Optional[str] = Field(default=None, description="Investment-stage label.")
     short_description: Optional[str] = Field(default=None, description="Bounded free text, at most 500 characters.")
@@ -110,7 +134,17 @@ class StartupCreateRequest(BaseModel):
     headquarters_country: Optional[str] = Field(default=None, max_length=128, description="Headquarters country label.")
     headquarters_city: Optional[str] = Field(default=None, max_length=128, description="Headquarters city label.")
     region: Optional[str] = Field(default=None, max_length=128, description="Region label.")
-    year_founded: Optional[str] = Field(default=None, max_length=8, description="Year founded.")
+    year_founded: Optional[int] = Field(
+        default=None,
+        ge=YEAR_FOUNDED_MIN,
+        le=YEAR_FOUNDED_MAX,
+        description=(
+            "Year the company was founded, as a four-digit integer between "
+            + str(YEAR_FOUNDED_MIN)
+            + " and the current calendar year, or null. Stored in an integer column, so a non-numeric, "
+            "out-of-range or future value is rejected here rather than at the database."
+        ),
+    )
     industry: Optional[str] = Field(default=None, max_length=128, description="Industry label.")
     investment_stage: Optional[str] = Field(default=None, max_length=128, description="Investment-stage label.")
     short_description: Optional[str] = Field(
@@ -179,6 +213,8 @@ class DuplicateCheckResponse(BaseModel):
 
 __all__ = [
     "SHORT_DESCRIPTION_MAX_CHARS",
+    "YEAR_FOUNDED_MAX",
+    "YEAR_FOUNDED_MIN",
     "DuplicateCandidate",
     "DuplicateCheckRequest",
     "DuplicateCheckResponse",

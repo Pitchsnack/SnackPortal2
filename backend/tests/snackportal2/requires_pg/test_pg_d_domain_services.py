@@ -24,6 +24,7 @@ from snackportal2.services.control_plane.models import SecretReference, TenantDe
 from snackportal2.services.control_plane.store import ENV_CONTROL_DSN, build_store
 from snackportal2.services.database_router.resolver import EnvironmentTenantSecretStore
 from snackportal2.services.import_service.service import operation_key
+from snackportal2.services.startups.models import YEAR_FOUNDED_MAX
 from snackportal2.shared.lineage_chain import CURRENT_MARKER_VERSION, GENESIS_PREV_MARKER, marker_for
 from snackportal2.shared.lineage_keys import EnvironmentLineageKeyResolver
 from snackportal2.shared.security import AuthContext, RequestContext
@@ -252,7 +253,7 @@ def test_a_created_startup_reads_back_identically_through_postgresql(fleet: srv.
                 "company_name": "Roundtrip Ltd",
                 "company_type": "private",
                 "region": "EMEA",
-                "year_founded": "2019",
+                "year_founded": 2019,
                 "industry": "logistics",
                 "investment_stage": "series_a",
                 "product_overview": "Freight scheduling.",
@@ -267,46 +268,84 @@ def test_a_created_startup_reads_back_identically_through_postgresql(fleet: srv.
     assert read.json() == created, "create and read disagree about the same record"
 
 
-def test_a_non_numeric_year_founded_is_accepted_by_the_contract_and_rejected_by_the_column(
+def test_year_founded_reaches_postgresql_as_an_integer_and_reads_back_as_one(
     fleet: srv.ServiceFleet,
 ) -> None:
-    """**Stage 4 finding F-3, characterized rather than patched.**
+    """**Stage 4 finding F-3, closed and verified against the real column.**
 
-    ``StartupCreateRequest.year_founded`` is ``Optional[str]`` bounded at eight characters;
-    tenant DDL 003 types the column ``integer``. A non-numeric value therefore passes contract
-    validation and fails at the driver, and the request answers **500 internal_error** — an
-    undeclared outcome for what is really a rejected input.
-
-    The root cause is the contract, not the adapter: the published schema accepts values the
-    storage cannot represent. Narrowing it to digits changes the generated OpenAPI document,
-    which §9 of the Stage 4 brief makes a STOP-and-report, not a change to be slipped in. So
-    the behaviour is pinned here instead, and the conflict is reported: if this test starts
-    failing, the contract moved and the report needs to move with it.
-
-    A numeric string round-trips correctly, which is why nothing before Stage 4 caught this —
-    the in-memory repository stores any string at all.
+    The contract published free text while tenant DDL 003 typed the column ``integer``, so a
+    value like ``"circa"`` passed validation and failed at the driver — answering 500 for a
+    rejected input. The contract is now an integer bounded at 1800 and the current year, and
+    this checks both halves: the accepted value is an ``integer`` in PostgreSQL, and the
+    rejected ones never get there.
     """
-    rejected = _call(
-        fleet,
-        "startups",
-        "/internal/startups/create",
-        {"context": _context("acme"), "company_name": "Ambiguous Year Ltd", "year_founded": "circa"},
-    )
-    assert rejected.status_code == 500, rejected.text
-    assert rejected.json() == {"status": 500, "code": "internal_error"}
-    assert "circa" not in rejected.text, "the failure echoed the submitted value back to the caller"
-    assert pg.scalar(pg.dsn("acme"), "SELECT count(*) FROM startups WHERE company_name = 'Ambiguous Year Ltd'") == 0
-
     accepted = _created(
         _call(
             fleet,
             "startups",
             "/internal/startups/create",
-            {"context": _context("acme"), "company_name": "Numeric Year Ltd", "year_founded": "1999"},
+            {"context": _context("acme"), "company_name": "Numeric Year Ltd", "year_founded": 1999},
         )
     )
-    assert accepted["year_founded"] == "1999"
-    assert pg.scalar(pg.dsn("acme"), "SELECT year_founded FROM startups WHERE company_name = 'Numeric Year Ltd'") == 1999
+    assert accepted["year_founded"] == 1999
+    assert isinstance(accepted["year_founded"], int)
+
+    stored = pg.rows(
+        pg.dsn("acme"),
+        "SELECT year_founded, pg_typeof(year_founded)::text FROM startups WHERE company_name = %s",
+        ("Numeric Year Ltd",),
+    )
+    assert stored == [(1999, "integer")], "the value did not reach PostgreSQL as an integer"
+
+    read = _call(
+        fleet, "startups", "/internal/startups/read", {"context": _context("acme"), "record_ref": accepted["record_ref"]}
+    )
+    assert read.status_code == 200, read.text
+    assert read.json()["year_founded"] == 1999
+
+
+def test_a_year_the_column_cannot_hold_is_refused_before_the_driver_sees_it(
+    fleet: srv.ServiceFleet,
+) -> None:
+    """422 rather than 500, and nothing written — for every shape of bad year.
+
+    The distinction that matters is *where* the rejection happens. Previously the database
+    refused the value and the service reported an internal error; now the contract refuses it,
+    which is why the answer is the 422 the operation already declared.
+    """
+    for label, value in (
+        ("non-numeric", "circa"),
+        ("below the lower bound", 1700),
+        ("in the future", YEAR_FOUNDED_MAX + 1),
+        ("fractional", 2020.5),
+    ):
+        response = _call(
+            fleet,
+            "startups",
+            "/internal/startups/create",
+            {"context": _context("acme"), "company_name": "Ambiguous Year Ltd", "year_founded": value},
+        )
+        assert response.status_code == 422, label + " -> " + str(response.status_code) + " " + response.text
+        assert response.json() == {"status": 422, "code": "invalid_request"}
+        assert str(value) not in response.text, label + ": the failure echoed the submitted value back"
+
+    assert pg.scalar(pg.dsn("acme"), "SELECT count(*) FROM startups WHERE company_name = 'Ambiguous Year Ltd'") == 0
+
+
+def test_the_published_year_founded_contract_matches_the_column_type(fleet: srv.ServiceFleet) -> None:
+    """The contract and the column, compared to each other rather than each to an expectation."""
+    document = httpx.get(fleet.url("startups") + "/openapi.json", timeout=10.0).json()
+    published = document["components"]["schemas"]["StartupCreateRequest"]["properties"]["year_founded"]
+    variants = {option.get("type") for option in published["anyOf"]}
+    assert variants == {"integer", "null"}, published
+    assert published["description"].strip()
+
+    column = pg.rows(
+        pg.dsn("acme"),
+        "SELECT data_type, is_nullable FROM information_schema.columns "
+        "WHERE table_schema = 'public' AND table_name = 'startups' AND column_name = 'year_founded'",
+    )
+    assert column == [("integer", "YES")], column
 
 
 def test_the_single_mutable_field_updates_in_the_database(fleet: srv.ServiceFleet) -> None:

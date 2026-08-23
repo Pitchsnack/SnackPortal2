@@ -26,6 +26,7 @@ from snackportal2.services.investors.repository import InMemoryInvestorRepositor
 from snackportal2.services.lineage import main as lineage_main
 from snackportal2.services.sharing import main as sharing_main
 from snackportal2.services.startups import main as startups_main
+from snackportal2.services.startups.models import YEAR_FOUNDED_MAX, YEAR_FOUNDED_MIN
 from snackportal2.services.startups.repository import InMemoryStartupRepository, find_duplicates
 from snackportal2.shared.errors import AppError
 from snackportal2.shared.security import AuthContext, RequestContext
@@ -96,6 +97,112 @@ def test_startup_create_read_update_round_trip() -> None:
     )
     assert updated.status_code == 200
     assert updated.json()["short_description"] == "Industrial robotics."
+
+
+def test_year_founded_is_an_integer_the_database_can_actually_hold() -> None:
+    """**Stage 4 finding F-3, closed.**
+
+    The contract used to publish this field as free text bounded at eight characters while the
+    accepted DDL typed the column ``integer``. ``"circa"`` therefore passed validation and
+    failed at the driver, and the request answered 500 for what was really a rejected input.
+    The contract now says what the storage can hold, so the rejection is a declared 422 raised
+    before any adapter sees the value.
+    """
+    client = _startups_client()
+
+    accepted = client.post(
+        "/internal/startups/create",
+        headers=_CREDENTIAL,
+        json={"context": _context(), "company_name": "Founded Ltd", "year_founded": 2020},
+    )
+    assert accepted.status_code == 201, accepted.text
+    assert accepted.json()["year_founded"] == 2020
+    assert isinstance(accepted.json()["year_founded"], int)
+
+    read = client.post(
+        "/internal/startups/read",
+        headers=_CREDENTIAL,
+        json={"context": _context(), "record_ref": accepted.json()["record_ref"]},
+    )
+    assert read.json()["year_founded"] == 2020, "the value did not survive the round trip as an integer"
+
+
+def test_an_omitted_or_null_year_founded_is_accepted() -> None:
+    client = _startups_client()
+    for payload in ({}, {"year_founded": None}):
+        response = client.post(
+            "/internal/startups/create",
+            headers=_CREDENTIAL,
+            json={"context": _context(), "company_name": "Undated Ltd", **payload},
+        )
+        assert response.status_code == 201, response.text
+        assert response.json()["year_founded"] is None
+
+
+def test_a_non_numeric_out_of_range_or_future_year_is_refused_with_422() -> None:
+    """Each rejection is the declared outcome, and none of them reaches storage."""
+    client = _startups_client()
+    for value in ("circa", 1700, YEAR_FOUNDED_MAX + 1, 2020.5, "", True):
+        response = client.post(
+            "/internal/startups/create",
+            headers=_CREDENTIAL,
+            json={"context": _context(), "company_name": "Rejected Ltd", "year_founded": value},
+        )
+        assert response.status_code == 422, repr(value) + " -> " + str(response.status_code)
+        assert response.json() == {"status": 422, "code": "invalid_request"}
+        rendered = str(value)
+        if rendered:
+            assert rendered not in response.text, "the denial echoed the submitted value back"
+
+    listed = client.post("/internal/startups/list", headers=_CREDENTIAL, json={"context": _context(), "limit": 500})
+    assert [r for r in listed.json()["records"] if r["company_name"] == "Rejected Ltd"] == []
+
+
+def test_the_boundary_years_themselves_are_accepted() -> None:
+    """1800 and the current year are inside the range, not outside it."""
+    client = _startups_client()
+    for value in (YEAR_FOUNDED_MIN, YEAR_FOUNDED_MAX):
+        response = client.post(
+            "/internal/startups/create",
+            headers=_CREDENTIAL,
+            json={"context": _context(), "company_name": "Boundary Ltd", "year_founded": value},
+        )
+        assert response.status_code == 201, str(value) + " -> " + response.text
+        assert response.json()["year_founded"] == value
+
+
+def test_a_numeric_string_year_is_coerced_rather_than_refused() -> None:
+    """Documented behaviour, recorded so it is a decision rather than a surprise.
+
+    Pydantic's default lax coercion accepts ``"2020"`` for an integer field, and the rebuild
+    uses that default everywhere rather than making one field strict. The property that
+    matters is unchanged: the value that reaches storage is an integer the column can hold,
+    and anything that is not a year is still refused.
+    """
+    client = _startups_client()
+    response = client.post(
+        "/internal/startups/create",
+        headers=_CREDENTIAL,
+        json={"context": _context(), "company_name": "Stringly Ltd", "year_founded": "2020"},
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["year_founded"] == 2020
+
+
+def test_the_published_year_founded_schema_is_a_bounded_integer() -> None:
+    """The contract, not just the behaviour — §2.4 is about what the document says."""
+    schema = startups_main.app.openapi()["components"]["schemas"]
+    published = schema["StartupCreateRequest"]["properties"]["year_founded"]
+    variants = {option.get("type"): option for option in published["anyOf"]}
+    assert set(variants) == {"integer", "null"}, published
+    assert "string" not in variants
+    assert int(variants["integer"]["minimum"]) == YEAR_FOUNDED_MIN
+    assert int(variants["integer"]["maximum"]) == YEAR_FOUNDED_MAX
+    assert published["description"].strip()
+
+    returned = schema["TenantStartupRecord"]["properties"]["year_founded"]
+    assert {option.get("type") for option in returned["anyOf"]} == {"integer", "null"}
+    assert returned["description"].strip()
 
 
 def test_a_startup_reference_does_not_travel_between_tenants() -> None:
