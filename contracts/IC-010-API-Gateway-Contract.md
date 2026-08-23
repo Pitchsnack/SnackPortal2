@@ -1,6 +1,25 @@
 # IC-010 — API Gateway Contract
 
-**Status:** Final · **Phase:** Architecture Planning · **Type:** Specification only (no implementation)
+> ## ⛔ SUPERSEDED — 2026-08-21 (D-46)
+>
+> **This contract is `Superseded`. It is retained as the historical record and as the traceability source for its successors. It is no longer normative for implementation.**
+>
+> **Superseded by:** **[IC-013 — BFF Ingress Contract](IC-013-BFF-Ingress-Contract.md)** (IC-013-DRAFT-1) and **[IC-014 — Access Control Contract](IC-014-Access-Control-Contract.md)** (IC-014-DRAFT-1), jointly.
+> **Authority:** **[D-46 — Option A Gateway-Free Target Architecture Ratification](../docs/D-46-Option-A-Gateway-Free-Target-Architecture-Ratification.md)**, resolving Phase 0 finding **CONF-1**.
+>
+> **What changed.** The ratified Option A target architecture is `Frontend → FastAPI BFF → FastAPI Services`, with **zero API Gateway** in the target runtime. This contract's Purpose (§A) defined the API Gateway as the *"sole approved ingress"* — the one statement Option A cannot satisfy. That role passes to the **FastAPI BFF** under IC-013 §1, and the locked invariant #7 ("the Gateway is the boundary") is revised to "**the BFF is the boundary**" (D-46 §2). The *substance* — one governed public ingress, no client path around it — is **preserved and unweakened**; only the holder changes.
+>
+> **The BFF is not this contract's Gateway renamed.** It is application-oriented frontend orchestration with an **enumerated** operation surface, not a generic proxy. The names *FastAPI Gateway*, *BFF Gateway*, *Service Gateway*, *Routing Gateway* and *Compatibility Gateway* are prohibited (IC-013 §0).
+>
+> **Nothing here is discarded — every section is redistributed.** D-46 §4 carries an exhaustive, section-by-section re-homing map. Summary: §A→IC-013 §1 · §B→§3 · §C→§4 (an **Access Control stage is inserted**) · §D→§4 · **§E (carriers)→§5** · §F→§6 · **§G/§T (RequestContext from AuthContext only)→§7** · §H→§8 · §I→§9 · **§J (audit emit-set)→§10** · **§K (isolation)→IC-014 §5.4 + IC-013 §11** · §L→§12 · §M/§R→§13 · §N→§14 · §O→§15 · §Q/§X→§16 · §S→§17 · §U→§18 · §V→§19 · §W→§20. The four sections in bold are the behaviours Phase 0 identified as living **only** inside the Gateway; each now has a named new owner, so deleting the Gateway cannot silently delete them.
+>
+> **Migration dependency.** Control DDL 012 pins `CHECK (source_service = 'api_gateway')`, so the existing `control_gateway_audit` table physically rejects a BFF-emitted row. No BFF audit emission may be implemented until migration **M-1** (D-46 §7) lands. DDL 012/013 and their byte-pin guards are left **intact** as historical evidence.
+>
+> **No runtime effect.** D-46 changed no code. The `api_gateway` package, its tests, its launcher and its runbooks are untouched on disk; removal is Phase-1+ implementation work under a separate, explicitly-authorizing execution instruction. Production remains **NOT READY / DO-NOT-ACTIVATE**.
+>
+> *Everything below this banner is the contract as it stood at supersession. It is preserved verbatim for audit continuity — no normative text was deleted.*
+
+**Status:** **Superseded** (2026-08-21, D-46 — by IC-013 + IC-014) · **Historic status:** Final (2026-06-13 → 2026-08-21) · **Phase:** Architecture Planning · **Type:** Specification only (no implementation)
 **Authored:** 2026-06-13 under **PRD-IC010-01-R1** (APPROVED FOR EXECUTION), converting the **Reserved placeholder** (reserved 2026-06-12 under PRD-D33-D37-V2-R1 Work Package D, resolving PRD-D33-D37-V2 **MAJ-2**) into a Final governing contract. Authority: **D-37 §5/§17/§22** — IC-010 *is* the "API Gateway contract" required as a hard prerequisite for portal implementation.
 **Status note:** This contract defines the gateway **contract** — its boundaries, responsibilities, request flow, and prohibitions. It authorizes **no implementation**: the `api_gateway` framework-agnostic core was subsequently implemented under a separate, explicitly-authorizing execution PRD (PRD 04 V2/V3), as this contract required (`IMPLEMENTS_BEHAVIOR = True`). It contracts the **edge enforcement** of the tenant-context guarantees that are library-internal today (the PRD 1A-R2 Critical-risk item); enforcement becomes real only when the gateway is built.
 **Amendment (2026-07-07, PRD-07E-2-C):** Status refresh only — the `api_gateway` framework-agnostic core now has `IMPLEMENTS_BEHAVIOR = True`, built under a separate, explicitly-authorizing execution PRD (**PRD 04 V2/V3**, commit `e0021fc`; the register → contract → code gate was honored). Production HTTP ingress, the production `AuthenticatorPort` / `RouterDispatchPort` adapters, the gateway→database-router dispatch transport, and live tenant-DB routing remain **incomplete**; live routing + physical distinctness remain **D-15/deployment-owned** (§P intact). **No normative change; no boundary rule (§H/§X/§K/§O/§G/§J), prohibition, or frozen invariant altered.**

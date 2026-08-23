@@ -42,7 +42,11 @@
 | B-4 | Database Router | Backend Phase 4 | ✅ accepted |
 | B-5 | Import Service | Backend Phase 5 | ✅ accepted |
 | B-6 | Lineage Service | Backend Phase 6 | ✅ accepted |
-| B-7 | API Gateway | Backend Phase 7 / S5 PRD 16 | 🟡 scaffold; READY_WITH_GUARDS; **V2 next** |
+| B-7 | API Gateway | Backend Phase 7 / S5 PRD 16 | ⛔ **RETIRED as a build target** (D-46, 2026-08-21). Core *was* built under PRD 04 V2/V3 (`IMPLEMENTS_BEHAVIOR = True`) — the earlier "scaffold; V2 next" status was stale. **IC-010 is now `Superseded`**; the `api_gateway` package is category **D — old architecture, do not port**, untouched on disk pending Phase 1+. Superseded by **B-13**. |
+| B-13 | **FastAPI BFF** — the single frontend-facing ingress | new (D-46 / IC-013) | ⬜ planned — Option A Phase 6. **Not a renamed Gateway:** enumerated operation surface, Pydantic models, no downstream body relay. |
+| B-14 | **Access Control Service** | new (D-46 / IC-014) | ⬜ planned — Option A Phase 3. **The one genuinely greenfield service:** no permission engine exists in the current codebase. |
+| B-15 | Contacts Service | new (Option A Phase 7) | ⬜ planned — **blocked on IC-015** (reserved, unauthored) |
+| B-16 | Audit Service | new (Option A Phase 8) | ⬜ planned — durable sink for the ingress-edge audit classes; **blocked on migration M-1** |
 | B-8 | AI Gateway & Model Router | S5 PRD 17 | ⏸ deferred (Intelligence) |
 | B-9 | Agent Framework | S5 PRD 18 | ⏸ deferred |
 | B-10 | Global Research & Discovery Engine | S5 PRD 19 | ⏸ deferred |
@@ -60,7 +64,9 @@
 
 These keep their original names — just file them under the parent B- item:
 - **Under B-6 (Lineage):** PRD-P6-R2, PRD-P6-E1, PRD-P6-V1.
-- **Under B-7 (API Gateway):** PRD-P7-A1 (assessment), PRD 04 V1 (readiness review, READY_WITH_GUARDS), **PRD 04 V2 (implementation — next)**, and the PRD 03 V4-R13→R18 governance arc.
+- **Under B-7 (API Gateway — HISTORICAL):** PRD-P7-A1 (assessment), PRD 04 V1 (readiness review, READY_WITH_GUARDS), PRD 04 V2/V3 (implementation — **completed**), and the PRD 03 V4-R13→R18 governance arc. Retained for audit continuity; **B-7 is retired as a build target by D-46** and its successor is B-13 (FastAPI BFF).
+
+> **D-46 note (2026-08-21).** Under the **Option A Clean FastAPI Rebuild**, the B- track's target is `Frontend → FastAPI BFF → FastAPI Services` with **zero API Gateway**. The existing B-1…B-7 work is a source of **requirements, validated behaviour, schemas and tests** — not architecture to preserve. **B-8 (AI Gateway & Model Router) is unaffected by the "zero Gateway" rule**: it is a *model-invocation* boundary (Canonical Overview Part 4B-C), unrelated to the superseded API Gateway — though it remains deferred and blocked on IC-006 being authored to Draft-complete.
 
 ---
 
