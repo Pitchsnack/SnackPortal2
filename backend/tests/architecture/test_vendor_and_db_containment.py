@@ -32,12 +32,35 @@ DB_PROVIDER_ZONES = (
     "control_plane/adapters/providers/",  # Control-DB persistence + tenant-DB verification probe
 )
 
+# --- Option A rebuild (D-46) driver containment ---------------------------------------------
+# The rebuild does not use the legacy hexagonal `adapters/providers/**` layout, so its
+# driver-holding modules are enumerated as EXACT FILES rather than directory prefixes. That is a
+# tightening, not a widening: a new module under `snackportal2/services/*/` cannot acquire a
+# driver by being dropped into an already-blessed directory — it has to be added here, in review.
+# Each entry is the one module of its service permitted to hold a connection.
+REBUILD_DB_DRIVER_ALLOW = (
+    "snackportal2/services/control_plane/store.py",  # Control-DB persistence (tenants/memberships/directory)
+    "snackportal2/services/audit/sink.py",  # Control-DB durable audit sink (migration M-1)
+    # Tenant-database access. Under D-48 the Database Router is the sole AUTHORITY on which
+    # database a request may reach, but a tenant-resident domain service holds the connection it
+    # opens. `shared/tenant_data.py` is the one place that turns a router grant into a socket;
+    # `investors/repository.py` additionally imports psycopg's Jsonb wrapper, because binding a
+    # bare Python list to a jsonb column raises at the driver layer (the MCC-AR-1 defect).
+    "snackportal2/shared/tenant_data.py",
+    "snackportal2/services/investors/repository.py",
+)
+
 # JWT/crypto vendor containment (PRD B5-5). The allowance below is ONE exact file — the
 # blessed runtime RS256 test fixture — and must stay a single plain path string forever
 # (widening it to a tuple, directory, package prefix, or wildcard is a containment breach;
 # `test_jwt_crypto_allowance_is_exact_file_and_nonvacuous` fails on any such widening).
 JWT_CRYPTO_PREFIXES = ["jwt", "cryptography"]
 JWT_CRYPTO_FIXTURE_ALLOW = "tests/api_gateway/crypto_fixture.py"
+
+# The Option A rebuild's one credential-verifying module (IC-005). Exact files only, for the
+# same reason as REBUILD_DB_DRIVER_ALLOW: the rebuild has no provider directory to blanket-bless,
+# so each verifier is named individually and a second one is a review event, not an accident.
+REBUILD_JWT_CRYPTO_ALLOW = ("snackportal2/services/authentication/verifier.py",)
 
 
 def _matches(mod: str, prefixes: list) -> bool:
@@ -57,15 +80,26 @@ def test_db_drivers_only_in_permitted_provider_zones() -> None:
         rp = _scan.relposix(f)
         for mod in _scan.imported_modules(f):
             if _matches(mod, DB_PREFIXES):
-                assert any(rp.startswith(z) for z in DB_PROVIDER_ZONES), (
-                    f"database driver '{mod}' outside permitted provider zones {DB_PROVIDER_ZONES}: {rp}"
+                assert _db_driver_allowed(rp), (
+                    f"database driver '{mod}' outside permitted provider zones {DB_PROVIDER_ZONES} "
+                    f"and rebuild driver modules {REBUILD_DB_DRIVER_ALLOW}: {rp}"
                 )
 
 
+def _db_driver_allowed(rp: str) -> bool:
+    """True iff `rp` may import a database driver.
+
+    Legacy packages are matched by directory prefix (the hexagonal provider zones); the Option A
+    rebuild is matched by EXACT path equality, so a sibling module cannot inherit the allowance.
+    """
+    return any(rp.startswith(zone) for zone in DB_PROVIDER_ZONES) or rp in REBUILD_DB_DRIVER_ALLOW
+
+
 def _jwt_crypto_allowed(rp: str) -> bool:
-    """True iff `rp` may import a JWT/crypto vendor: the provider containment zone, or the
-    ONE blessed fixture file by exact-path equality (never a prefix/directory/glob match)."""
-    return "/adapters/providers/" in ("/" + rp) or rp == JWT_CRYPTO_FIXTURE_ALLOW
+    """True iff `rp` may import a JWT/crypto vendor: the provider containment zone, the ONE
+    blessed fixture file, or a named Option A rebuild verifier — the latter two by exact-path
+    equality (never a prefix/directory/glob match)."""
+    return "/adapters/providers/" in ("/" + rp) or rp == JWT_CRYPTO_FIXTURE_ALLOW or rp in REBUILD_JWT_CRYPTO_ALLOW
 
 
 def test_jwt_crypto_vendors_only_in_providers_or_the_one_blessed_fixture() -> None:
@@ -113,6 +147,45 @@ def test_jwt_crypto_allowance_is_exact_file_and_nonvacuous() -> None:
     assert not _matches("cryptographyx", JWT_CRYPTO_PREFIXES), "prefix matching must stay dotted-boundary exact"
 
 
+def test_rebuild_allowances_are_exact_files_and_nonvacuous() -> None:
+    """The Option A allowances are exact files, they exist, and the census actually sees them.
+
+    Held to the same standard as the blessed fixture above. Two failure modes are checked, and
+    both are the kind that leave a guard green while it protects nothing: an allowance naming a
+    file that does not exist (so the census never meets it), and an allowance naming a file that
+    imports no vendor at all (so the entry is dead and could be widened without anyone noticing).
+    """
+    for allowance, prefixes in ((REBUILD_DB_DRIVER_ALLOW, DB_PREFIXES), (REBUILD_JWT_CRYPTO_ALLOW, JWT_CRYPTO_PREFIXES)):
+        assert isinstance(allowance, tuple) and allowance, "the allowance must be a non-empty tuple of exact paths"
+        for entry in allowance:
+            assert isinstance(entry, str), "each allowance entry must be a plain path string"
+            assert "*" not in entry and "?" not in entry, f"no wildcard forms: {entry}"
+            assert not entry.endswith(("/", ".")), f"no directory/prefix forms: {entry}"
+            assert (_scan.BACKEND_ROOT / entry).is_file(), f"allowed module does not exist: {entry}"
+            mods = _scan.imported_modules(_scan.BACKEND_ROOT / entry)
+            assert any(_matches(m, prefixes) for m in mods), f"allowance is dead — {entry} imports no such vendor"
+
+    # Exact-path equality, never prefix or sibling inheritance.
+    assert _db_driver_allowed("snackportal2/shared/tenant_data.py")
+    for rejected in (
+        "snackportal2/services/database_router/main.py",  # a sibling in the same package
+        "snackportal2/services/database_router/resolver.py",  # resolves and issues grants; opens nothing itself
+        "snackportal2/services/startups/repository.py",  # reaches its tenant DB only via shared/tenant_data
+        "snackportal2/services/",  # any directory widening
+        "snackportal2/shared/config.py",
+    ):
+        assert not _db_driver_allowed(rejected), f"driver allowance must not widen to {rejected}"
+
+    assert _jwt_crypto_allowed("snackportal2/services/authentication/verifier.py")
+    for rejected in (
+        "snackportal2/services/authentication/main.py",
+        "snackportal2/services/authentication/service.py",
+        "snackportal2/services/access_control/policy.py",  # the authorizer must never verify a token
+        "snackportal2/services/",
+    ):
+        assert not _jwt_crypto_allowed(rejected), f"JWT allowance must not widen to {rejected}"
+
+
 if __name__ == "__main__":
     _scan.run(
         [
@@ -120,5 +193,6 @@ if __name__ == "__main__":
             test_db_drivers_only_in_permitted_provider_zones,
             test_jwt_crypto_vendors_only_in_providers_or_the_one_blessed_fixture,
             test_jwt_crypto_allowance_is_exact_file_and_nonvacuous,
+            test_rebuild_allowances_are_exact_files_and_nonvacuous,
         ]
     )

@@ -33,6 +33,9 @@ dev = [
   "mypy",
   "pytest",
   "import-linter",
+  # starlette's TestClient (used by the snackportal2 route + OpenAPI contract tests)
+  # requires httpx. Declared explicitly rather than relied on transitively.
+  "httpx",
 ]
 
 [build-system]
@@ -55,6 +58,11 @@ include = [
   # lineage_service, shared). It sits ABOVE them (it may import them; none may import it) and owns no
   # business logic.
   "deployment*",
+  # The Option A clean rebuild (D-46): one namespace holding the shared technical
+  # foundation and the fourteen independently-bootable FastAPI services. Kept separate
+  # from the flat legacy packages above, which are Phase-0 category D and are neither
+  # ported nor imported from here.
+  "snackportal2*",
 ]
 
 [tool.ruff]
@@ -106,7 +114,18 @@ testpaths = ["tests"]
 # acceptance evidence; its tests receive `conn`/`admin_dsn` from _pg.run(), not a pytest
 # fixture). Run via `python tests/<svc>/requires_pg/test_pg_*.py` with SNACKPORTAL_TEST_DSN
 # set. PRD-P6-V1-E1 F4a; D15 distinctness evidence per PRD-D15-IMPL-01 §13.
-addopts = "--ignore=tests/lineage_service/requires_pg --ignore=tests/control_plane/requires_pg"
+#
+# tests/snackportal2/requires_pg is the Option A rebuild's Stage 4 live-PostgreSQL suite. It
+# IS pytest-shaped (and clean-skips without its DSNs), but it is excluded from the default run
+# for the same reason as its two predecessors: the default suite is hermetic, and a live suite
+# that quietly reports "skipped" inside it is how live verification stops being noticed. It is
+# run explicitly, against four disposable PostgreSQL clusters:
+#     python -m pytest tests/snackportal2/requires_pg -q
+addopts = """\
+  --ignore=tests/lineage_service/requires_pg \
+  --ignore=tests/control_plane/requires_pg \
+  --ignore=tests/snackportal2/requires_pg\
+"""
 
 # --- Dependency boundaries (governance: dependency DAG, rules 1-2) ------------
 [tool.importlinter]
@@ -121,6 +140,9 @@ root_packages = [
   # Analyzed so the composition root is POLICED, not merely unlisted: an unlisted package would be
   # invisible to the graph and could silently become a back-channel between two services. (IC-012 sec.13)
   "deployment",
+  # The Option A rebuild. Analyzed so the old/new boundary and the service-independence
+  # rule (IC-013 sec.13) are machine-enforced rather than merely intended.
+  "snackportal2",
 ]
 
 [[tool.importlinter.contracts]]
@@ -178,4 +200,75 @@ forbidden_modules = [
   "api_gateway",
   "auth_router",
   "control_plane",
+]
+
+# --- Option A rebuild boundaries (D-46 / IC-013 sec.13) -----------------------
+# Three properties are made machine-enforced here, because each is the kind of thing that
+# holds on day one by intention and erodes later by convenience.
+
+[[tool.importlinter.contracts]]
+# D-46 classifies the flat packages above as category D — "old architecture, do not port".
+# Retaining them on disk is only safe while nothing new can reach them: a single import
+# would drag the retired Gateway-era runtime back into the target architecture through the
+# side door, and the zero-Gateway census would still read zero.
+name = "the Option A rebuild must not import the retired architecture"
+type = "forbidden"
+source_modules = ["snackportal2"]
+forbidden_modules = [
+  "api_gateway",
+  "auth_router",
+  "database_router",
+  "control_plane",
+  "import_service",
+  "lineage_service",
+  "shared",
+  "deployment",
+]
+
+[[tool.importlinter.contracts]]
+name = "the retired architecture must not import the Option A rebuild"
+type = "forbidden"
+source_modules = [
+  "api_gateway",
+  "auth_router",
+  "database_router",
+  "control_plane",
+  "import_service",
+  "lineage_service",
+  "shared",
+  "deployment",
+]
+forbidden_modules = ["snackportal2"]
+
+[[tool.importlinter.contracts]]
+# The shared foundation is technical only: config, errors, logging, correlation, security
+# types, primitives. If it could import a service it could acquire a domain rule, and the
+# "no tenant business rules in shared" boundary would be prose rather than structure.
+name = "the rebuild's shared foundation is a dependency leaf"
+type = "forbidden"
+source_modules = ["snackportal2.shared"]
+forbidden_modules = ["snackportal2.services"]
+
+[[tool.importlinter.contracts]]
+# IC-013 sec.13: a service MUST NOT import another service's internal implementation. The
+# services talk over declared transport, which is what keeps them independently bootable
+# and independently deployable — and what keeps the BFF from becoming an in-process monolith
+# that merely looks like fourteen services.
+name = "the fourteen rebuild services are mutually independent"
+type = "independence"
+modules = [
+  "snackportal2.services.bff",
+  "snackportal2.services.authentication",
+  "snackportal2.services.access_control",
+  "snackportal2.services.control_plane",
+  "snackportal2.services.database_router",
+  "snackportal2.services.startups",
+  "snackportal2.services.investors",
+  "snackportal2.services.deals",
+  "snackportal2.services.sharing",
+  "snackportal2.services.import_service",
+  "snackportal2.services.lineage",
+  "snackportal2.services.contacts",
+  "snackportal2.services.ai_agents",
+  "snackportal2.services.audit",
 ]

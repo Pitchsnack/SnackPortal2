@@ -1,0 +1,254 @@
+# SnackPortal2 — Option A rebuild (D-46) — LOCAL / NON-PRODUCTION container topology.
+#
+# THE ONE PROPERTY THIS FILE EXISTS TO GET RIGHT (IC-013 §21.1 E-1/E-3):
+#
+#     exactly one application service publishes a port, and it is the BFF.
+#
+# Every other service binds 0.0.0.0 *inside its own container network namespace* — which E-3
+# explicitly permits, because that binding reaches only the container network — and publishes
+# nothing. No `ports:` mapping, no `-p`. They are reachable by service-name DNS on the private
+# network and by nothing else.
+#
+# The distinction is BIND versus PUBLISH, and conflating the two produces both false alarms (a
+# container binding 0.0.0.0 inside its namespace is normal and necessary) and real holes (a
+# service correctly bound to a private interface, then published to the world by a compose file).
+# This file is the second of those two risks, which is why the Phase-1 acceptance set checks it
+# mechanically: E-1 and E-3 are violated by *configuration*, so no application-layer test can
+# discharge them.
+#
+# The Access Control Service is the most consequential one to get wrong. A directly-reachable
+# authorizer can be asked for a decision that no BFF flow ever requested.
+#
+# Secret hygiene (D-14): no credential value appears here. Everything is interpolated from an
+# untracked env file. Run with:
+#   docker compose -f infrastructure/docker/docker-compose.rebuild.yml --env-file infrastructure/docker/.env.local up
+
+name: snackportal2-rebuild-local
+
+x-service-common: &service-common
+  build:
+    context: ../../backend
+  restart: "no"
+  environment: &service-env
+    # E-3: binding 0.0.0.0 INSIDE the container namespace is permitted and necessary. It is not
+    # a publish, and no clause below publishes it.
+    SP2_BIND_HOST: "0.0.0.0"
+  networks:
+    - sp2_internal
+
+networks:
+  sp2_internal:
+    # Internal service mesh. `internal: false` only because the BFF needs egress for the OIDC
+    # issuer; no internal service is reachable from outside regardless, because none publishes.
+    driver: bridge
+
+services:
+
+  # ============================================================================================
+  # THE ONE PUBLIC APPLICATION INGRESS (E-1). This is the only `ports:` clause in the file.
+  # ============================================================================================
+  bff:
+    <<: *service-common
+    container_name: sp2_rebuild_bff
+    command: ["uvicorn", "snackportal2.services.bff.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      <<: *service-env
+      SP2_BFF_HOST: "0.0.0.0"
+      SP2_BFF_PORT: "8000"
+      SP2_BFF_AUTHENTICATION_URL: "http://authentication:8001"
+      SP2_BFF_ACCESS_CONTROL_URL: "http://access-control:8002"
+      SP2_BFF_CONTROL_PLANE_URL: "http://control-plane:8003"
+      SP2_BFF_DATABASE_ROUTER_URL: "http://database-router:8004"
+      SP2_BFF_STARTUPS_URL: "http://startups:8005"
+      SP2_BFF_INVESTORS_URL: "http://investors:8006"
+      SP2_BFF_DEALS_URL: "http://deals:8007"
+      SP2_BFF_SHARING_URL: "http://sharing:8008"
+      SP2_BFF_IMPORT_SERVICE_URL: "http://import-service:8009"
+      SP2_BFF_LINEAGE_URL: "http://lineage:8010"
+      SP2_BFF_CONTACTS_URL: "http://contacts:8011"
+      SP2_BFF_AUDIT_URL: "http://audit:8013"
+      SP2_BFF_SERVICE_CREDENTIAL: ${SP2_INTERNAL_SERVICE_CREDENTIAL:?set SP2_INTERNAL_SERVICE_CREDENTIAL in an untracked env file}
+      SP2_BFF_BASE_DOMAIN: ${SP2_BFF_BASE_DOMAIN:-}
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  # ============================================================================================
+  # INTERNAL SERVICES — bind inside the container, publish NOTHING (E-3).
+  # Adding a `ports:` clause to any service below is a contract violation, not a convenience.
+  # ============================================================================================
+  authentication:
+    <<: *service-common
+    container_name: sp2_rebuild_authentication
+    command: ["uvicorn", "snackportal2.services.authentication.main:app", "--host", "0.0.0.0", "--port", "8001"]
+    environment:
+      <<: *service-env
+      SP2_AUTHENTICATION_HOST: "0.0.0.0"
+      SP2_AUTHENTICATION_PORT: "8001"
+      SP2_AUTHENTICATION_ISSUERS: ${SP2_AUTHENTICATION_ISSUERS:-}
+    expose:
+      - "8001"
+
+  access-control:
+    <<: *service-common
+    container_name: sp2_rebuild_access_control
+    command: ["uvicorn", "snackportal2.services.access_control.main:app", "--host", "0.0.0.0", "--port", "8002"]
+    environment:
+      <<: *service-env
+      SP2_ACCESS_CONTROL_HOST: "0.0.0.0"
+      SP2_ACCESS_CONTROL_PORT: "8002"
+      SP2_ACCESS_CONTROL_CONTROL_PLANE_URL: "http://control-plane:8003"
+      SP2_ACCESS_CONTROL_SERVICE_CREDENTIAL: ${SP2_INTERNAL_SERVICE_CREDENTIAL:?set SP2_INTERNAL_SERVICE_CREDENTIAL}
+    expose:
+      - "8002"
+
+  control-plane:
+    <<: *service-common
+    container_name: sp2_rebuild_control_plane
+    command: ["uvicorn", "snackportal2.services.control_plane.main:app", "--host", "0.0.0.0", "--port", "8003"]
+    environment:
+      <<: *service-env
+      SP2_CONTROL_PLANE_HOST: "0.0.0.0"
+      SP2_CONTROL_PLANE_PORT: "8003"
+      SP2_CONTROL_PLANE_DSN: ${SP2_CONTROL_PLANE_DSN:-}
+    expose:
+      - "8003"
+
+  database-router:
+    <<: *service-common
+    container_name: sp2_rebuild_database_router
+    command: ["uvicorn", "snackportal2.services.database_router.main:app", "--host", "0.0.0.0", "--port", "8004"]
+    environment:
+      <<: *service-env
+      SP2_DATABASE_ROUTER_HOST: "0.0.0.0"
+      SP2_DATABASE_ROUTER_PORT: "8004"
+      SP2_DATABASE_ROUTER_CONTROL_PLANE_URL: "http://control-plane:8003"
+      SP2_DATABASE_ROUTER_SERVICE_CREDENTIAL: ${SP2_INTERNAL_SERVICE_CREDENTIAL:?set SP2_INTERNAL_SERVICE_CREDENTIAL}
+      # D-48 C-1: the grant allowlist. The BFF and the Access Control Service are permanently
+      # excluded, and the service refuses to start if either is named here.
+      SP2_DATABASE_ROUTER_GRANTEES: ${SP2_DATABASE_ROUTER_GRANTEES:-}
+    expose:
+      - "8004"
+
+  startups:
+    <<: *service-common
+    container_name: sp2_rebuild_startups
+    command: ["uvicorn", "snackportal2.services.startups.main:app", "--host", "0.0.0.0", "--port", "8005"]
+    environment:
+      <<: *service-env
+      SP2_STARTUPS_HOST: "0.0.0.0"
+      SP2_STARTUPS_PORT: "8005"
+      SP2_STARTUPS_STORAGE: ${SP2_TENANT_STORAGE:-memory}
+      SP2_STARTUPS_DATABASE_ROUTER_URL: "http://database-router:8004"
+      SP2_STARTUPS_SERVICE_CREDENTIAL: ${SP2_STARTUPS_SERVICE_CREDENTIAL:-}
+    expose:
+      - "8005"
+
+  investors:
+    <<: *service-common
+    container_name: sp2_rebuild_investors
+    command: ["uvicorn", "snackportal2.services.investors.main:app", "--host", "0.0.0.0", "--port", "8006"]
+    environment:
+      <<: *service-env
+      SP2_INVESTORS_HOST: "0.0.0.0"
+      SP2_INVESTORS_PORT: "8006"
+      SP2_INVESTORS_STORAGE: ${SP2_TENANT_STORAGE:-memory}
+      SP2_INVESTORS_DATABASE_ROUTER_URL: "http://database-router:8004"
+      SP2_INVESTORS_SERVICE_CREDENTIAL: ${SP2_INVESTORS_SERVICE_CREDENTIAL:-}
+    expose:
+      - "8006"
+
+  deals:
+    <<: *service-common
+    container_name: sp2_rebuild_deals
+    command: ["uvicorn", "snackportal2.services.deals.main:app", "--host", "0.0.0.0", "--port", "8007"]
+    environment:
+      <<: *service-env
+      SP2_DEALS_HOST: "0.0.0.0"
+      SP2_DEALS_PORT: "8007"
+      SP2_DEALS_STORAGE: ${SP2_TENANT_STORAGE:-memory}
+      SP2_DEALS_DATABASE_ROUTER_URL: "http://database-router:8004"
+      SP2_DEALS_SERVICE_CREDENTIAL: ${SP2_DEALS_SERVICE_CREDENTIAL:-}
+    expose:
+      - "8007"
+
+  sharing:
+    <<: *service-common
+    container_name: sp2_rebuild_sharing
+    command: ["uvicorn", "snackportal2.services.sharing.main:app", "--host", "0.0.0.0", "--port", "8008"]
+    environment:
+      <<: *service-env
+      SP2_SHARING_HOST: "0.0.0.0"
+      SP2_SHARING_PORT: "8008"
+    expose:
+      - "8008"
+
+  import-service:
+    <<: *service-common
+    container_name: sp2_rebuild_import_service
+    command: ["uvicorn", "snackportal2.services.import_service.main:app", "--host", "0.0.0.0", "--port", "8009"]
+    environment:
+      <<: *service-env
+      SP2_IMPORT_SERVICE_HOST: "0.0.0.0"
+      SP2_IMPORT_SERVICE_PORT: "8009"
+      SP2_IMPORT_SERVICE_CONTROL_PLANE_URL: "http://control-plane:8003"
+      # Also the credential presented to the Database Router when asking for a tenant grant, so
+      # with PostgreSQL storage enabled this same value must appear in
+      # SP2_DATABASE_ROUTER_GRANTEES mapped to "import_service".
+      SP2_IMPORT_SERVICE_SERVICE_CREDENTIAL: ${SP2_INTERNAL_SERVICE_CREDENTIAL:?set SP2_INTERNAL_SERVICE_CREDENTIAL}
+      SP2_IMPORT_SERVICE_STORAGE: ${SP2_TENANT_STORAGE:-memory}
+      SP2_IMPORT_SERVICE_DATABASE_ROUTER_URL: "http://database-router:8004"
+      # D-23 per-tenant lineage chain keys reach this service as SP2_LINEAGE_KEY_<TENANT>, the
+      # same way the router's per-tenant DSNs do: from the untracked env file, never from here.
+      # None is enumerated in this file, and with none supplied every import fails closed rather
+      # than writing a tenant record without provenance.
+    expose:
+      - "8009"
+
+  lineage:
+    <<: *service-common
+    container_name: sp2_rebuild_lineage
+    command: ["uvicorn", "snackportal2.services.lineage.main:app", "--host", "0.0.0.0", "--port", "8010"]
+    environment:
+      <<: *service-env
+      SP2_LINEAGE_HOST: "0.0.0.0"
+      SP2_LINEAGE_PORT: "8010"
+      SP2_LINEAGE_STORAGE: ${SP2_TENANT_STORAGE:-memory}
+      SP2_LINEAGE_DATABASE_ROUTER_URL: "http://database-router:8004"
+      SP2_LINEAGE_SERVICE_CREDENTIAL: ${SP2_LINEAGE_SERVICE_CREDENTIAL:-}
+    expose:
+      - "8010"
+
+  contacts:
+    <<: *service-common
+    container_name: sp2_rebuild_contacts
+    command: ["uvicorn", "snackportal2.services.contacts.main:app", "--host", "0.0.0.0", "--port", "8011"]
+    environment:
+      <<: *service-env
+      SP2_CONTACTS_HOST: "0.0.0.0"
+      SP2_CONTACTS_PORT: "8011"
+    expose:
+      - "8011"
+
+  ai-agents:
+    <<: *service-common
+    container_name: sp2_rebuild_ai_agents
+    command: ["uvicorn", "snackportal2.services.ai_agents.main:app", "--host", "0.0.0.0", "--port", "8012"]
+    environment:
+      <<: *service-env
+      SP2_AI_AGENTS_HOST: "0.0.0.0"
+      SP2_AI_AGENTS_PORT: "8012"
+    expose:
+      - "8012"
+
+  audit:
+    <<: *service-common
+    container_name: sp2_rebuild_audit
+    command: ["uvicorn", "snackportal2.services.audit.main:app", "--host", "0.0.0.0", "--port", "8013"]
+    environment:
+      <<: *service-env
+      SP2_AUDIT_HOST: "0.0.0.0"
+      SP2_AUDIT_PORT: "8013"
+      SP2_AUDIT_DSN: ${SP2_AUDIT_DSN:-}
+      SP2_AUDIT_CREDENTIALS: ${SP2_AUDIT_CREDENTIALS:-}
+    expose:
+      - "8013"

@@ -43,10 +43,10 @@
 | B-5 | Import Service | Backend Phase 5 | ✅ accepted |
 | B-6 | Lineage Service | Backend Phase 6 | ✅ accepted |
 | B-7 | API Gateway | Backend Phase 7 / S5 PRD 16 | ⛔ **RETIRED as a build target** (D-46, 2026-08-21). Core *was* built under PRD 04 V2/V3 (`IMPLEMENTS_BEHAVIOR = True`) — the earlier "scaffold; V2 next" status was stale. **IC-010 is now `Superseded`**; the `api_gateway` package is category **D — old architecture, do not port**, untouched on disk pending Phase 1+. Superseded by **B-13**. |
-| B-13 | **FastAPI BFF** — the single frontend-facing ingress | new (D-46 / IC-013) | ⬜ planned — Option A Phase 6. **Not a renamed Gateway:** enumerated operation surface, Pydantic models, no downstream body relay. |
-| B-14 | **Access Control Service** | new (D-46 / IC-014) | ⬜ planned — Option A Phase 3. **The one genuinely greenfield service:** no permission engine exists in the current codebase. |
-| B-15 | Contacts Service | new (Option A Phase 7) | ⬜ planned — **blocked on IC-015** (reserved, unauthored) |
-| B-16 | Audit Service | new (Option A Phase 8) | ⬜ planned — durable sink for the ingress-edge audit classes; **blocked on migration M-1** |
+| B-13 | **FastAPI BFF** — the single frontend-facing ingress | new (D-46 / IC-013) | 🟡 **built, unmerged** (2026-08-23, `rebuild/fastapi-openapi-first`). 17 enumerated operations, each with Pydantic request/response models and a DTO composed field by field — no downstream body relay anywhere. |
+| B-14 | **Access Control Service** | new (D-46 / IC-014) | 🟡 **built, unmerged** (2026-08-23). The one genuinely greenfield service. `Allowed` is returned from exactly one place, on the last line of `decide()`; 9 of 10 deny branches are individually mutation-proven. |
+| B-15 | Contacts Service | new (Option A Phase 7) | 🟡 **bootable, no business operation** (2026-08-23). Blocked on **IC-015** *and* on the absence of any contacts table in the accepted DDL. The service discloses the gap rather than inventing a schema. |
+| B-16 | Audit Service | new (Option A Phase 8) | 🟡 **built, unmerged** (2026-08-23). Migration **M-1 is authored**, so the block is lifted. Emitter identity, event id and timestamp are server-derived; delegation is per-target, never blanket. |
 | B-8 | AI Gateway & Model Router | S5 PRD 17 | ⏸ deferred (Intelligence) |
 | B-9 | Agent Framework | S5 PRD 18 | ⏸ deferred |
 | B-10 | Global Research & Discovery Engine | S5 PRD 19 | ⏸ deferred |
