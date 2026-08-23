@@ -31,6 +31,7 @@ from snackportal2.services.bff.dtos import compose_display_ref
 from snackportal2.services.control_plane.models import SecretReference, TenantDescriptor
 from snackportal2.services.control_plane.store import ENV_CONTROL_DSN, build_store
 from snackportal2.services.database_router.resolver import EnvironmentTenantSecretStore
+from snackportal2.shared.lineage_keys import EnvironmentLineageKeyResolver
 from snackportal2.shared.types import PlatformRole, TenantLifecycleState
 
 from . import _stage4_pg as pg
@@ -48,6 +49,19 @@ GRANT_CREDENTIALS = {
     "investors": "grant-investors",
     "deals": "grant-deals",
     "lineage": "grant-lineage",
+    "import_service": "grant-import",
+}
+
+#: A global directory record this module alone imports. Dedicated on purpose: the Stage 4D
+#: module also imports ``gs-1`` into the same tenant databases, and a shared source would make
+#: this module's "created" assertion depend on which module happened to run first.
+E2E_SOURCE = "gs-ingress-import"
+
+#: Per-tenant D-23 chain keys for the Import Service, so an import through the ingress writes
+#: a real lineage row rather than being refused. Distinct per tenant; test material only.
+LINEAGE_KEYS = {
+    EnvironmentLineageKeyResolver.variable_name(tenant): "stage5-e2e-chain-key-" + tenant + "-" + ("0" * 16)
+    for tenant in pg.TENANTS
 }
 
 #: Development-posture principals. The Authentication Service selects this verifier only on
@@ -94,7 +108,7 @@ def stack(tmp_path_factory: pytest.TempPathFactory) -> Iterator[srv.ServiceFleet
     store.put_membership("p-nova", "nova", PlatformRole.TENANT_AGENT)
     store.put_membership("p-offline", "offline", PlatformRole.TENANT_AGENT)
 
-    for record_ref, name in (("gs-1", "Alpha Corp"), ("gs-2", "Beta Systems")):
+    for record_ref, name in (("gs-1", "Alpha Corp"), ("gs-2", "Beta Systems"), (E2E_SOURCE, "Ingress Import Corp")):
         pg.execute(
             pg.dsn("control"),
             "INSERT INTO control_directory (directory, record_id, display_name, attributes) "
@@ -155,7 +169,10 @@ def stack(tmp_path_factory: pytest.TempPathFactory) -> Iterator[srv.ServiceFleet
             "import_service",
             {
                 "SP2_IMPORT_SERVICE_CONTROL_PLANE_URL": control.base_url,
-                "SP2_IMPORT_SERVICE_SERVICE_CREDENTIAL": ROUTER_CREDENTIAL,
+                "SP2_IMPORT_SERVICE_SERVICE_CREDENTIAL": GRANT_CREDENTIALS["import_service"],
+                "SP2_IMPORT_SERVICE_STORAGE": "postgres",
+                "SP2_IMPORT_SERVICE_DATABASE_ROUTER_URL": router.base_url,
+                **LINEAGE_KEYS,
             },
         )
 
@@ -295,7 +312,14 @@ def test_a_control_domain_read_serves_from_the_control_database(stack: srv.Servi
 
     directory = _get(stack, "/directories/startups", "token-control")
     assert directory.status_code == 200, directory.text
-    assert [entry["record_ref"] for entry in directory.json()["records"]] == ["gs-1", "gs-2"]
+    records = [entry["record_ref"] for entry in directory.json()["records"]]
+
+    # Containment plus order, not equality: the Stage 4D module seeds its own records into the
+    # same Control directory, so the exact contents depend on which modules ran. What must hold
+    # regardless is that every record this module seeded is served, and that the BFF passes the
+    # Control Plane's ``ORDER BY record_id`` through without re-sorting it.
+    assert {"gs-1", "gs-2", E2E_SOURCE} <= set(records), records
+    assert records == sorted(records), "the BFF re-ordered the Control Plane's directory listing"
 
 
 def test_investors_and_deals_traverse_the_same_path_to_the_same_tenant_database(stack: srv.ServiceFleet) -> None:
@@ -538,6 +562,114 @@ def test_a_tenant_listing_returns_only_its_own_records(stack: srv.ServiceFleet) 
     assert "ISO-ACME" in names["acme"] and "ISO-ACME" not in names["zeta"] and "ISO-ACME" not in names["nova"]
     assert "ISO-ZETA" in names["zeta"] and "ISO-ZETA" not in names["acme"]
     assert "ISO-NOVA" in names["nova"] and "ISO-NOVA" not in names["acme"]
+
+
+# --- Import through the ingress, into real tenant PostgreSQL (Stage 5) ----------------------
+
+
+def test_an_import_through_the_ingress_writes_the_copy_and_its_lineage_to_the_tenant_database(
+    stack: srv.ServiceFleet,
+) -> None:
+    """The whole path, end to end, with nothing substituted.
+
+        client token -> BFF -> Authentication -> Access Control -> Import Service
+                     -> Database Router grant -> ACME PostgreSQL (copy + lineage + idempotency)
+
+    Before Stage 5 this request answered 201 and wrote nothing at all.
+    """
+    with pg.SessionWatch(pg.TENANTS) as watch:
+        baseline = watch.snapshot()
+        response = _post(stack, "/import/startups/" + E2E_SOURCE, "token-acme")
+        delta = watch.delta_since(baseline)
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["outcome"] == "created"
+    assert body["source_ref"] == E2E_SOURCE
+
+    copy = pg.rows(
+        pg.dsn("acme"),
+        "SELECT id, company_name FROM startups WHERE global_startup_id = %s",
+        (E2E_SOURCE,),
+    )
+    assert len(copy) == 1, "the ingress import wrote no tenant row"
+    assert copy[0][1] == "Ingress Import Corp"
+    assert body["tenant_record_ref"] == "ref:acme:startups:" + str(copy[0][0])
+
+    chain = pg.rows(
+        pg.dsn("acme"),
+        "SELECT lineage_id, event_type, actor_ref, target_ref, length(integrity_marker) FROM lineage "
+        "WHERE source_ref = %s",
+        (E2E_SOURCE,),
+    )
+    assert len(chain) == 1, "the ingress import wrote no lineage row"
+    assert chain[0][1] == "import"
+    assert chain[0][2] == "p-acme", "the lineage row did not record the authenticated principal"
+    assert chain[0][3] == body["tenant_record_ref"]
+    assert chain[0][4] == 64, "the lineage row carries no real D-23 marker"
+    assert body["lineage_ref"] == "ref:acme:lineage:" + str(chain[0][0])
+
+    # Written into exactly one tenant database, and no other.
+    assert delta["acme"] > 0
+    assert delta["zeta"] == 0 and delta["nova"] == 0, delta
+    for other in ("zeta", "nova"):
+        assert pg.scalar(pg.dsn(other), "SELECT count(*) FROM startups WHERE global_startup_id = %s", (E2E_SOURCE,)) == 0
+        assert pg.scalar(pg.dsn(other), "SELECT count(*) FROM lineage WHERE source_ref = %s", (E2E_SOURCE,)) == 0
+
+
+def test_a_repeated_ingress_import_replays_and_writes_no_second_row(stack: srv.ServiceFleet) -> None:
+    counted = "SELECT count(*) FROM startups WHERE global_startup_id = %s"
+    chained = "SELECT count(*) FROM lineage WHERE source_ref = %s"
+    before = (pg.scalar(pg.dsn("acme"), counted, (E2E_SOURCE,)), pg.scalar(pg.dsn("acme"), chained, (E2E_SOURCE,)))
+
+    response = _post(stack, "/import/startups/" + E2E_SOURCE, "token-acme")
+    assert response.status_code == 201, response.text
+    assert response.json()["outcome"] == "replayed"
+    assert (pg.scalar(pg.dsn("acme"), counted, (E2E_SOURCE,)), pg.scalar(pg.dsn("acme"), chained, (E2E_SOURCE,))) == before
+
+
+def test_the_same_global_record_imported_by_two_tenants_stays_physically_separate(
+    stack: srv.ServiceFleet,
+) -> None:
+    acme = _post(stack, "/import/startups/gs-2", "token-acme")
+    zeta = _post(stack, "/import/startups/gs-2", "token-zeta")
+    assert acme.status_code == 201 and zeta.status_code == 201, (acme.text, zeta.text)
+    assert acme.json()["import_id"] != zeta.json()["import_id"]
+
+    for tenant in ("acme", "zeta"):
+        assert pg.scalar(pg.dsn(tenant), "SELECT count(*) FROM startups WHERE global_startup_id = 'gs-2'") == 1
+    assert pg.scalar(pg.dsn("nova"), "SELECT count(*) FROM startups WHERE global_startup_id = 'gs-2'") == 0
+
+    # The two lineage rows are genuinely different rows in genuinely different databases.
+    acme_id = pg.scalar(pg.dsn("acme"), "SELECT lineage_id FROM lineage WHERE source_ref = 'gs-2'")
+    assert pg.scalar(pg.dsn("zeta"), "SELECT count(*) FROM lineage WHERE lineage_id = %s", (acme_id,)) == 0
+
+
+def test_an_import_by_a_principal_without_membership_is_denied_before_any_write(
+    stack: srv.ServiceFleet,
+) -> None:
+    """Access Control runs before tenant routing, so a denial reaches no tenant database."""
+    with pg.SessionWatch(pg.TENANTS) as watch:
+        baseline = watch.snapshot()
+        response = _post(stack, "/import/startups/gs-2", "token-stranger")
+        _tenant_sessions_unchanged(watch, baseline)
+    assert response.status_code == 403, response.text
+    assert response.json() == {"status": 403, "code": "access_denied"}
+    assert pg.scalar(pg.dsn("acme"), "SELECT count(*) FROM import_idempotency WHERE status = 'failed'") == 0
+
+
+def test_no_ingress_import_response_discloses_a_chain_key(stack: srv.ServiceFleet) -> None:
+    bodies = [
+        _post(stack, "/import/startups/" + E2E_SOURCE, "token-acme").text,
+        _post(stack, "/import/startups/gs-absent", "token-acme").text,
+        _post(stack, "/import/startups/gs-2", "token-stranger").text,
+    ]
+    logs = stack.all_logs()
+    for key_value in LINEAGE_KEYS.values():
+        for body in bodies:
+            assert key_value not in body, "an import response disclosed a chain key"
+        for name, text in logs.items():
+            assert key_value not in text, name + " logged a chain key"
 
 
 # --- D-48 at the ingress -------------------------------------------------------------------

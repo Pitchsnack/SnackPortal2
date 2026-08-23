@@ -20,6 +20,7 @@ from snackportal2.services.deals import main as deals_main
 from snackportal2.services.deals.repository import InMemoryDealRepository
 from snackportal2.services.import_service import main as import_main
 from snackportal2.services.import_service import service as import_service
+from snackportal2.services.import_service import store as import_store
 from snackportal2.services.investors import main as investors_main
 from snackportal2.services.investors.repository import InMemoryInvestorRepository
 from snackportal2.services.lineage import main as lineage_main
@@ -405,6 +406,94 @@ def test_the_idempotency_key_is_derived_never_supplied() -> None:
     assert first == import_service.operation_key("acme", "gs-1")
     assert first != import_service.operation_key("zeta", "gs-1")
     assert first != import_service.operation_key("acme", "gs-2")
+
+
+# --- Import Service storage composition (Stage 5) ----------------------------------------------------
+
+def test_the_import_store_is_in_memory_by_omission_and_postgresql_only_when_asked() -> None:
+    """A silent fallback would turn a database outage into an import that writes nothing."""
+    from snackportal2.services.import_service.store import PostgresImportStore
+
+    assert isinstance(import_main._build_store({}), import_service.InMemoryImportStore)
+    assert isinstance(import_main._build_store({import_main.ENV_STORAGE: "not-postgres"}), import_service.InMemoryImportStore)
+    assert isinstance(import_main._build_store({import_main.ENV_STORAGE: "PostgreS"}), PostgresImportStore)
+
+
+class _RecordingGrants:
+    """A grant provider that records whether it was asked, and never issues anything."""
+
+    def __init__(self) -> None:
+        self.requests = 0
+
+    def grant_for(self, tenant_ref: str | None) -> object:
+        self.requests += 1
+        raise AssertionError("a grant was requested")
+
+
+def test_a_missing_chain_key_refuses_the_import_before_any_grant_is_requested() -> None:
+    """Fail-closed ordering, asserted rather than assumed.
+
+    A tenant with no provenance key cannot lawfully be written to. Resolving the key first
+    means such a tenant never causes a router call and never causes a tenant database
+    connection — the import is refused before it can touch anything at all.
+    """
+    from snackportal2.services.import_service.store import PostgresImportStore
+    from snackportal2.shared.lineage_keys import build_lineage_key_resolver
+
+    grants = _RecordingGrants()
+    store = PostgresImportStore(grants, build_lineage_key_resolver({}))
+    source = import_service.GlobalSourceRecord(record_ref="gs-1", display_name="Alpha Corp", attributes={})
+
+    try:
+        store.write_import("acme", "imp-key", source, import_service.ImportAttribution(actor_ref="p-agent"))
+    except AppError as denial:
+        assert denial.status == 503
+    else:
+        raise AssertionError("a missing chain key did not refuse the import")
+
+    assert grants.requests == 0, "the router was asked for a grant before the chain key resolved"
+
+
+def test_the_in_memory_lineage_row_carries_the_same_core_the_durable_one_writes() -> None:
+    """The two stores must agree on field names, or a hermetic test predicts nothing."""
+    from snackportal2.services.import_service.store import PostgresImportStore
+
+    client = _import_client()
+    client.post("/internal/import/startup", headers=_CREDENTIAL, json={"context": _context(), "source_ref": "gs-1"})
+    rows = import_main._store.lineage.list("acme", 10)  # type: ignore[attr-defined]
+    assert len(rows) == 1
+    fields = rows[0][1]
+    assert fields["event_type"] == import_service.EVENT_TYPE_IMPORT
+    assert fields["operation"] == import_service.OPERATION_IMPORT
+    assert fields["actor_ref"] == "p-agent"
+    assert fields["correlation_id"] == "c-1"
+    assert fields["derivation_ref"] == import_service.operation_key("acme", "gs-1")
+    assert fields["source_ref"] == "gs-1"
+
+    # Read from the durable store's own insert list, so renaming a column there fails here
+    # rather than quietly leaving this test asserting names nothing writes any more.
+    durable_columns = set(import_store._LINEAGE_COLUMNS)
+    assert set(fields) - {"occurred_at"} <= durable_columns
+    for name in ("event_type", "operation", "actor_ref", "correlation_id", "derivation_ref", "source_ref", "target_ref"):
+        assert name in durable_columns, name
+    assert PostgresImportStore is not None
+
+
+def test_the_actor_and_correlation_cannot_be_chosen_by_the_caller() -> None:
+    """IC-004 requires an actor reference; IC-013 §7 requires it to come from the signed context."""
+    from snackportal2.services.import_service.models import ImportInitiationRequest
+
+    assert set(ImportInitiationRequest.model_fields) == {"context", "source_ref"}
+    client = _import_client()
+    response = client.post(
+        "/internal/import/startup",
+        headers=_CREDENTIAL,
+        json={"context": _context(), "source_ref": "gs-1", "actor_ref": "someone-else", "correlation_id": "forged"},
+    )
+    assert response.status_code == 201
+    fields = import_main._store.lineage.list("acme", 10)[0][1]  # type: ignore[attr-defined]
+    assert fields["actor_ref"] == "p-agent"
+    assert fields["correlation_id"] == "c-1"
 
 
 # --- Lineage Service (IC-004) ------------------------------------------------------------------------

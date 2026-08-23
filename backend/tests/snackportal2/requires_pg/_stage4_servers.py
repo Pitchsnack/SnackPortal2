@@ -96,13 +96,21 @@ class ServiceFleet:
 
     # -- lifecycle ---------------------------------------------------------------------
 
-    def start(self, key: str, env: Mapping[str, str], port: Optional[int] = None) -> ServiceProcess:
+    def start(
+        self, key: str, env: Mapping[str, str], port: Optional[int] = None, alias: Optional[str] = None
+    ) -> ServiceProcess:
         """Start one service with exactly the supplied environment additions.
 
         The child inherits the parent environment so that PATH and the Python install work,
         then the supplied mapping is layered on top. Every ``SP2_`` variable the parent
         happens to carry is stripped first, so a service can never be accidentally configured
         by a leftover variable from another test.
+
+        ``alias`` registers the process under a second name, so the same service module can run
+        twice in one fleet under two different configurations — which is how a deliberately
+        mis-configured instance is proven to fail closed without disturbing the correctly
+        configured one. Both are still stopped together; an alias that silently replaced the
+        original entry would leak a process.
         """
         chosen = port if port is not None else free_port()
         child_env = {name: value for name, value in os.environ.items() if not name.startswith("SP2_")}
@@ -110,7 +118,7 @@ class ServiceFleet:
         child_env["PYTHONUNBUFFERED"] = "1"
         child_env.update(env)
 
-        log_path = self._log_dir / (key + ".log")
+        log_path = self._log_dir / ((alias or key) + ".log")
         handle = log_path.open("wb")
         process = subprocess.Popen(
             [
@@ -130,7 +138,9 @@ class ServiceFleet:
             stderr=subprocess.STDOUT,
         )
         service = ServiceProcess(key=key, port=chosen, process=process, log_path=log_path, env_keys=sorted(env))
-        self.services[key] = service
+        registered = alias or key
+        assert registered not in self.services, registered + " is already running in this fleet"
+        self.services[registered] = service
         self._await_health(service)
         return service
 

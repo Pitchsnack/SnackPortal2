@@ -23,6 +23,9 @@ import pytest
 from snackportal2.services.control_plane.models import SecretReference, TenantDescriptor
 from snackportal2.services.control_plane.store import ENV_CONTROL_DSN, build_store
 from snackportal2.services.database_router.resolver import EnvironmentTenantSecretStore
+from snackportal2.services.import_service.service import operation_key
+from snackportal2.shared.lineage_chain import CURRENT_MARKER_VERSION, GENESIS_PREV_MARKER, marker_for
+from snackportal2.shared.lineage_keys import EnvironmentLineageKeyResolver
 from snackportal2.shared.security import AuthContext, RequestContext
 from snackportal2.shared.types import PlatformRole, TenantLifecycleState
 
@@ -38,7 +41,40 @@ GRANT_CREDENTIALS = {
     "investors": "grant-investors",
     "deals": "grant-deals",
     "lineage": "grant-lineage",
+    "import_service": "grant-import",
 }
+
+#: Per-tenant D-23 chain keys for the Import Service process.
+#:
+#: Test material, generated here and nowhere else — distinct per tenant, because a shared key
+#: would make every tenant's chain verifiable with one secret and the per-tenant property would
+#: be untested. Long enough to clear the resolver's configured floor.
+LINEAGE_KEYS = {
+    EnvironmentLineageKeyResolver.variable_name(tenant): "stage5-chain-key-" + tenant + "-" + ("0" * 20)
+    for tenant in pg.TENANTS
+}
+
+#: The tenant whose chain the import section starts from genesis. Nothing seeds lineage here.
+GENESIS_TENANT = "nova"
+
+#: The prefix every derived import operation key carries. Seeded fixture lineage rows use
+#: ``job-``, so the two sets never overlap.
+IMPORT_KEY_PREFIX = "imp-%"
+
+#: Fleet name of the second, deliberately key-less Import Service process.
+KEYLESS_IMPORT = "import_service_without_keys"
+
+#: The global record this module's own import assertions use.
+#:
+#: Dedicated rather than shared: ``gs-1`` is seeded by the Control Plane module too, with a
+#: different attribute set, and ``ON CONFLICT DO NOTHING`` means whichever module runs first
+#: wins. A test that asserts which columns an import maps must own the record it maps.
+DOMAIN_SOURCE = "gs-domain-import"
+
+#: Global directory records the rollback probes import. Seeded alongside the ordinary one.
+ROLLBACK_LINEAGE_SOURCE = "gs-rollback-lineage"
+ROLLBACK_STARTUP_SOURCE = "gs-rollback-startup"
+ROLLBACK_STARTUP_NAME = "Rollback Probe Corp"
 
 
 def _dsn_variable(store_ref: str) -> str:
@@ -70,12 +106,19 @@ def fleet(tmp_path_factory: pytest.TempPathFactory) -> Iterator[srv.ServiceFleet
                 database_association_ref=SecretReference(store_ref="assoc/" + tenant, version="1"),
             )
         )
-    pg.execute(
-        pg.dsn("control"),
-        "INSERT INTO control_directory (directory, record_id, display_name, attributes) "
-        "VALUES (%s, %s, %s, %s::jsonb) ON CONFLICT (directory, record_id) DO NOTHING",
-        ("GlobalStartupDirectory", "gs-1", "Alpha Corp", json.dumps({"industry": "robotics"})),
-    )
+    for record_id, display_name, attributes in (
+        ("gs-1", "Alpha Corp", {"industry": "robotics"}),
+        (DOMAIN_SOURCE, "Domain Import Corp", {"industry": "robotics", "headquarters_country": "NL"}),
+        (ROLLBACK_LINEAGE_SOURCE, "Lineage Rollback Corp", {}),
+        (ROLLBACK_STARTUP_SOURCE, ROLLBACK_STARTUP_NAME, {}),
+        ("gs-preexisting", "Preexisting Copy Corp", {}),
+    ):
+        pg.execute(
+            pg.dsn("control"),
+            "INSERT INTO control_directory (directory, record_id, display_name, attributes) "
+            "VALUES (%s, %s, %s, %s::jsonb) ON CONFLICT (directory, record_id) DO NOTHING",
+            ("GlobalStartupDirectory", record_id, display_name, json.dumps(attributes)),
+        )
 
     log_dir: Path = tmp_path_factory.mktemp("stage4d-logs")
     running = srv.ServiceFleet(log_dir)
@@ -105,8 +148,25 @@ def fleet(tmp_path_factory: pytest.TempPathFactory) -> Iterator[srv.ServiceFleet
             "import_service",
             {
                 "SP2_IMPORT_SERVICE_CONTROL_PLANE_URL": control.base_url,
-                "SP2_IMPORT_SERVICE_SERVICE_CREDENTIAL": ROUTER_CREDENTIAL,
+                "SP2_IMPORT_SERVICE_SERVICE_CREDENTIAL": GRANT_CREDENTIALS["import_service"],
+                "SP2_IMPORT_SERVICE_STORAGE": "postgres",
+                "SP2_IMPORT_SERVICE_DATABASE_ROUTER_URL": router.base_url,
+                **LINEAGE_KEYS,
             },
+        )
+        # A second Import Service, identical except that it holds no chain key for any tenant.
+        # It exists to prove the fail-closed path end to end in a real process: the same code
+        # that imports successfully next door must refuse here, and must refuse before it
+        # writes anything.
+        running.start(
+            "import_service",
+            {
+                "SP2_IMPORT_SERVICE_CONTROL_PLANE_URL": control.base_url,
+                "SP2_IMPORT_SERVICE_SERVICE_CREDENTIAL": GRANT_CREDENTIALS["import_service"],
+                "SP2_IMPORT_SERVICE_STORAGE": "postgres",
+                "SP2_IMPORT_SERVICE_DATABASE_ROUTER_URL": router.base_url,
+            },
+            alias=KEYLESS_IMPORT,
         )
         yield running
     finally:
@@ -724,7 +784,53 @@ def test_lineage_rows_never_cross_tenant_databases(fleet: srv.ServiceFleet) -> N
     assert pg.scalar(pg.dsn("zeta"), "SELECT count(*) FROM lineage") == 0
 
 
-# --- 6.4 Import Service: the half that is live, and the half that is blocked ---------------
+# --- 6.4 Import Service: the real PostgreSQL write path -------------------------------------
+#
+# Stage 4 recorded blocker B-1 here: the Import Service composed an in-memory store
+# unconditionally, so an import that answered 201 left no row in the tenant database it named.
+# Stage 5 closes it. These tests assert what is now written, that it is written atomically, and
+# that it is written only into the one tenant the signed claim names.
+
+
+def _import(fleet: srv.ServiceFleet, tenant: Optional[str], source_ref: str, service: str = "import_service") -> httpx.Response:
+    return _call(fleet, service, "/internal/import/startup", {"context": _context(tenant), "source_ref": source_ref})
+
+
+def _lineage_row(tenant: str, source_ref: str) -> Optional[tuple]:
+    """The lineage row an import of ``source_ref`` produced in ``tenant``, with every chained
+    column the marker is computed over."""
+    found = pg.rows(
+        pg.dsn(tenant),
+        "SELECT lineage_id, seq, segment_id, event_type, occurred_at, actor_ref, source_ref, target_ref, "
+        "operation, schema_version, derivation_ref, parent_lineage_ref, correlation_id, marker_version, "
+        "prev_marker, integrity_marker FROM lineage WHERE source_ref = %s ORDER BY seq",
+        (source_ref,),
+    )
+    return found[0] if found else None
+
+
+_CHAINED = (
+    "lineage_id",
+    "seq",
+    "segment_id",
+    "event_type",
+    "occurred_at",
+    "actor_ref",
+    "source_ref",
+    "target_ref",
+    "operation",
+    "schema_version",
+    "derivation_ref",
+    "parent_lineage_ref",
+    "correlation_id",
+    "marker_version",
+    "prev_marker",
+    "integrity_marker",
+)
+
+
+def _as_record(row: tuple) -> Dict[str, Any]:
+    return {name: row[index] for index, name in enumerate(_CHAINED)}
 
 
 def test_the_import_source_is_read_from_the_real_control_database(fleet: srv.ServiceFleet) -> None:
@@ -733,44 +839,327 @@ def test_the_import_source_is_read_from_the_real_control_database(fleet: srv.Ser
     A source reference absent from ``control_directory`` must be *not found*, and one present
     must import — which is only distinguishable if the read is genuinely hitting the database.
     """
-    missing = _call(
-        fleet, "import_service", "/internal/import/startup", {"context": _context("acme"), "source_ref": "gs-absent"}
-    )
+    missing = _import(fleet, "acme", "gs-absent")
     assert missing.status_code == 404, missing.text
 
-    created = _call(
-        fleet, "import_service", "/internal/import/startup", {"context": _context("acme"), "source_ref": "gs-1"}
-    )
+    created = _import(fleet, "acme", "gs-1")
     assert created.status_code == 201, created.text
     assert created.json()["outcome"] == "created"
     assert created.json()["source_ref"] == "gs-1"
     assert created.json()["target_tenant_ref"] == "acme"
 
 
-def test_import_is_idempotent_per_tenant_and_source(fleet: srv.ServiceFleet) -> None:
-    first = _call(
-        fleet, "import_service", "/internal/import/startup", {"context": _context("zeta"), "source_ref": "gs-1"}
+def test_a_first_import_writes_the_copy_its_lineage_and_its_idempotency_row(fleet: srv.ServiceFleet) -> None:
+    """**Stage 4 blocker B-1, now closed.** Three rows, in one tenant database.
+
+    ``nova`` is used because nothing else in this module seeds its chain, so this is a genuine
+    genesis append: sequence 1, with the empty predecessor marker the chain starts from.
+    """
+    tenant = GENESIS_TENANT
+    assert pg.scalar(pg.dsn(tenant), "SELECT count(*) FROM lineage") == 0, "the genesis tenant already had lineage"
+
+    response = _import(fleet, tenant, DOMAIN_SOURCE)
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["outcome"] == "created"
+
+    # 1 — the independent tenant copy, carrying a soft reference to its global source.
+    copy = pg.rows(
+        pg.dsn(tenant),
+        "SELECT id, global_startup_id, company_name, industry, headquarters_country FROM startups "
+        "WHERE global_startup_id = %s",
+        (DOMAIN_SOURCE,),
     )
+    assert len(copy) == 1, "the import wrote no tenant startup row"
+    assert copy[0][1:] == (DOMAIN_SOURCE, "Domain Import Corp", "robotics", "NL")
+    assert body["tenant_record_ref"] == "ref:" + tenant + ":startups:" + str(copy[0][0])
+
+    # 2 — its provenance, at the head of a chain that starts here.
+    row = _lineage_row(tenant, DOMAIN_SOURCE)
+    assert row is not None, "the import wrote no lineage row"
+    record = _as_record(row)
+    assert record["seq"] == 1
+    assert record["prev_marker"] == GENESIS_PREV_MARKER
+    assert record["event_type"] == "import"
+    assert record["operation"] == "global_startup_import"
+    assert record["actor_ref"] == "p-agent"
+    assert record["target_ref"] == body["tenant_record_ref"]
+    assert record["schema_version"] == "1"
+    assert record["marker_version"] == CURRENT_MARKER_VERSION
+    assert body["lineage_ref"] == "ref:" + tenant + ":lineage:" + str(record["lineage_id"])
+
+    # 3 — the idempotency record and its job, keyed by the derived operation key.
+    key = operation_key(tenant, DOMAIN_SOURCE)
+    assert body["import_id"] == key
+    assert record["derivation_ref"] == key
+    assert pg.rows(
+        pg.dsn(tenant), "SELECT job_id, status, applied FROM import_idempotency WHERE operation_key = %s", (key,)
+    ) == [(key, "completed", 1)]
+    assert pg.rows(
+        pg.dsn(tenant), "SELECT operation_key, tenant_id, state FROM import_job WHERE job_id = %s", (key,)
+    ) == [(key, tenant, "completed")]
+
+
+def test_the_lineage_marker_is_a_real_d23_marker_and_not_a_placeholder(fleet: srv.ServiceFleet) -> None:
+    """Recomputed from the stored row and this tenant's key — the only way to know it is real.
+
+    A non-empty ``integrity_marker`` proves nothing on its own; Stage 4's own fixture rows
+    carried the string ``fixture-marker-1``. This recomputes the keyed HMAC over the row's own
+    canonical serialization and its recorded predecessor, and requires the stored value to
+    match. It then shows that the *other* tenant's key does not verify it, which is what makes
+    the chain per-tenant rather than merely tenant-resident.
+    """
+    del fleet  # the import happened in the previous test; this reads what it wrote
+    tenant = GENESIS_TENANT
+    row = _lineage_row(tenant, DOMAIN_SOURCE)
+    assert row is not None
+    record = _as_record(row)
+
+    key = LINEAGE_KEYS[EnvironmentLineageKeyResolver.variable_name(tenant)].encode("utf-8")
+    recomputed = marker_for(key, record, str(record["prev_marker"]), marker_version=int(record["marker_version"]))
+    assert record["integrity_marker"] == recomputed, "the stored marker is not a D-23 marker over this row"
+    assert len(str(record["integrity_marker"])) == 64
+
+    other = LINEAGE_KEYS[EnvironmentLineageKeyResolver.variable_name("acme")].encode("utf-8")
+    assert marker_for(other, record, str(record["prev_marker"])) != record["integrity_marker"]
+
+    # And tampering with any chained field breaks it, which is the property the marker exists for.
+    tampered = dict(record)
+    tampered["target_ref"] = "ref:" + tenant + ":startups:999999"
+    assert marker_for(key, tampered, str(record["prev_marker"])) != record["integrity_marker"]
+
+
+def test_a_second_import_extends_the_chain_rather_than_starting_a_new_one(fleet: srv.ServiceFleet) -> None:
+    tenant = GENESIS_TENANT
+    first = _lineage_row(tenant, DOMAIN_SOURCE)
+    assert first is not None
+    first_record = _as_record(first)
+
+    response = _import(fleet, tenant, "gs-preexisting")
+    assert response.status_code == 201, response.text
+
+    second = _lineage_row(tenant, "gs-preexisting")
+    assert second is not None
+    second_record = _as_record(second)
+
+    assert second_record["seq"] == int(first_record["seq"]) + 1
+    assert second_record["prev_marker"] == first_record["integrity_marker"], "the chain forked instead of extending"
+    assert second_record["segment_id"] == first_record["segment_id"]
+
+    key = LINEAGE_KEYS[EnvironmentLineageKeyResolver.variable_name(tenant)].encode("utf-8")
+    assert second_record["integrity_marker"] == marker_for(key, second_record, str(second_record["prev_marker"]))
+
+
+def test_import_is_idempotent_per_tenant_and_source(fleet: srv.ServiceFleet) -> None:
+    """A retry must replay, and must add no second copy, lineage row, or idempotency record."""
+    first = _import(fleet, "zeta", "gs-1")
     assert first.status_code == 201, first.text
     assert first.json()["outcome"] == "created"
 
-    replay = _call(
-        fleet, "import_service", "/internal/import/startup", {"context": _context("zeta"), "source_ref": "gs-1"}
+    counts = (
+        pg.scalar(pg.dsn("zeta"), "SELECT count(*) FROM startups WHERE global_startup_id = 'gs-1'"),
+        pg.scalar(pg.dsn("zeta"), "SELECT count(*) FROM lineage"),
+        pg.scalar(pg.dsn("zeta"), "SELECT count(*) FROM import_idempotency"),
     )
+    assert counts == (1, 1, 1)
+
+    replay = _import(fleet, "zeta", "gs-1")
     assert replay.status_code == 201
     assert replay.json()["outcome"] == "replayed"
     assert replay.json()["tenant_record_ref"] == first.json()["tenant_record_ref"]
+    assert replay.json()["lineage_ref"] == first.json()["lineage_ref"]
     assert replay.json()["import_id"] == first.json()["import_id"]
 
+    assert (
+        pg.scalar(pg.dsn("zeta"), "SELECT count(*) FROM startups WHERE global_startup_id = 'gs-1'"),
+        pg.scalar(pg.dsn("zeta"), "SELECT count(*) FROM lineage"),
+        pg.scalar(pg.dsn("zeta"), "SELECT count(*) FROM import_idempotency"),
+    ) == counts, "a replayed import wrote something"
 
-def test_the_same_source_imported_into_two_tenants_produces_two_independent_copies(
+
+def test_the_same_source_imported_into_two_tenants_produces_two_physically_separate_copies(
     fleet: srv.ServiceFleet,
 ) -> None:
-    acme = _call(fleet, "import_service", "/internal/import/startup", {"context": _context("acme"), "source_ref": "gs-1"})
-    zeta = _call(fleet, "import_service", "/internal/import/startup", {"context": _context("zeta"), "source_ref": "gs-1"})
+    """Two independent copies in two separate clusters — asserted at the databases."""
+    acme = _import(fleet, "acme", "gs-1")
+    zeta = _import(fleet, "zeta", "gs-1")
     assert acme.json()["import_id"] != zeta.json()["import_id"]
     assert acme.json()["tenant_record_ref"].startswith("ref:acme:")
     assert zeta.json()["tenant_record_ref"].startswith("ref:zeta:")
+
+    for tenant in ("acme", "zeta"):
+        assert pg.scalar(pg.dsn(tenant), "SELECT count(*) FROM startups WHERE global_startup_id = 'gs-1'") == 1
+    assert pg.scalar(pg.dsn(GENESIS_TENANT), "SELECT count(*) FROM startups WHERE global_startup_id = 'gs-1'") == 0
+
+    # The lineage rows are different rows, with different ids, in different databases.
+    identities = {tenant: _as_record(_lineage_row(tenant, "gs-1"))["lineage_id"] for tenant in ("acme", "zeta")}
+    assert identities["acme"] != identities["zeta"]
+    assert pg.scalar(pg.dsn("zeta"), "SELECT count(*) FROM lineage WHERE lineage_id = %s", (identities["acme"],)) == 0
+
+
+def test_an_import_opens_a_session_only_on_its_own_tenant_database(fleet: srv.ServiceFleet) -> None:
+    """Physical isolation measured from inside each cluster, not inferred from the API."""
+    with pg.SessionWatch(pg.TENANTS) as watch:
+        baseline = watch.snapshot()
+        response = _import(fleet, "acme", ROLLBACK_LINEAGE_SOURCE)
+        assert response.status_code == 201, response.text
+        delta = watch.delta_since(baseline)
+    assert delta["acme"] > 0, "the import opened no session on its own tenant database"
+    assert delta["zeta"] == 0 and delta[GENESIS_TENANT] == 0, delta
+
+
+def test_an_import_writes_nothing_to_the_control_database(fleet: srv.ServiceFleet) -> None:
+    """The global record is read, never written, and nothing falls back to the Control DB."""
+    control = pg.dsn("control")
+    tables = pg.table_names(control)
+    before = {table: pg.scalar(control, "SELECT count(*) FROM " + table) for table in tables}
+
+    response = _import(fleet, "zeta", "gs-preexisting")
+    assert response.status_code == 201, response.text
+
+    after = {table: pg.scalar(control, "SELECT count(*) FROM " + table) for table in tables}
+    assert after == before, "an import changed the Control database"
+
+
+def test_a_failed_lineage_write_rolls_back_the_startup_copy(fleet: srv.ServiceFleet) -> None:
+    """Atomic provenance, proven by breaking the lineage write on purpose.
+
+    A CHECK constraint scoped to one source reference makes exactly this import's lineage
+    insert fail, and nothing else. If the three writes were not one transaction, the startup
+    copy would survive without provenance — which IC-004 forbids outright.
+    """
+    tenant = "zeta"
+    key = operation_key(tenant, ROLLBACK_LINEAGE_SOURCE)
+    pg.execute(
+        pg.dsn(tenant),
+        "ALTER TABLE lineage ADD CONSTRAINT stage5_lineage_probe CHECK (source_ref <> %s)" % ("'" + ROLLBACK_LINEAGE_SOURCE + "'"),
+    )
+    try:
+        response = _import(fleet, tenant, ROLLBACK_LINEAGE_SOURCE)
+        assert response.status_code == 500, response.text
+        assert response.json() == {"status": 500, "code": "internal_error"}
+    finally:
+        pg.execute(pg.dsn(tenant), "ALTER TABLE lineage DROP CONSTRAINT stage5_lineage_probe")
+
+    assert pg.scalar(
+        pg.dsn(tenant), "SELECT count(*) FROM startups WHERE global_startup_id = %s", (ROLLBACK_LINEAGE_SOURCE,)
+    ) == 0, "the tenant copy survived a failed lineage write"
+    assert pg.scalar(pg.dsn(tenant), "SELECT count(*) FROM lineage WHERE source_ref = %s", (ROLLBACK_LINEAGE_SOURCE,)) == 0
+    assert pg.scalar(pg.dsn(tenant), "SELECT count(*) FROM import_idempotency WHERE operation_key = %s", (key,)) == 0
+    assert pg.scalar(pg.dsn(tenant), "SELECT count(*) FROM import_job WHERE job_id = %s", (key,)) == 0
+
+    # And the same import succeeds once the injected fault is gone, so the rollback left the
+    # tenant in a state a retry can still complete from.
+    retried = _import(fleet, tenant, ROLLBACK_LINEAGE_SOURCE)
+    assert retried.status_code == 201, retried.text
+    assert retried.json()["outcome"] == "created"
+
+
+def test_a_failed_startup_write_leaves_no_idempotency_or_lineage_row(fleet: srv.ServiceFleet) -> None:
+    """The mirror case: the first write fails, so the other two must never happen."""
+    tenant = "zeta"
+    key = operation_key(tenant, ROLLBACK_STARTUP_SOURCE)
+    pg.execute(
+        pg.dsn(tenant),
+        "ALTER TABLE startups ADD CONSTRAINT stage5_startup_probe CHECK (company_name <> %s)"
+        % ("'" + ROLLBACK_STARTUP_NAME + "'"),
+    )
+    try:
+        response = _import(fleet, tenant, ROLLBACK_STARTUP_SOURCE)
+        assert response.status_code == 500, response.text
+    finally:
+        pg.execute(pg.dsn(tenant), "ALTER TABLE startups DROP CONSTRAINT stage5_startup_probe")
+
+    assert pg.scalar(pg.dsn(tenant), "SELECT count(*) FROM lineage WHERE source_ref = %s", (ROLLBACK_STARTUP_SOURCE,)) == 0
+    assert pg.scalar(pg.dsn(tenant), "SELECT count(*) FROM import_idempotency WHERE operation_key = %s", (key,)) == 0
+    assert pg.scalar(pg.dsn(tenant), "SELECT count(*) FROM import_job WHERE job_id = %s", (key,)) == 0
+
+
+def test_a_tenant_that_already_holds_a_copy_of_the_source_is_refused_not_updated(
+    fleet: srv.ServiceFleet,
+) -> None:
+    """An import produces a copy; it never mutates one. That is Import != Synchronization.
+
+    The Startup Service can also create a record carrying a ``global_startup_id``. When one
+    already exists, importing the same source cannot lawfully produce a second independent copy
+    (the accepted DDL's per-tenant unique index forbids it) and must not quietly update the
+    existing one. It is refused, with nothing written.
+    """
+    tenant = "acme"
+    created = _created(
+        _call(
+            fleet,
+            "startups",
+            "/internal/startups/create",
+            {"context": _context(tenant), "company_name": "Hand Made Copy", "global_startup_id": "gs-preexisting"},
+        )
+    )
+    before = pg.scalar(pg.dsn(tenant), "SELECT count(*) FROM lineage")
+
+    response = _import(fleet, tenant, "gs-preexisting")
+    assert response.status_code == 422, response.text
+    assert response.json() == {"status": 422, "code": "invalid_request"}
+
+    assert pg.rows(
+        pg.dsn(tenant), "SELECT company_name FROM startups WHERE global_startup_id = 'gs-preexisting'"
+    ) == [("Hand Made Copy",)], "the import updated an existing record instead of refusing"
+    assert pg.scalar(pg.dsn(tenant), "SELECT count(*) FROM lineage") == before
+    del created
+
+
+def test_an_import_service_without_a_chain_key_refuses_and_writes_nothing(fleet: srv.ServiceFleet) -> None:
+    """The fail-closed path, in a real process, against the real databases.
+
+    This is the same service module and the same PostgreSQL configuration as the working
+    instance; the only difference is that no chain key is configured for any tenant. It must
+    refuse rather than write a tenant record with an empty, absent, or default marker.
+    """
+    tenant = "acme"
+    before = (
+        pg.scalar(pg.dsn(tenant), "SELECT count(*) FROM startups"),
+        pg.scalar(pg.dsn(tenant), "SELECT count(*) FROM lineage"),
+        pg.scalar(pg.dsn(tenant), "SELECT count(*) FROM import_idempotency"),
+    )
+
+    with pg.SessionWatch(pg.TENANTS) as watch:
+        baseline = watch.snapshot()
+        response = _import(fleet, tenant, ROLLBACK_STARTUP_SOURCE, service=KEYLESS_IMPORT)
+        delta = watch.delta_since(baseline)
+
+    assert response.status_code == 503, response.text
+    assert response.json() == {"status": 503, "code": "tenant_unavailable"}
+    assert delta[tenant] == 0, "the refused import still opened a tenant database connection"
+
+    assert (
+        pg.scalar(pg.dsn(tenant), "SELECT count(*) FROM startups"),
+        pg.scalar(pg.dsn(tenant), "SELECT count(*) FROM lineage"),
+        pg.scalar(pg.dsn(tenant), "SELECT count(*) FROM import_idempotency"),
+    ) == before
+
+
+def test_no_lineage_row_written_by_an_import_carries_an_empty_marker(fleet: srv.ServiceFleet) -> None:
+    """Across every tenant, every import-written row has a full-length keyed marker.
+
+    Selected by ``derivation_ref``, not by ``event_type``: the Lineage Service section above
+    seeds rows that deliberately carry ``event_type = 'import'`` and an avowedly fake marker,
+    and a census that could not tell those apart from real ones would be measuring nothing. The
+    derived operation key is prefixed ``imp-`` and the seeds use ``job-``, so the two sets are
+    disjoint by construction.
+    """
+    del fleet
+    written = 0
+    for tenant in pg.TENANTS:
+        written += int(
+            pg.scalar(pg.dsn(tenant), "SELECT count(*) FROM lineage WHERE derivation_ref LIKE %s", (IMPORT_KEY_PREFIX,)) or 0
+        )
+        empty = pg.scalar(
+            pg.dsn(tenant),
+            "SELECT count(*) FROM lineage WHERE derivation_ref LIKE %s "
+            "AND (integrity_marker IS NULL OR length(integrity_marker) <> 64 OR prev_marker IS NULL)",
+            (IMPORT_KEY_PREFIX,),
+        )
+        assert empty == 0, tenant + " holds an import lineage row without a real marker"
+    assert written >= 5, "the census matched too few rows to mean anything: " + str(written)
 
 
 def test_the_import_service_exposes_exactly_one_operation_and_no_synchronization(
@@ -789,44 +1178,36 @@ def test_the_import_service_exposes_exactly_one_operation_and_no_synchronization
         assert not [name for name in operations if forbidden in name.casefold()], forbidden
 
 
-def test_the_import_service_has_no_postgresql_store_and_writes_no_tenant_row(fleet: srv.ServiceFleet) -> None:
-    """**Stage 4 blocker B-1, made machine-visible.**
+def test_configuring_postgresql_added_no_operation_and_no_secret_field(fleet: srv.ServiceFleet) -> None:
+    """The write path is new; the published contract is not.
 
-    The Import Service composes ``InMemoryImportStore`` unconditionally — there is no storage
-    selector, no grant provider and no PostgreSQL adapter — so an import that reports success
-    leaves no row in the tenant database it names. This test asserts the *current* behaviour
-    rather than the intended one, so that the gap fails loudly the day someone implements the
-    adapter and forgets to update it.
+    Stage 5 gave the Import Service a database, a router grant and a secret resolver. None of
+    those may appear on the wire — not as a route, not as a field, not as a schema.
 
-    The blocker is not the adapter itself; it is that writing one entails writing an IC-004
-    lineage row, and every lineage row needs the D-23 per-tenant HMAC chain key, for which the
-    rebuild has no secret-resolution surface, no configuration and no contract. Inventing one
-    is exactly what §0.5 forbids.
+    Checked over property *names* and over the real key values, not by grepping the whole
+    document: the descriptions legitimately contain the words "dsn" and "credential" precisely
+    because they promise the field carries neither, and a substring check would read those
+    promises as violations.
     """
-    from snackportal2.services import import_service as import_package
-    from snackportal2.services.import_service import main as import_main
-    from snackportal2.services.import_service import service as import_service_module
+    document = httpx.get(fleet.url("import_service") + "/openapi.json", timeout=10.0).json()
 
-    del import_package
-    assert isinstance(import_main._store, import_service_module.InMemoryImportStore)
-    assert not [name for name in dir(import_service_module) if name.startswith("Postgres")]
+    for name, definition in (document.get("components", {}).get("schemas", {}) or {}).items():
+        for property_name in (definition.get("properties") or {}):
+            folded = property_name.casefold()
+            for forbidden in ("key", "secret", "dsn", "password", "credential", "grant"):
+                assert forbidden not in folded, "the import contract publishes " + name + "." + property_name
 
-    before = pg.scalar(pg.dsn("nova"), "SELECT count(*) FROM startups")
-    lineage_before = pg.scalar(pg.dsn("nova"), "SELECT count(*) FROM lineage")
-    result = _call(
-        fleet, "import_service", "/internal/import/startup", {"context": _context("nova"), "source_ref": "gs-1"}
-    )
-    assert result.status_code == 201, result.text
-    assert pg.scalar(pg.dsn("nova"), "SELECT count(*) FROM startups") == before, (
-        "the Import Service now writes to PostgreSQL — blocker B-1 is resolved and this test must be replaced"
-    )
-    assert pg.scalar(pg.dsn("nova"), "SELECT count(*) FROM lineage") == lineage_before
+    rendered = json.dumps(document)
+    for key_value in LINEAGE_KEYS.values():
+        assert key_value not in rendered, "a chain key reached the published contract"
+    for variable in LINEAGE_KEYS:
+        assert variable not in rendered
+    for fragment in srv.dsn_secret_fragments():
+        assert fragment not in rendered
 
 
 def test_a_tenantless_import_is_refused_before_anything_is_written(fleet: srv.ServiceFleet) -> None:
-    response = _call(
-        fleet, "import_service", "/internal/import/startup", {"context": _context(None), "source_ref": "gs-1"}
-    )
+    response = _import(fleet, None, "gs-1")
     assert response.status_code == 404
     assert response.json() == {"status": 404, "code": "tenant_not_found"}
 

@@ -18,21 +18,30 @@ import uvicorn
 
 from ...shared.config import load_settings
 from ...shared.errors import error_responses
+from ...shared.lineage_keys import build_lineage_key_resolver
 from ...shared.security import ServiceBearer
 from ...shared.service import build_app
+from ...shared.tenant_data import build_grant_provider
 from .models import ImportInitiationRequest, ImportOutcome, ImportResult
 from .service import (
     EmptyGlobalDirectory,
     GlobalDirectoryReadPort,
     HttpGlobalDirectory,
     ImportService,
+    ImportStore,
     InMemoryImportStore,
 )
+from .store import PostgresImportStore
 
 SERVICE = "import_service"
 
 ENV_CONTROL_PLANE_URL = "SP2_IMPORT_SERVICE_CONTROL_PLANE_URL"
 ENV_SERVICE_CREDENTIAL = "SP2_IMPORT_SERVICE_SERVICE_CREDENTIAL"
+
+#: Storage mode. Explicit, because a silent fallback from PostgreSQL to in-memory would turn a
+#: database outage into an import that reports success and writes nothing — which is exactly
+#: the gap Stage 4 recorded as blocker B-1.
+ENV_STORAGE = "SP2_IMPORT_SERVICE_STORAGE"
 
 settings = load_settings(SERVICE)
 
@@ -57,7 +66,21 @@ def _build_directory(env: Optional[Mapping[str, str]] = None) -> GlobalDirectory
     return EmptyGlobalDirectory()
 
 
-_store = InMemoryImportStore()
+def _build_store(env: Optional[Mapping[str, str]] = None) -> ImportStore:
+    """Select the import store from configuration, in-memory by omission.
+
+    The PostgreSQL store needs two things the in-memory one does not: a Database Router grant
+    provider (D-48 — the router still decides *which* database) and a per-tenant lineage chain
+    key resolver (D-23). Both are composed here and both fail closed on their own, so a
+    half-configured deployment cannot write a tenant record without provenance.
+    """
+    source: Mapping[str, str] = os.environ if env is None else env
+    if source.get(ENV_STORAGE, "").strip().casefold() == "postgres":
+        return PostgresImportStore(build_grant_provider(SERVICE), build_lineage_key_resolver())
+    return InMemoryImportStore()
+
+
+_store = _build_store()
 _service = ImportService(_build_directory(), _store)
 
 
@@ -80,7 +103,7 @@ _service = ImportService(_build_directory(), _store)
     responses=error_responses(401, 404, 409, 422, 503),
 )
 async def import_startup(request: ImportInitiationRequest, _credential: ServiceBearer) -> ImportResult:
-    record, replayed = _service.import_startup(request.context.tenant_context, request.source_ref)
+    record, replayed = _service.import_startup(request.context, request.source_ref)
     return ImportResult(
         source_ref=request.source_ref,
         target_tenant_ref=request.context.tenant_context or "",

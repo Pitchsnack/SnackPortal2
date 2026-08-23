@@ -20,10 +20,18 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import Dict, Mapping, Optional, Protocol
+from datetime import datetime, timezone
+from typing import Dict, Mapping, Optional, Protocol, Tuple
 
 from ...shared.errors import consistent_tenant_denial, not_found
+from ...shared.security import RequestContext
 from ...shared.tenant_data import InMemoryTenantTable, compose_record_ref
+
+#: The lineage codes one import emits (IC-004 D-22). ``event_type`` is the contract's reserved
+#: import value; ``operation`` names what was done. Both stores use these, so a test written
+#: against the in-memory store predicts what the PostgreSQL store writes.
+EVENT_TYPE_IMPORT = "import"
+OPERATION_IMPORT = "global_startup_import"
 
 
 @dataclass(frozen=True)
@@ -110,13 +118,35 @@ class ImportRecord:
     lineage_ref: str
 
 
+@dataclass(frozen=True)
+class ImportAttribution:
+    """Who initiated this import, and under which correlation.
+
+    IC-004 requires every lineage row to carry an ``actor_ref``, and requires it to be an
+    identity *reference* — never a token, a JWT, or a credential. Both values are taken from
+    the signed :class:`~snackportal2.shared.security.RequestContext`, so neither can be chosen
+    by the caller.
+    """
+
+    actor_ref: str
+    correlation_id: Optional[str] = None
+
+
 class ImportStore(Protocol):
     """Persist the tenant copy, its lineage row, and the idempotency record."""
 
     def find_existing(self, tenant_ref: str, key: str) -> Optional[ImportRecord]:
         ...
 
-    def write_import(self, tenant_ref: str, key: str, source: GlobalSourceRecord) -> ImportRecord:
+    def write_import(
+        self, tenant_ref: str, key: str, source: GlobalSourceRecord, attribution: ImportAttribution
+    ) -> Tuple[ImportRecord, bool]:
+        """Write all three rows together, returning the record and whether it replayed.
+
+        The replay flag exists because a durable store can discover, inside the write, that a
+        concurrent request already completed the same import. Answering "created" then would
+        be a false statement about what this call did.
+        """
         ...
 
 
@@ -137,7 +167,9 @@ class InMemoryImportStore:
     def find_existing(self, tenant_ref: str, key: str) -> Optional[ImportRecord]:
         return self._by_key.get((tenant_ref, key))
 
-    def write_import(self, tenant_ref: str, key: str, source: GlobalSourceRecord) -> ImportRecord:
+    def write_import(
+        self, tenant_ref: str, key: str, source: GlobalSourceRecord, attribution: ImportAttribution
+    ) -> Tuple[ImportRecord, bool]:
         startup_identity = self.startups.insert(
             tenant_ref,
             {
@@ -149,21 +181,27 @@ class InMemoryImportStore:
         )
         tenant_record_ref = compose_record_ref(tenant_ref, "startups", startup_identity)
 
+        # The same D-22 core the PostgreSQL store writes, minus the parts only a real chain
+        # has (seq, prev_marker, integrity_marker). Carrying the same field names here is what
+        # keeps a test written against this store predictive of the durable one.
         lineage_identity = self.lineage.insert(
             tenant_ref,
             {
-                "event_type": "import",
-                "operation": "global_startup_import",
+                "event_type": EVENT_TYPE_IMPORT,
+                "occurred_at": datetime.now(timezone.utc).isoformat(),
+                "actor_ref": attribution.actor_ref,
+                "operation": OPERATION_IMPORT,
                 "source_ref": source.record_ref,
                 "target_ref": tenant_record_ref,
                 "derivation_ref": key,
+                "correlation_id": attribution.correlation_id,
             },
         )
         lineage_ref = compose_record_ref(tenant_ref, "lineage", lineage_identity)
 
         record = ImportRecord(import_id=key, tenant_record_ref=tenant_record_ref, lineage_ref=lineage_ref)
         self._by_key[(tenant_ref, key)] = record
-        return record
+        return record, False
 
 
 class ImportService:
@@ -173,8 +211,15 @@ class ImportService:
         self._directory = directory
         self._store = store
 
-    def import_startup(self, tenant_ref: Optional[str], source_ref: str) -> tuple[ImportRecord, bool]:
-        """Import one global Startup into one tenant. Returns the record and whether it replayed."""
+    def import_startup(self, context: RequestContext, source_ref: str) -> Tuple[ImportRecord, bool]:
+        """Import one global Startup into one tenant. Returns the record and whether it replayed.
+
+        The whole context is taken rather than a bare tenant reference because a lineage row
+        must record *who* derived the record and under which correlation (IC-004 D-22), and
+        those must come from the signed context — never from the request body, where a caller
+        could choose them.
+        """
+        tenant_ref = context.tenant_context
         if not tenant_ref:
             # A tenantless context has no tenant database to import into.
             raise consistent_tenant_denial()
@@ -190,14 +235,18 @@ class ImportService:
         if source is None:
             raise not_found()
 
-        return self._store.write_import(tenant_ref, key, source), False
+        attribution = ImportAttribution(actor_ref=context.principal_ref, correlation_id=context.correlation_id)
+        return self._store.write_import(tenant_ref, key, source, attribution)
 
 
 __all__ = [
+    "EVENT_TYPE_IMPORT",
+    "OPERATION_IMPORT",
     "EmptyGlobalDirectory",
     "GlobalDirectoryReadPort",
     "GlobalSourceRecord",
     "HttpGlobalDirectory",
+    "ImportAttribution",
     "ImportRecord",
     "ImportService",
     "ImportStore",
