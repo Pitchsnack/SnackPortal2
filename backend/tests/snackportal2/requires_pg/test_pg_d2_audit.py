@@ -42,16 +42,19 @@ from . import _stage4_servers as srv
 
 pytestmark = pytest.mark.skipif(not pg.configured(), reason=pg.SKIP_REASON)
 
-BFF_KEY = "audit-key-bff"
-ROUTER_KEY = "audit-key-router"
-AUDITOR_KEY = "audit-key-auditor"
-DELEGATE_KEY = "audit-key-delegate"
+BFF_EMITTER = "audit-emitter-bff"
+ROUTER_EMITTER = "audit-emitter-router"
+AUDITOR_EMITTER = "audit-emitter-auditor"
+DELEGATE_EMITTER = "audit-emitter-delegate"
+
+#: A credential the Audit Service is deliberately never told about.
+UNRECOGNIZED_EMITTER = "audit-emitter-not-configured"
 
 CREDENTIALS = {
-    BFF_KEY: {"emitter_ref": "bff", "scopes": [SCOPE_WRITE, SCOPE_READ]},
-    ROUTER_KEY: {"emitter_ref": "database_router", "scopes": [SCOPE_WRITE]},
-    AUDITOR_KEY: {"emitter_ref": "auditor", "scopes": [SCOPE_READ_ALL]},
-    DELEGATE_KEY: {"emitter_ref": "operator", "scopes": [SCOPE_READ, SCOPE_DELEGATE], "delegable_targets": ["bff"]},
+    BFF_EMITTER: {"emitter_ref": "bff", "scopes": [SCOPE_WRITE, SCOPE_READ]},
+    ROUTER_EMITTER: {"emitter_ref": "database_router", "scopes": [SCOPE_WRITE]},
+    AUDITOR_EMITTER: {"emitter_ref": "auditor", "scopes": [SCOPE_READ_ALL]},
+    DELEGATE_EMITTER: {"emitter_ref": "operator", "scopes": [SCOPE_READ, SCOPE_DELEGATE], "delegable_targets": ["bff"]},
 }
 
 
@@ -111,8 +114,8 @@ def test_the_audit_table_the_sink_targets_is_the_one_m1_created() -> None:
 
 def test_an_unconfigured_audit_service_accepts_nothing_rather_than_everything() -> None:
     directory = build_credential_directory(env={})
-    assert directory.resolve(BFF_KEY) is None
-    assert build_credential_directory(env={ENV_CREDENTIALS: json.dumps(CREDENTIALS)}).resolve(BFF_KEY) is not None
+    assert directory.resolve(BFF_EMITTER) is None
+    assert build_credential_directory(env={ENV_CREDENTIALS: json.dumps(CREDENTIALS)}).resolve(BFF_EMITTER) is not None
 
 
 # --- persistence --------------------------------------------------------------------------
@@ -121,7 +124,7 @@ def test_an_unconfigured_audit_service_accepts_nothing_rather_than_everything() 
 def test_an_audit_event_persists_to_the_real_control_database(audit: srv.ServiceFleet) -> None:
     response = _emit(
         audit,
-        BFF_KEY,
+        BFF_EMITTER,
         action=AuditAction.TENANT_STARTUP_READ.value,
         outcome=AuditOutcome.ALLOWED.value,
         correlation_id="c-persist",
@@ -151,8 +154,8 @@ def test_the_emitting_service_is_derived_from_the_credential_and_survives_the_ro
     rejected outright rather than having it quietly ignored, so the attribution stored is a
     fact about which key was used.
     """
-    bff_event = _emit(audit, BFF_KEY, correlation_id="c-identity-bff").json()["event_id"]
-    router_event = _emit(audit, ROUTER_KEY, correlation_id="c-identity-router").json()["event_id"]
+    bff_event = _emit(audit, BFF_EMITTER, correlation_id="c-identity-bff").json()["event_id"]
+    router_event = _emit(audit, ROUTER_EMITTER, correlation_id="c-identity-router").json()["event_id"]
 
     assert pg.scalar(pg.dsn("control"), "SELECT source_service FROM " + AUDIT_TABLE + " WHERE event_id = %s", (bff_event,)) == "bff"
     assert (
@@ -165,7 +168,7 @@ def test_the_emitting_service_is_derived_from_the_credential_and_survives_the_ro
     # been honoured, this row would additionally have hit M-1's ``source_service <>
     # 'api_gateway'`` constraint, so two independent controls would have to fail together for
     # a spoofed attribution to land.
-    spoofed = _emit(audit, BFF_KEY, correlation_id="c-spoof", source_service="api_gateway")
+    spoofed = _emit(audit, BFF_EMITTER, correlation_id="c-spoof", source_service="api_gateway")
     assert spoofed.status_code == 201, spoofed.text
     assert pg.scalar(pg.dsn("control"), "SELECT source_service FROM " + AUDIT_TABLE + " WHERE correlation_id = 'c-spoof'") == "bff", (
         "a submitted source_service overrode the credential-derived one"
@@ -173,15 +176,15 @@ def test_the_emitting_service_is_derived_from_the_credential_and_survives_the_ro
 
 
 def test_the_event_id_is_server_minted_and_unique_per_emission(audit: srv.ServiceFleet) -> None:
-    first = _emit(audit, BFF_KEY, correlation_id="c-ids").json()["event_id"]
-    second = _emit(audit, BFF_KEY, correlation_id="c-ids").json()["event_id"]
+    first = _emit(audit, BFF_EMITTER, correlation_id="c-ids").json()["event_id"]
+    second = _emit(audit, BFF_EMITTER, correlation_id="c-ids").json()["event_id"]
     assert first != second
 
     from uuid import UUID
 
     assert UUID(first).version == 4
 
-    supplied = _emit(audit, BFF_KEY, correlation_id="c-ids", event_id="chosen-by-the-emitter")
+    supplied = _emit(audit, BFF_EMITTER, correlation_id="c-ids", event_id="chosen-by-the-emitter")
     assert supplied.status_code == 201, supplied.text
     assert supplied.json()["event_id"] != "chosen-by-the-emitter", "the emitter chose its own event id"
     assert pg.scalar(pg.dsn("control"), "SELECT count(*) FROM " + AUDIT_TABLE + " WHERE event_id = 'chosen-by-the-emitter'") == 0
@@ -194,7 +197,7 @@ def test_the_timestamp_survives_the_text_column_as_a_utc_aware_value(audit: srv.
     proves the stored string is the same instant and not a naive local rendering.
     """
     before = datetime.now(timezone.utc)
-    event_id = _emit(audit, BFF_KEY, correlation_id="c-clock").json()["event_id"]
+    event_id = _emit(audit, BFF_EMITTER, correlation_id="c-clock").json()["event_id"]
     after = datetime.now(timezone.utc)
 
     occurred_raw, recorded_at = pg.rows(
@@ -220,7 +223,7 @@ def test_the_outcome_and_action_enums_round_trip_as_enums(audit: srv.ServiceFlee
     ):
         response = _emit(
             audit,
-            BFF_KEY,
+            BFF_EMITTER,
             action=action.value,
             outcome=outcome.value,
             correlation_id="c-enum-" + action.value,
@@ -228,7 +231,7 @@ def test_the_outcome_and_action_enums_round_trip_as_enums(audit: srv.ServiceFlee
         )
         assert response.status_code == 201, response.text
 
-    read = _read(audit, AUDITOR_KEY, limit=500)
+    read = _read(audit, AUDITOR_EMITTER, limit=500)
     assert read.status_code == 200, read.text
     by_correlation = {event["correlation_id"]: event for event in read.json()["events"]}
     for action, outcome in (
@@ -242,7 +245,7 @@ def test_the_outcome_and_action_enums_round_trip_as_enums(audit: srv.ServiceFlee
 
 def test_an_action_outside_the_closed_vocabulary_is_refused_at_both_layers(audit: srv.ServiceFleet) -> None:
     """The service rejects it, and if it ever stopped, the M-1 CHECK constraint still would."""
-    response = _emit(audit, BFF_KEY, action="InventedAction", correlation_id="c-vocab")
+    response = _emit(audit, BFF_EMITTER, action="InventedAction", correlation_id="c-vocab")
     assert response.status_code == 422
     assert pg.scalar(pg.dsn("control"), "SELECT count(*) FROM " + AUDIT_TABLE + " WHERE correlation_id = 'c-vocab'") == 0
 
@@ -256,7 +259,7 @@ def test_an_action_outside_the_closed_vocabulary_is_refused_at_both_layers(audit
 
 
 def test_an_outcome_outside_the_closed_vocabulary_is_refused_at_both_layers(audit: srv.ServiceFleet) -> None:
-    assert _emit(audit, BFF_KEY, outcome="maybe", correlation_id="c-outcome").status_code == 422
+    assert _emit(audit, BFF_EMITTER, outcome="maybe", correlation_id="c-outcome").status_code == 422
     with pytest.raises(pg.database_error()):
         pg.execute(
             pg.dsn("control"),
@@ -267,7 +270,7 @@ def test_an_outcome_outside_the_closed_vocabulary_is_refused_at_both_layers(audi
 
 
 def test_a_persisted_audit_row_cannot_be_altered_afterwards(audit: srv.ServiceFleet) -> None:
-    event_id = _emit(audit, BFF_KEY, correlation_id="c-immutable").json()["event_id"]
+    event_id = _emit(audit, BFF_EMITTER, correlation_id="c-immutable").json()["event_id"]
     for statement in (
         "UPDATE " + AUDIT_TABLE + " SET outcome = 'allowed' WHERE event_id = %s",
         "DELETE FROM " + AUDIT_TABLE + " WHERE event_id = %s",
@@ -281,9 +284,9 @@ def test_a_persisted_audit_row_cannot_be_altered_afterwards(audit: srv.ServiceFl
 
 
 def test_a_read_all_scope_sees_events_from_every_emitter(audit: srv.ServiceFleet) -> None:
-    _emit(audit, BFF_KEY, correlation_id="c-scope-bff", actor_ref="bff")
-    _emit(audit, ROUTER_KEY, correlation_id="c-scope-router", actor_ref="database_router")
-    response = _read(audit, AUDITOR_KEY, limit=500)
+    _emit(audit, BFF_EMITTER, correlation_id="c-scope-bff", actor_ref="bff")
+    _emit(audit, ROUTER_EMITTER, correlation_id="c-scope-router", actor_ref="database_router")
+    response = _read(audit, AUDITOR_EMITTER, limit=500)
     assert response.status_code == 200
     assert response.json()["scope"] == "audit:read:all"
     services = {event["source_service"] for event in response.json()["events"]}
@@ -291,44 +294,44 @@ def test_a_read_all_scope_sees_events_from_every_emitter(audit: srv.ServiceFleet
 
 
 def test_a_self_scoped_read_sees_only_what_the_caller_was_the_actor_of(audit: srv.ServiceFleet) -> None:
-    _emit(audit, BFF_KEY, correlation_id="c-self", actor_ref="bff")
-    _emit(audit, ROUTER_KEY, correlation_id="c-self-other", actor_ref="database_router")
-    response = _read(audit, BFF_KEY, limit=500)
+    _emit(audit, BFF_EMITTER, correlation_id="c-self", actor_ref="bff")
+    _emit(audit, ROUTER_EMITTER, correlation_id="c-self-other", actor_ref="database_router")
+    response = _read(audit, BFF_EMITTER, limit=500)
     assert response.status_code == 200
     assert response.json()["scope"] == "audit:read"
     assert {event["actor_ref"] for event in response.json()["events"]} == {"bff"}
 
 
 def test_a_tenant_filter_narrows_the_read_to_one_tenant(audit: srv.ServiceFleet) -> None:
-    _emit(audit, BFF_KEY, correlation_id="c-tenant-acme", actor_ref="bff", tenant_ref="acme")
-    _emit(audit, BFF_KEY, correlation_id="c-tenant-zeta", actor_ref="bff", tenant_ref="zeta")
-    response = _read(audit, AUDITOR_KEY, tenant_ref="zeta", limit=500)
+    _emit(audit, BFF_EMITTER, correlation_id="c-tenant-acme", actor_ref="bff", tenant_ref="acme")
+    _emit(audit, BFF_EMITTER, correlation_id="c-tenant-zeta", actor_ref="bff", tenant_ref="zeta")
+    response = _read(audit, AUDITOR_EMITTER, tenant_ref="zeta", limit=500)
     assert response.status_code == 200
     assert {event["tenant_ref"] for event in response.json()["events"]} == {"zeta"}
 
 
 def test_delegated_reads_need_the_scope_and_the_named_target(audit: srv.ServiceFleet) -> None:
     """A broad delegation scope is never authority to impersonate everyone."""
-    permitted = _read(audit, DELEGATE_KEY, on_behalf_of="bff", limit=10)
+    permitted = _read(audit, DELEGATE_EMITTER, on_behalf_of="bff", limit=10)
     assert permitted.status_code == 200
     assert permitted.json()["scope"] == "delegated:bff"
 
-    refused = _read(audit, DELEGATE_KEY, on_behalf_of="database_router", limit=10)
+    refused = _read(audit, DELEGATE_EMITTER, on_behalf_of="database_router", limit=10)
     assert refused.status_code == 403
     assert refused.json() == {"status": 403, "code": "access_denied"}
 
 
 def test_a_write_only_credential_cannot_read_and_an_unknown_one_does_neither(audit: srv.ServiceFleet) -> None:
-    assert _read(audit, ROUTER_KEY, limit=10).status_code == 403
-    assert _emit(audit, AUDITOR_KEY, correlation_id="c-no-write").status_code == 403
-    assert _emit(audit, "not-a-configured-credential", correlation_id="c-unknown").status_code == 401
-    assert _read(audit, "not-a-configured-credential", limit=10).status_code == 401
+    assert _read(audit, ROUTER_EMITTER, limit=10).status_code == 403
+    assert _emit(audit, AUDITOR_EMITTER, correlation_id="c-no-write").status_code == 403
+    assert _emit(audit, UNRECOGNIZED_EMITTER, correlation_id="c-unknown").status_code == 401
+    assert _read(audit, UNRECOGNIZED_EMITTER, limit=10).status_code == 401
     assert httpx.get(audit.url("audit") + "/audit/events", timeout=10.0).status_code == 401
 
 
 def test_events_read_back_in_deterministic_order(audit: srv.ServiceFleet) -> None:
-    first = _read(audit, AUDITOR_KEY, limit=500).json()["events"]
-    second = _read(audit, AUDITOR_KEY, limit=500).json()["events"]
+    first = _read(audit, AUDITOR_EMITTER, limit=500).json()["events"]
+    second = _read(audit, AUDITOR_EMITTER, limit=500).json()["events"]
     assert first == second
 
 
@@ -338,7 +341,7 @@ def test_events_read_back_in_deterministic_order(audit: srv.ServiceFleet) -> Non
 def test_no_audit_response_or_log_discloses_a_connection_string(audit: srv.ServiceFleet) -> None:
     fragments = srv.dsn_secret_fragments()
     bodies = [
-        _read(audit, AUDITOR_KEY, limit=500).text,
+        _read(audit, AUDITOR_EMITTER, limit=500).text,
         httpx.get(audit.url("audit") + "/readiness", timeout=10.0).text,
         httpx.get(audit.url("audit") + "/openapi.json", timeout=10.0).text,
     ]
