@@ -5,8 +5,9 @@ response onto a BFF-local shape (``ports.py``). Nothing here imports another ser
 implementation.
 
 **Unconfigured means closed.** With no service URLs configured, the defaults deny: nobody
-authenticates, nothing is authorized, no tenant resolves, and audit is dropped rather than
-silently believed. A BFF that starts without its dependencies is inert, not permissive.
+authenticates, nothing is authorized, no tenant resolves, no domain service answers, and audit
+is dropped rather than silently believed. A BFF that starts without its dependencies is inert,
+not permissive.
 """
 
 from __future__ import annotations
@@ -14,17 +15,11 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List, Mapping, Optional
 
-from ...shared.errors import tenant_unavailable
+from ...shared.errors import AppError, ErrorCode, tenant_unavailable
 from ...shared.operations import BffOperation
 from ...shared.security import AuthContext, RequestContext
 from ...shared.types import DatabaseDomain, PlatformRole
-from .ports import (
-    AuthenticationResult,
-    AuthorizationResult,
-    CarrierVerdict,
-    RoutedTenant,
-    TenantRecordView,
-)
+from .ports import AuthenticationResult, AuthorizationResult, CarrierVerdict, RoutedTenant
 
 ENV_AUTHENTICATION_URL = "SP2_BFF_AUTHENTICATION_URL"
 ENV_ACCESS_CONTROL_URL = "SP2_BFF_ACCESS_CONTROL_URL"
@@ -34,11 +29,35 @@ ENV_AUDIT_URL = "SP2_BFF_AUDIT_URL"
 ENV_SERVICE_CREDENTIAL = "SP2_BFF_SERVICE_CREDENTIAL"
 ENV_BASE_DOMAIN = "SP2_BFF_BASE_DOMAIN"
 
+#: One URL per tenant-resident domain service the BFF orchestrates.
+ENV_DOMAIN_URLS: Mapping[str, str] = {
+    "startups": "SP2_BFF_STARTUPS_URL",
+    "investors": "SP2_BFF_INVESTORS_URL",
+    "deals": "SP2_BFF_DEALS_URL",
+    "import_service": "SP2_BFF_IMPORT_SERVICE_URL",
+    "lineage": "SP2_BFF_LINEAGE_URL",
+    "sharing": "SP2_BFF_SHARING_URL",
+    "contacts": "SP2_BFF_CONTACTS_URL",
+}
+
 TIMEOUT_SECONDS = 5.0
 
 
 def _headers(credential: str) -> Dict[str, str]:
     return {"Authorization": "Bearer " + credential}
+
+
+def _propagate(status_code: int, body: Mapping[str, Any]) -> AppError:
+    """Re-raise a downstream canonical denial unchanged.
+
+    Re-coding it here would let "not ready" quietly become "not found", and those are different
+    facts about a tenant that a caller answers differently.
+    """
+    code = str(body.get("code", "tenant_unavailable"))
+    try:
+        return AppError(status_code, ErrorCode(code))
+    except ValueError:
+        return tenant_unavailable()
 
 
 # --- Fail-closed defaults ---------------------------------------------------------------
@@ -68,24 +87,6 @@ class UnavailableRouting:
         del context
         raise tenant_unavailable()
 
-    def list_records(self, context: RequestContext, family: str, limit: int) -> List[TenantRecordView]:
-        del context, family, limit
-        raise tenant_unavailable()
-
-    def read_record(self, context: RequestContext, family: str, record_ref: str) -> Optional[TenantRecordView]:
-        del context, family, record_ref
-        raise tenant_unavailable()
-
-    def create_record(self, context: RequestContext, family: str, fields: Dict[str, Optional[str]]) -> TenantRecordView:
-        del context, family, fields
-        raise tenant_unavailable()
-
-    def update_record(
-        self, context: RequestContext, family: str, record_ref: str, fields: Dict[str, Optional[str]]
-    ) -> TenantRecordView:
-        del context, family, record_ref, fields
-        raise tenant_unavailable()
-
 
 class UnavailableControlRead:
     """No Control Plane configured. Control-resident reads answer with nothing."""
@@ -103,12 +104,20 @@ class UnavailableControlRead:
         raise tenant_unavailable()
 
 
+class UnavailableDomainService:
+    """No URL configured for this domain service, so its operations are unavailable."""
+
+    def call(self, path: str, payload: Dict[str, Any]) -> Any:
+        del path, payload
+        raise tenant_unavailable()
+
+
 class DroppingAudit:
     """No Audit Service configured, so events are dropped — visibly, never silently.
 
-    Dropping is the honest default. The alternative — buffering in memory and calling it
-    audited — produces a system that believes it has an audit trail it does not have, and
-    that belief is worse than the missing trail.
+    Dropping is the honest default. Buffering in memory and calling it audited produces a system
+    that believes it has an audit trail it does not have, and that belief is worse than the
+    missing trail.
     """
 
     def __init__(self) -> None:
@@ -204,68 +213,28 @@ class HttpAccessControl:
 
 
 class HttpTenantRouting:
-    """Calls the Database Router. The BFF never chooses a database itself (IC-013 §8)."""
+    """Calls the Database Router's resolution surface. The BFF never chooses a database itself."""
 
     def __init__(self, base_url: str, credential: str) -> None:
         self._base_url = base_url.rstrip("/")
         self._credential = credential
 
-    def _post(self, path: str, payload: Dict[str, object]) -> Any:
+    def resolve(self, context: RequestContext) -> RoutedTenant:
         import httpx
-
-        from ...shared.errors import AppError, ErrorCode
 
         try:
             response = httpx.post(
-                self._base_url + path, headers=_headers(self._credential), json=payload, timeout=TIMEOUT_SECONDS
+                self._base_url + "/internal/routing/resolve",
+                headers=_headers(self._credential),
+                json={"context": context.model_dump(mode="json")},
+                timeout=TIMEOUT_SECONDS,
             )
         except Exception:
             raise tenant_unavailable() from None
         if response.status_code >= 400:
-            # The router's canonical denial is propagated unchanged. Re-coding it here would
-            # let "not ready" quietly become "not found", which are different facts.
-            body = response.json() if response.content else {}
-            code = body.get("code", "tenant_unavailable")
-            try:
-                raise AppError(response.status_code, ErrorCode(code))
-            except ValueError:
-                raise tenant_unavailable() from None
-        return response.json()
-
-    def resolve(self, context: RequestContext) -> RoutedTenant:
-        body = self._post("/internal/routing/resolve", {"context": context.model_dump(mode="json")})
+            raise _propagate(response.status_code, response.json() if response.content else {})
+        body = response.json()
         return RoutedTenant(tenant_ref=str(body["tenant_ref"]), target_ref=str(body["target_ref"]))
-
-    def list_records(self, context: RequestContext, family: str, limit: int) -> List[TenantRecordView]:
-        body = self._post(
-            "/internal/tenant-records/" + family + "/list",
-            {"context": context.model_dump(mode="json"), "limit": limit},
-        )
-        records = body.get("records", [])
-        return [TenantRecordView(record_ref=str(r["record_ref"]), fields=dict(r["fields"])) for r in records]
-
-    def read_record(self, context: RequestContext, family: str, record_ref: str) -> Optional[TenantRecordView]:
-        body = self._post(
-            "/internal/tenant-records/" + family + "/read",
-            {"context": context.model_dump(mode="json"), "record_ref": record_ref},
-        )
-        return TenantRecordView(record_ref=str(body["record_ref"]), fields=dict(body["fields"]))
-
-    def create_record(self, context: RequestContext, family: str, fields: Dict[str, Optional[str]]) -> TenantRecordView:
-        body = self._post(
-            "/internal/tenant-records/" + family + "/create",
-            {"context": context.model_dump(mode="json"), "record_ref": None, "fields": fields},
-        )
-        return TenantRecordView(record_ref=str(body["record_ref"]), fields=dict(body["fields"]))
-
-    def update_record(
-        self, context: RequestContext, family: str, record_ref: str, fields: Dict[str, Optional[str]]
-    ) -> TenantRecordView:
-        body = self._post(
-            "/internal/tenant-records/" + family + "/update",
-            {"context": context.model_dump(mode="json"), "record_ref": record_ref, "fields": fields},
-        )
-        return TenantRecordView(record_ref=str(body["record_ref"]), fields=dict(body["fields"]))
 
 
 class HttpControlRead:
@@ -285,7 +254,7 @@ class HttpControlRead:
         if response.status_code == 404:
             return None
         if response.status_code != 200:
-            raise tenant_unavailable()
+            raise _propagate(response.status_code, response.json() if response.content else {})
         return response.json()
 
     def list_memberships(self, principal_ref: str) -> List[Dict[str, str]]:
@@ -302,7 +271,30 @@ class HttpControlRead:
 
     def get_directory_record(self, directory: str, record_ref: str) -> Optional[Dict[str, str]]:
         body = self._get("/internal/directories/" + directory + "/records/" + record_ref)
-        return None if body is None else {str(k): str(v) for k, v in body.items() if not isinstance(v, dict)}
+        if body is None:
+            return None
+        return {str(key): str(value) for key, value in body.items() if not isinstance(value, dict)}
+
+
+class HttpDomainService:
+    """Invokes one operation on one tenant-resident domain service."""
+
+    def __init__(self, base_url: str, credential: str) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._credential = credential
+
+    def call(self, path: str, payload: Dict[str, Any]) -> Any:
+        import httpx
+
+        try:
+            response = httpx.post(
+                self._base_url + path, headers=_headers(self._credential), json=payload, timeout=TIMEOUT_SECONDS
+            )
+        except Exception:
+            raise tenant_unavailable() from None
+        if response.status_code >= 400:
+            raise _propagate(response.status_code, response.json() if response.content else {})
+        return response.json()
 
 
 class HttpAudit:
@@ -343,12 +335,12 @@ class HttpAudit:
             )
         except Exception:
             # An audit failure must not convert a correct denial into a served request. The
-            # denial still stands; the lost event is a monitoring concern, not a reason to
-            # let the request through.
+            # denial still stands; the lost event is a monitoring concern, not a reason to let
+            # the request through.
             return
 
 
-def build_components(env: Optional[Mapping[str, str]] = None) -> Dict[str, object]:
+def build_components(env: Optional[Mapping[str, str]] = None) -> Dict[str, Any]:
     """Compose the BFF's dependencies from configuration, fail-closed by omission."""
     source: Mapping[str, str] = os.environ if env is None else env
     credential = source.get(ENV_SERVICE_CREDENTIAL, "").strip()
@@ -363,12 +355,18 @@ def build_components(env: Optional[Mapping[str, str]] = None) -> Dict[str, objec
     cp_url = url(ENV_CONTROL_PLANE_URL)
     audit_url = url(ENV_AUDIT_URL)
 
+    domains: Dict[str, Any] = {}
+    for service_key, variable in ENV_DOMAIN_URLS.items():
+        service_url = url(variable)
+        domains[service_key] = HttpDomainService(service_url, credential) if service_url else UnavailableDomainService()
+
     return {
         "authentication": HttpAuthentication(auth_url, credential) if auth_url else DenyAllAuthentication(),
         "access_control": HttpAccessControl(ac_url, credential) if ac_url else DenyAllAccessControl(),
         "routing": HttpTenantRouting(router_url, credential) if router_url else UnavailableRouting(),
         "control_read": HttpControlRead(cp_url, credential) if cp_url else UnavailableControlRead(),
         "audit": HttpAudit(audit_url, credential) if audit_url else DroppingAudit(),
+        "domains": domains,
         "base_domain": source.get(ENV_BASE_DOMAIN, "").strip(),
     }
 
@@ -380,6 +378,7 @@ __all__ = [
     "ENV_BASE_DOMAIN",
     "ENV_CONTROL_PLANE_URL",
     "ENV_DATABASE_ROUTER_URL",
+    "ENV_DOMAIN_URLS",
     "ENV_SERVICE_CREDENTIAL",
     "DenyAllAccessControl",
     "DenyAllAuthentication",
@@ -388,8 +387,10 @@ __all__ = [
     "HttpAudit",
     "HttpAuthentication",
     "HttpControlRead",
+    "HttpDomainService",
     "HttpTenantRouting",
     "UnavailableControlRead",
+    "UnavailableDomainService",
     "UnavailableRouting",
     "build_components",
 ]

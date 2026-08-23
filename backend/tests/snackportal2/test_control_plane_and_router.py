@@ -23,18 +23,17 @@ from snackportal2.services.control_plane.models import (
 from snackportal2.services.control_plane.store import InMemoryControlStore, looks_like_a_connection_string
 from snackportal2.services.database_router import main as dbr_main
 from snackportal2.services.database_router import resolver as dbr_resolver
-from snackportal2.services.database_router.models import RecordFamily
+from snackportal2.services.database_router.grants import (
+    PERMANENTLY_EXCLUDED,
+    TENANT_RESIDENT_SERVICES,
+    GrantAllowlist,
+    build_allowlist,
+)
 from snackportal2.services.database_router.resolver import (
     EnvironmentTenantSecretStore,
     StaticTenantRegistry,
     TenantRegistryEntry,
     TenantResolver,
-)
-from snackportal2.services.database_router.store import (
-    FAMILIES_WITHOUT_DDL,
-    InMemoryTenantRecordStore,
-    compose_record_ref,
-    validate_fields,
 )
 from snackportal2.shared.errors import AppError
 from snackportal2.shared.security import AuthContext, RequestContext
@@ -243,62 +242,48 @@ def test_no_control_database_fallback_exists_in_the_resolver_source() -> None:
     assert "sp2_control_plane_dsn" not in source, "the resolver can reach the Control database credential"
 
 
-# --- Database Router: tenant record isolation -----------------------------------------------
 
-def test_records_of_two_tenants_never_mix() -> None:
-    store = InMemoryTenantRecordStore()
-    acme = store.create_record("acme", RecordFamily.STARTUPS, {"company_name": "Acme Startup"})
-    store.create_record("zeta", RecordFamily.STARTUPS, {"company_name": "Zeta Startup"})
 
-    listed = store.list_records("acme", RecordFamily.STARTUPS, 100)
-    assert [record.fields["company_name"] for record in listed] == ["Acme Startup"]
+# --- Database Router: connection grants (D-48) ----------------------------------------------
 
-    # A reference minted for acme is not found under zeta, even though the row identity is
-    # identical in both tenants.
+def test_the_grant_allowlist_permanently_excludes_the_bff_and_the_authorizer() -> None:
+    """D-48 C-1, enforced at CONFIGURATION time rather than at request time.
+
+    Both exclusions are structural rather than incidental. The BFF is the public ingress, so the
+    process nearest the internet must be the furthest from a credential; and IC-014 §6 is
+    absolute — the service that decides access must not be the service that has access. A
+    misconfiguration naming either one fails on startup instead of quietly widening the blast
+    radius until someone notices.
+    """
+    assert "bff" in PERMANENTLY_EXCLUDED
+    assert "access_control" in PERMANENTLY_EXCLUDED
+    assert PERMANENTLY_EXCLUDED.isdisjoint(TENANT_RESIDENT_SERVICES)
+
+    for excluded in sorted(PERMANENTLY_EXCLUDED):
+        try:
+            GrantAllowlist({"some-credential": excluded})
+        except ValueError:
+            continue
+        raise AssertionError(excluded + " was accepted onto the connection-grant allowlist")
+
+
+def test_a_non_tenant_resident_service_cannot_be_a_grantee() -> None:
     try:
-        store.read_record("zeta", RecordFamily.STARTUPS, acme.record_ref)
-    except AppError as error:
-        assert error.status == 404
-    else:
-        raise AssertionError("an acme record reference resolved inside zeta")
+        GrantAllowlist({"some-credential": "not-a-service"})
+    except ValueError:
+        return
+    raise AssertionError("an unknown service was accepted onto the grant allowlist")
 
 
-def test_a_column_outside_the_family_allowlist_is_rejected_with_no_partial_write() -> None:
-    store = InMemoryTenantRecordStore()
-    try:
-        store.create_record("acme", RecordFamily.STARTUPS, {"company_name": "Acme", "is_admin": "true"})
-    except AppError as error:
-        assert error.status == 422
-    else:
-        raise AssertionError("an unknown column was accepted")
-    assert store.list_records("acme", RecordFamily.STARTUPS, 100) == []
+def test_an_unconfigured_router_grants_nothing() -> None:
+    allowlist = build_allowlist(env={})
+    assert allowlist.service_for("any-credential") is None
+    assert allowlist.service_refs() == []
 
 
-def test_the_record_family_set_is_closed() -> None:
-    """A caller names a family, never a table. An open set would make this a data proxy."""
-    assert {family.value for family in RecordFamily} == {"startups", "investors", "deals", "contacts", "lineage"}
-
-
-def test_contacts_has_no_accepted_tenant_ddl_and_says_so() -> None:
-    """IC-015 is reserved and unauthored, and no contacts table exists in infrastructure/db."""
-    assert RecordFamily.CONTACTS in FAMILIES_WITHOUT_DDL
-    try:
-        validate_fields(RecordFamily.CONTACTS, {"anything": "x"})
-    except Exception as error:
-        assert type(error).__name__ == "UnsupportedFamily"
-    else:
-        raise AssertionError("the contacts family accepted a schema no contract governs")
-
-
-def test_record_references_are_not_raw_row_primary_keys() -> None:
-    assert compose_record_ref("acme", RecordFamily.STARTUPS, "17") == "ref:acme:startups:17"
-
-
-# --- Database Router: HTTP surface ---------------------------------------------------------
-
-def _router_client(env: dict[str, str]) -> TestClient:
+def _router_client(env: dict[str, str], grantees: dict[str, str] | None = None) -> TestClient:
     dbr_main._resolver = _resolver_with(env)  # type: ignore[attr-defined]
-    dbr_main._store = InMemoryTenantRecordStore()  # type: ignore[attr-defined]
+    dbr_main._allowlist = GrantAllowlist(grantees or {})  # type: ignore[attr-defined]
     return TestClient(dbr_main.app, raise_server_exceptions=False)
 
 
@@ -309,6 +294,7 @@ def _context(tenant: str | None) -> dict[str, object]:
 
 
 def test_routing_resolution_never_discloses_a_dsn() -> None:
+    """What the BFF receives proves one database bound, without saying how to reach it."""
     client = _router_client({_ACME_DSN_VAR: "postgresql://localhost/acme"})
     response = client.post("/internal/routing/resolve", headers=_CREDENTIAL, json={"context": _context("acme")})
     assert response.status_code == 200
@@ -320,23 +306,57 @@ def test_routing_resolution_never_discloses_a_dsn() -> None:
     assert "postgresql://" not in response.text
 
 
-def test_a_disabled_tenant_is_refused_over_http_before_any_record_access() -> None:
-    client = _router_client({_ACME_DSN_VAR: "postgresql://localhost/acme"})
+def test_an_allowlisted_service_receives_a_single_tenant_grant() -> None:
+    client = _router_client({_ACME_DSN_VAR: "postgresql://localhost/acme"}, {"startups-key": "startups"})
     response = client.post(
-        "/internal/tenant-records/startups/list", headers=_CREDENTIAL, json={"context": _context("zeta"), "limit": 10}
+        "/internal/routing/bind",
+        headers={"Authorization": "Bearer startups-key"},
+        json={"tenant_ref": "acme"},
     )
-    assert response.status_code == 409
-    assert response.json() == {"status": 409, "code": "tenant_not_ready"}
+    assert response.status_code == 200
+    body = response.json()
+    assert body["tenant_ref"] == "acme"
+    assert body["dsn"] == "postgresql://localhost/acme"
+    assert body["expires_at"], "a grant with no expiry is a standing credential (D-48 C-2)"
 
 
-def test_create_refuses_to_address_an_existing_record() -> None:
-    client = _router_client({_ACME_DSN_VAR: "postgresql://localhost/acme"})
-    response = client.post(
-        "/internal/tenant-records/startups/create",
-        headers=_CREDENTIAL,
-        json={"context": _context("acme"), "record_ref": "ref:acme:startups:1", "fields": {"company_name": "X"}},
-    )
-    assert response.status_code == 422
+def test_a_caller_outside_the_allowlist_is_refused_even_with_a_valid_credential() -> None:
+    """The refusal happens BEFORE resolution, so the endpoint cannot be used to probe tenants."""
+    client = _router_client({_ACME_DSN_VAR: "postgresql://localhost/acme"}, {"startups-key": "startups"})
+    for probe in ("acme", "no-such-tenant", "zeta"):
+        response = client.post(
+            "/internal/routing/bind",
+            headers={"Authorization": "Bearer some-other-key"},
+            json={"tenant_ref": probe},
+        )
+        assert response.status_code == 403, probe
+        assert response.json() == {"status": 403, "code": "access_denied"}
+
+
+def test_grant_issuance_fails_closed_on_the_same_cases_as_resolution() -> None:
+    """D-48 C-4: a service cannot obtain a connection the router would not itself have opened."""
+    client = _router_client({_ACME_DSN_VAR: "postgresql://localhost/acme"}, {"startups-key": "startups"})
+    headers = {"Authorization": "Bearer startups-key"}
+    for tenant_ref, expected in (("no-such-tenant", 404), ("zeta", 409), ("nova", 503)):
+        response = client.post("/internal/routing/bind", headers=headers, json={"tenant_ref": tenant_ref})
+        assert response.status_code == expected, tenant_ref
+        assert "postgresql://" not in response.text, "a denial disclosed a connection string"
+
+
+def test_the_grantee_listing_returns_service_references_never_credentials() -> None:
+    client = _router_client({}, {"startups-key": "startups", "deals-key": "deals"})
+    response = client.get("/internal/routing/grantees", headers=_CREDENTIAL)
+    assert response.status_code == 200
+    assert response.json() == {"grantees": [{"service_ref": "deals"}, {"service_ref": "startups"}]}
+    assert "startups-key" not in response.text
+
+
+def test_a_grant_never_reaches_the_bff_through_the_resolve_surface() -> None:
+    """The resolve response shape has no field a DSN could occupy, whatever the caller is."""
+    from snackportal2.services.database_router.models import RoutingResolution
+
+    assert set(RoutingResolution.model_fields) == {"tenant_ref", "target_ref", "expected_schema_version"}
+    assert "dsn" not in RoutingResolution.model_fields
 
 
 def test_database_router_openapi_meets_the_standing_rules() -> None:
@@ -347,11 +367,9 @@ def test_database_router_openapi_meets_the_standing_rules() -> None:
             "/health",
             "/readiness",
             "/internal/routing/resolve",
-            "/internal/tenant-records/{family}/list",
-            "/internal/tenant-records/{family}/read",
-            "/internal/tenant-records/{family}/create",
-            "/internal/tenant-records/{family}/update",
+            "/internal/routing/bind",
+            "/internal/routing/grantees",
         ],
-        expected_schemas=["RoutingResolution", "TenantRecord", "RecordFamily", "RecordListResponse"],
+        expected_schemas=["RoutingResolution", "TenantConnectionGrantResponse", "GranteeListResponse"],
         required_security_schemes=["InternalServiceBearer"],
     )

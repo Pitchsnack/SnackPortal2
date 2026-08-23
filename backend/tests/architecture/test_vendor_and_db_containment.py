@@ -40,8 +40,14 @@ DB_PROVIDER_ZONES = (
 # Each entry is the one module of its service permitted to hold a connection.
 REBUILD_DB_DRIVER_ALLOW = (
     "snackportal2/services/control_plane/store.py",  # Control-DB persistence (tenants/memberships/directory)
-    "snackportal2/services/database_router/store.py",  # tenant-DB access — the ONLY tenant opener (IC-013 sec.8)
     "snackportal2/services/audit/sink.py",  # Control-DB durable audit sink (migration M-1)
+    # Tenant-database access. Under D-48 the Database Router is the sole AUTHORITY on which
+    # database a request may reach, but a tenant-resident domain service holds the connection it
+    # opens. `shared/tenant_data.py` is the one place that turns a router grant into a socket;
+    # `investors/repository.py` additionally imports psycopg's Jsonb wrapper, because binding a
+    # bare Python list to a jsonb column raises at the driver layer (the MCC-AR-1 defect).
+    "snackportal2/shared/tenant_data.py",
+    "snackportal2/services/investors/repository.py",
 )
 
 # JWT/crypto vendor containment (PRD B5-5). The allowance below is ONE exact file — the
@@ -164,11 +170,11 @@ def test_rebuild_allowances_are_exact_files_and_nonvacuous() -> None:
             assert any(_matches(m, prefixes) for m in mods), f"allowance is dead — {entry} imports no such vendor"
 
     # Exact-path equality, never prefix or sibling inheritance.
-    assert _db_driver_allowed("snackportal2/services/database_router/store.py")
+    assert _db_driver_allowed("snackportal2/shared/tenant_data.py")
     for rejected in (
         "snackportal2/services/database_router/main.py",  # a sibling in the same package
-        "snackportal2/services/database_router/resolver.py",  # the module that HOLDS the DSN, but opens nothing
-        "snackportal2/services/startups/store.py",  # the same basename in another service
+        "snackportal2/services/database_router/resolver.py",  # resolves and issues grants; opens nothing itself
+        "snackportal2/services/startups/repository.py",  # reaches its tenant DB only via shared/tenant_data
         "snackportal2/services/",  # any directory widening
         "snackportal2/shared/config.py",
     ):

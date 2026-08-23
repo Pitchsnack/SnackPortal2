@@ -3,68 +3,57 @@
     python -m snackportal2.services.database_router.main
     uvicorn snackportal2.services.database_router.main:app --host 127.0.0.1 --port 8004
 
-Answers *which active tenant and which physical database?* and is the only service
-permitted to open a tenant database (IC-013 §8). It never authenticates and never
-authorizes: authentication and authorization are complete before it is reached, and it
-consumes the already-authenticated, already-authorized context as given.
+Answers *which active tenant and which physical database?* — the **sole authority** on tenant
+database resolution (IC-013 §8 as amended by D-48). It authenticates nothing, authorizes
+nothing, and never falls back to the Control database.
+
+Two surfaces, deliberately different:
+
+* ``/internal/routing/resolve`` returns a **reference** and is what the BFF calls. It proves
+  exactly one database resolved without telling the ingress how to reach it.
+* ``/internal/routing/bind`` returns a **grant** and is what a tenant-resident domain service
+  calls. It is restricted to the explicit allowlist, from which the BFF and the Access Control
+  Service are permanently excluded (D-48 C-1).
 """
 
 from __future__ import annotations
 
-import os
-from typing import Annotated
+from datetime import datetime, timedelta, timezone
 
 import uvicorn
-from fastapi import Path
 
 from ...shared.config import load_settings
-from ...shared.errors import error_responses, invalid_request, not_found
+from ...shared.errors import access_denied, error_responses, unauthenticated
 from ...shared.security import ServiceBearer
 from ...shared.service import build_app
+from .grants import GRANT_TTL_SECONDS, build_allowlist
 from .models import (
-    RecordFamily,
-    RecordListRequest,
-    RecordListResponse,
-    RecordReadRequest,
-    RecordWriteRequest,
+    GranteeListResponse,
+    GranteeRegistration,
     RoutingRequest,
     RoutingResolution,
-    TenantRecord,
+    TenantBindRequest,
+    TenantConnectionGrantResponse,
 )
 from .resolver import EnvironmentTenantSecretStore, TenantResolver, build_registry
-from .store import InMemoryTenantRecordStore, PostgresTenantRecordStore, TenantRecordStore, UnsupportedFamily
 
 SERVICE = "database_router"
-
-#: Storage mode. Explicit, because a *silent* fallback from PostgreSQL to in-memory would
-#: turn a database outage into apparently-successful reads of an empty tenant.
-ENV_STORAGE = "SP2_DATABASE_ROUTER_STORAGE"
 
 settings = load_settings(SERVICE)
 
 app = build_app(
     SERVICE,
     description=(
-        "Resolves exactly one physical tenant database from the signed active-tenant claim and performs "
-        "tenant-resident record access within it (IC-013 §8). It authenticates nothing, authorizes nothing, "
-        "and never falls back to the Control database."
+        "Resolves exactly one physical tenant database from the signed active-tenant claim, registry-"
+        "authoritatively, and issues short-lived single-tenant connection grants to allowlisted "
+        "tenant-resident services (IC-013 §8, D-48). It authenticates nothing, authorizes nothing, and "
+        "never falls back to the Control database."
     ),
     settings=settings,
 )
 
 _resolver = TenantResolver(build_registry(), EnvironmentTenantSecretStore())
-
-
-def _build_store() -> TenantRecordStore:
-    mode = os.environ.get(ENV_STORAGE, "").strip().casefold()
-    if mode == "postgres":
-        return PostgresTenantRecordStore()
-    return InMemoryTenantRecordStore()
-
-
-_store = _build_store()
-
-FamilyPath = Annotated[RecordFamily, Path(description="The tenant-resident record family to address.")]
+_allowlist = build_allowlist()
 
 
 @app.post(
@@ -73,9 +62,10 @@ FamilyPath = Annotated[RecordFamily, Path(description="The tenant-resident recor
     summary="Resolve the single physical database for a request",
     description=(
         "Bind exactly one physical tenant database from the signed active-tenant claim, registry-"
-        "authoritatively. Fails closed in every other case: a tenantless or unknown tenant answers with the "
-        "consistent denial, a non-ACTIVE tenant with not-ready, and a missing or unreachable association with "
-        "unavailable. There is no Control-database fallback and no default tenant."
+        "authoritatively, and return it as an opaque reference. Fails closed in every other case: a "
+        "tenantless or unknown tenant answers with the consistent denial, a non-ACTIVE tenant with "
+        "not-ready, and a missing or unreachable association with unavailable. There is no Control-database "
+        "fallback and no default tenant. The response carries no DSN, host, database name, or credential."
     ),
     tags=["Routing"],
     operation_id="resolveTenantDatabase",
@@ -92,101 +82,58 @@ async def resolve(request: RoutingRequest, _credential: ServiceBearer) -> Routin
 
 
 @app.post(
-    "/internal/tenant-records/{family}/list",
-    response_model=RecordListResponse,
-    summary="List tenant-resident records of one family",
+    "/internal/routing/bind",
+    response_model=TenantConnectionGrantResponse,
+    summary="Issue a tenant connection grant",
     description=(
-        "Read up to the requested number of records of one family from the single tenant database bound by "
-        "the signed claim. The family is a closed enumeration and the caller supplies no table, column, or "
-        "SQL. Order is deterministic and callers MUST NOT re-sort it."
+        "Issue a short-lived, single-tenant connection grant to an allowlisted tenant-resident service "
+        "(D-48). The same registry-authoritative resolution and the same six fail-closed cases apply as "
+        "for resolution, so a service cannot obtain a connection the router would not itself have opened. "
+        "A caller whose credential is not on the grant allowlist is refused even though the credential is "
+        "otherwise valid for this router; the BFF and the Access Control Service are permanently excluded."
     ),
-    tags=["Tenant Records"],
-    operation_id="listTenantRecords",
-    response_description="The records read from exactly one tenant database.",
-    responses=error_responses(401, 404, 409, 422, 503),
+    tags=["Routing"],
+    operation_id="bindTenantConnection",
+    response_description="A grant authorizing one connection to one tenant database, with its expiry.",
+    responses=error_responses(401, 403, 404, 409, 422, 503),
 )
-async def list_records(family: FamilyPath, request: RecordListRequest, _credential: ServiceBearer) -> RecordListResponse:
-    target = _resolver.resolve(request.context.tenant_context)
-    try:
-        records = _store.list_records(target.tenant_ref, family, request.limit, target.dsn)
-    except UnsupportedFamily:
-        raise invalid_request() from None
-    return RecordListResponse(tenant_ref=target.tenant_ref, family=family, records=records)
+async def bind(request: TenantBindRequest, credential: ServiceBearer) -> TenantConnectionGrantResponse:
+    service_ref = _allowlist.service_for(credential)
+    if service_ref is None:
+        # Refused before resolution, so an unallowlisted caller cannot even use this endpoint
+        # to probe which tenants exist.
+        raise access_denied()
+
+    target = _resolver.resolve(request.tenant_ref)
+    expires_at = (datetime.now(timezone.utc) + timedelta(seconds=GRANT_TTL_SECONDS)).isoformat()
+    return TenantConnectionGrantResponse(
+        tenant_ref=target.tenant_ref,
+        target_ref=target.target_ref,
+        expected_schema_version=target.expected_schema_version,
+        dsn=target.dsn,
+        expires_at=expires_at,
+    )
 
 
-@app.post(
-    "/internal/tenant-records/{family}/read",
-    response_model=TenantRecord,
-    summary="Read one tenant-resident record",
+@app.get(
+    "/internal/routing/grantees",
+    response_model=GranteeListResponse,
+    summary="List the services permitted to hold a tenant connection",
     description=(
-        "Read a single record of one family from the tenant database bound by the signed claim. A record "
-        "reference minted for a different tenant or a different family is not found here — the tenant and "
-        "family are part of the reference and are verified, not decorative."
+        "Return the service references on the grant allowlist, for operational review (D-48 C-1). "
+        "Credentials are never returned — only the service references they map to."
     ),
-    tags=["Tenant Records"],
-    operation_id="readTenantRecord",
-    response_description="The requested tenant-resident record.",
-    responses=error_responses(401, 404, 409, 422, 503),
+    tags=["Routing"],
+    operation_id="listConnectionGrantees",
+    response_description="The allowlisted service references, in deterministic order.",
+    responses=error_responses(401),
 )
-async def read_record(family: FamilyPath, request: RecordReadRequest, _credential: ServiceBearer) -> TenantRecord:
-    target = _resolver.resolve(request.context.tenant_context)
-    try:
-        record = _store.read_record(target.tenant_ref, family, request.record_ref, target.dsn)
-    except UnsupportedFamily:
-        raise invalid_request() from None
-    if record is None:
-        raise not_found()
-    return record
-
-
-@app.post(
-    "/internal/tenant-records/{family}/create",
-    response_model=TenantRecord,
-    status_code=201,
-    summary="Create one tenant-resident record",
-    description=(
-        "Insert a record of one family into the tenant database bound by the signed claim. Field names "
-        "outside the family's column allowlist are rejected with no partial write."
-    ),
-    tags=["Tenant Records"],
-    operation_id="createTenantRecord",
-    response_description="The created tenant-resident record and its reference.",
-    responses=error_responses(401, 404, 409, 422, 503),
-)
-async def create_record(family: FamilyPath, request: RecordWriteRequest, _credential: ServiceBearer) -> TenantRecord:
-    if request.record_ref is not None:
-        # A create never addresses an existing record; accepting one would make "create"
-        # quietly capable of overwriting.
-        raise invalid_request()
-    target = _resolver.resolve(request.context.tenant_context)
-    try:
-        return _store.create_record(target.tenant_ref, family, request.fields, target.dsn)
-    except UnsupportedFamily:
-        raise invalid_request() from None
-
-
-@app.post(
-    "/internal/tenant-records/{family}/update",
-    response_model=TenantRecord,
-    summary="Update one tenant-resident record",
-    description=(
-        "Update the named fields of one record in the tenant database bound by the signed claim. Field names "
-        "outside the family's column allowlist are rejected with no partial write, and append-only families "
-        "reject updates outright."
-    ),
-    tags=["Tenant Records"],
-    operation_id="updateTenantRecord",
-    response_description="The updated tenant-resident record.",
-    responses=error_responses(401, 404, 409, 422, 503),
-)
-async def update_record(family: FamilyPath, request: RecordWriteRequest, _credential: ServiceBearer) -> TenantRecord:
-    if request.record_ref is None:
-        raise invalid_request()
-    target = _resolver.resolve(request.context.tenant_context)
-    try:
-        return _store.update_record(target.tenant_ref, family, request.record_ref, request.fields, target.dsn)
-    except UnsupportedFamily:
-        raise invalid_request() from None
+async def list_grantees(credential: ServiceBearer) -> GranteeListResponse:
+    if not credential:
+        raise unauthenticated()
+    return GranteeListResponse(
+        grantees=[GranteeRegistration(service_ref=service_ref) for service_ref in _allowlist.service_refs()]
+    )
 
 
 if __name__ == "__main__":  # local development convenience — IC-013 §21 permits this block

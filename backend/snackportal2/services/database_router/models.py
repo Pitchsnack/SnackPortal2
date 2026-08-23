@@ -1,39 +1,20 @@
 """Database Router wire models.
 
-Nothing here carries a DSN, a credential, a database name, or a host. A caller learns that
-a tenant resolved, and to *which reference* — never to which machine. That is the whole
-point of putting resolution behind a service: the thing that knows how to reach a tenant
-database is the only thing that knows how to reach a tenant database.
+The resolution response carries **no** DSN, host, database name, or credential: a caller
+learns that a tenant resolved and to *which reference*, never to which machine.
+
+The grant response is the one exception, and it exists only because D-48 moved connection
+custody to the domain services. It is issued to an explicitly allowlisted service, names one
+tenant, expires, and is never returned to the BFF or to any client (D-48 C-1…C-3).
 """
 
 from __future__ import annotations
 
-from enum import Enum
-from typing import Dict, List, Optional
+from typing import List
 
 from pydantic import BaseModel, Field
 
 from ...shared.security import RequestContext
-
-
-class RecordFamily(str, Enum):
-    """The closed set of tenant-resident record families this router can address.
-
-    This is a **physical storage map**, not domain knowledge: it names the tables of the
-    accepted tenant DDL and nothing about what they mean. Business meaning — field sets,
-    bounded update rules, provenance markers, duplicate checks, DTO composition — lives in
-    the domain services, which is why those services own their own contracts and this one
-    owns none of them.
-
-    The set is closed because an open one would make this a generic data proxy addressable
-    by table name, and a caller could then reach any table by asking for it.
-    """
-
-    STARTUPS = "startups"
-    INVESTORS = "investors"
-    DEALS = "deals"
-    CONTACTS = "contacts"
-    LINEAGE = "lineage"
 
 
 class RoutingRequest(BaseModel):
@@ -45,7 +26,11 @@ class RoutingRequest(BaseModel):
 
 
 class RoutingResolution(BaseModel):
-    """Exactly one resolved physical database, expressed as a reference."""
+    """Exactly one resolved physical database, expressed as a reference.
+
+    This is what the BFF receives. It proves that exactly one database was resolved without
+    telling the ingress how to reach it.
+    """
 
     tenant_ref: str = Field(description="The single active tenant this request resolved to, from the signed claim.")
     target_ref: str = Field(
@@ -54,58 +39,55 @@ class RoutingResolution(BaseModel):
     expected_schema_version: str = Field(description="Schema version the registry expects of that tenant database.")
 
 
-class TenantRecord(BaseModel):
-    """One tenant-resident row, as references and scalar fields."""
+class TenantBindRequest(BaseModel):
+    """A tenant-resident domain service asking for a connection grant (D-48)."""
 
-    record_ref: str = Field(description="Opaque reference to the tenant-resident record. Never a raw row primary key.")
-    fields: Dict[str, Optional[str]] = Field(
-        description="The record's stored scalar fields. Interpretation belongs to the owning domain service."
+    tenant_ref: str = Field(
+        min_length=1,
+        max_length=128,
+        description="The single active tenant to bind, taken from the request's signed claim by the calling service.",
     )
 
 
-class RecordListRequest(BaseModel):
-    """List records of one family within exactly one tenant database."""
+class TenantConnectionGrantResponse(BaseModel):
+    """A short-lived permission to open exactly one tenant database (D-48 C-2).
 
-    context: RequestContext = Field(description="The canonical RequestContext naming the single active tenant.")
-    limit: int = Field(default=100, ge=1, le=500, description="Maximum records to return. Bounded to keep reads finite.")
+    Issued only to a service on the router's explicit grant allowlist. The BFF and the Access
+    Control Service are never on it: the process nearest the internet and the process that
+    decides access are both, deliberately, the furthest from a credential.
+    """
 
-
-class RecordReadRequest(BaseModel):
-    """Read one record of one family within exactly one tenant database."""
-
-    context: RequestContext = Field(description="The canonical RequestContext naming the single active tenant.")
-    record_ref: str = Field(min_length=1, max_length=256, description="Opaque reference to the record to read.")
-
-
-class RecordWriteRequest(BaseModel):
-    """Create or update one record of one family within exactly one tenant database."""
-
-    context: RequestContext = Field(description="The canonical RequestContext naming the single active tenant.")
-    record_ref: Optional[str] = Field(
-        default=None,
-        max_length=256,
-        description="Record to update, or null to create. A create never addresses an existing record.",
+    tenant_ref: str = Field(description="The one tenant this grant authorizes. A grant is never reusable across tenants.")
+    target_ref: str = Field(description="Opaque reference to the bound physical database.")
+    expected_schema_version: str = Field(description="Schema version the registry expects of that tenant database.")
+    dsn: str = Field(
+        description=(
+            "Connection string for the one bound tenant database. MUST NOT be logged, audited, returned onward, "
+            "or disclosed in any error, health or readiness response (D-48 C-3)."
+        )
     )
-    fields: Dict[str, Optional[str]] = Field(
-        description="Scalar fields to write. Names outside the family's allowlist are rejected fail-closed."
+    expires_at: str = Field(description="ISO-8601 UTC expiry. A service MUST NOT retain the grant beyond it.")
+
+
+class GranteeRegistration(BaseModel):
+    """One service permitted to receive connection grants. Read-only diagnostic shape."""
+
+    service_ref: str = Field(description="The tenant-resident service permitted to hold a tenant connection.")
+
+
+class GranteeListResponse(BaseModel):
+    """The router's grant allowlist, as references. Never the credentials themselves."""
+
+    grantees: List[GranteeRegistration] = Field(
+        description="Services permitted to receive a connection grant, in deterministic order. Never a credential."
     )
-
-
-class RecordListResponse(BaseModel):
-    """Records from exactly one tenant database, in deterministic order."""
-
-    tenant_ref: str = Field(description="The single tenant these records came from.")
-    family: RecordFamily = Field(description="The record family that was read.")
-    records: List[TenantRecord] = Field(description="The records, in deterministic order. Callers MUST NOT re-sort them.")
 
 
 __all__ = [
-    "RecordFamily",
-    "RecordListRequest",
-    "RecordListResponse",
-    "RecordReadRequest",
-    "RecordWriteRequest",
+    "GranteeListResponse",
+    "GranteeRegistration",
     "RoutingRequest",
     "RoutingResolution",
-    "TenantRecord",
+    "TenantBindRequest",
+    "TenantConnectionGrantResponse",
 ]

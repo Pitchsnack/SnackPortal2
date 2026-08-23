@@ -23,8 +23,9 @@ from snackportal2.shared.config import SERVICE_REGISTRY, load_settings
 
 from ._openapi_rules import check_document
 
-#: Services with a ``main.py`` at this point in the rebuild. Extended as each lands, so the
-#: census is a statement about what exists rather than about what happened to import.
+#: All fourteen services of the Option A target architecture. Asserted explicitly rather than
+#: discovered-and-skipped, so a service that fails to import shows up as a failure instead of
+#: vanishing from the census.
 IMPLEMENTED_SERVICES = (
     "authentication",
     "access_control",
@@ -32,6 +33,14 @@ IMPLEMENTED_SERVICES = (
     "database_router",
     "bff",
     "audit",
+    "startups",
+    "investors",
+    "deals",
+    "contacts",
+    "sharing",
+    "import_service",
+    "lineage",
+    "ai_agents",
 )
 
 _PACKAGE_ROOT = pathlib.Path(importlib.import_module("snackportal2").__file__ or "").parent

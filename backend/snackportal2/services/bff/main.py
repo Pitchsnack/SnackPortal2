@@ -3,28 +3,30 @@
     python -m snackportal2.services.bff.main
     uvicorn snackportal2.services.bff.main:app --host 127.0.0.1 --port 8000
 
-**This is not a gateway.** Its operation surface is enumerated by contract (IC-013 §16),
-every surface is backed by a Pydantic request and response model, and a surface that merely
-relayed a downstream body would be a gateway route and is forbidden (§19). It is the only
-service that may be a public ingress (§21.1 E-1); every other service sits behind it.
+**This is not a gateway.** Its operation surface is enumerated by contract (IC-013 §16), every
+surface is backed by Pydantic request and response models, and a surface that merely relayed a
+downstream body would be a gateway route and is forbidden (§19). It is the only service that may
+be a public ingress (§21.1 E-1); every other service sits behind it.
 
-Day 1 establishes the application, the health and readiness surfaces, correlation, and the
-composed ingress pipeline. The enumerated business operations arrive with Day 3.1.
+It is also, deliberately, the process with the fewest credentials. It holds no database
+connection and is permanently off the Database Router's connection-grant allowlist (D-48 C-1):
+the process nearest the internet is the one furthest from a credential.
 """
 
 from __future__ import annotations
 
-from typing import Optional, cast
+from typing import Any, Dict, Mapping, cast
 
 import uvicorn
-from fastapi import Request
+from fastapi import Depends
 
 from ...shared.config import load_settings
 from ...shared.security import client_bearer
 from ...shared.service import build_app
 from .clients import build_components
+from .operations import build_router
 from .pipeline import IngressPipeline
-from .ports import AccessControlPort, AuditPort, AuthenticationPort, ControlReadPort, TenantRoutingPort
+from .ports import AccessControlPort, AuditPort, AuthenticationPort, ControlReadPort, DomainServicePort, TenantRoutingPort
 
 SERVICE = "bff"
 
@@ -36,13 +38,14 @@ app = build_app(
         "The single frontend-facing ingress. Application-oriented orchestration with an enumerated operation "
         "surface (IC-013 §16) — not a proxy, not a routing gateway, and not a compatibility shim. It "
         "authenticates through the Authentication Service, validates the tenant carrier, builds the canonical "
-        "RequestContext from the signed claim alone, asks the Access Control Service for a decision, routes "
-        "through the Database Router, and composes contract-approved DTOs."
+        "RequestContext from the signed claim alone, asks the Access Control Service for a decision, resolves "
+        "exactly one database through the Database Router, invokes the owning service, and composes a "
+        "contract-approved DTO."
     ),
     settings=settings,
 )
 
-_components = build_components()
+_components: Dict[str, Any] = build_components()
 
 #: The composed request pipeline. Fail-closed by omission: with no service URLs configured
 #: nobody authenticates and nothing is authorized.
@@ -54,29 +57,16 @@ pipeline = IngressPipeline(
     base_domain=cast(str, _components["base_domain"]),
 )
 
-#: Control-resident reads (memberships, global directories) used by the enumerated
-#: Control-domain operations.
+#: Control-resident reads (memberships, global directories) for the CONTROL-domain operations.
 control_read = cast(ControlReadPort, _components["control_read"])
 
+#: The tenant-resident domain services the TENANT-domain operations orchestrate.
+domains = cast(Mapping[str, DomainServicePort], _components["domains"])
 
-def bearer_credential(request: Request) -> Optional[str]:
-    """Extract the client bearer credential from the request.
-
-    Read directly rather than through a FastAPI security dependency so the pipeline sees a
-    missing credential and a malformed one identically — both are simply "no credential",
-    and both produce the same canonical 401.
-    """
-    header = request.headers.get("Authorization", "")
-    scheme, _, value = header.partition(" ")
-    if scheme.casefold() != "bearer":
-        return None
-    return value.strip() or None
-
-
-# ``client_bearer`` is referenced so the ClientBearer scheme is registered in
-# components.securitySchemes even before the first protected route is declared; the
-# enumerated operations attach it explicitly (Day 3.1).
-_ = client_bearer
+# The client bearer scheme is attached at the router so it appears in components.securitySchemes
+# and on every enumerated operation. It does not itself enforce: `auto_error=False` means a
+# missing credential reaches the pipeline, which raises the canonical 401 rather than FastAPI's.
+app.include_router(build_router(pipeline, control_read, domains), dependencies=[Depends(client_bearer)])
 
 
 if __name__ == "__main__":  # local development convenience — IC-013 §21 permits this block

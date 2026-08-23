@@ -1,17 +1,22 @@
 """BFF-local transport shapes and the ports the ingress pipeline depends on.
 
 The BFF imports no other service's implementation (IC-013 §13), so the shapes it exchanges
-with Authentication, Access Control, the Database Router and Audit are declared here and
-serialized across the boundary. That is not duplication for its own sake: it is what keeps
-the fourteen services independently bootable and independently deployable, and it is what
-the import-linter independence contract enforces.
+with Authentication, Access Control, the Database Router, the domain services and Audit are
+declared here and serialized across the boundary. That is not duplication for its own sake: it
+is what keeps the fourteen services independently bootable and independently deployable, and it
+is what the import-linter independence contract enforces.
+
+Note what the routing port can and cannot do. It **resolves** — proving exactly one database was
+bound — and that is all. It cannot read or write a tenant record, because under D-48 the BFF is
+permanently off the connection-grant allowlist: the process nearest the internet is the one
+furthest from a credential.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, List, Optional, Protocol
+from typing import Any, Dict, List, Optional, Protocol
 
 from ...shared.operations import BffOperation
 from ...shared.security import AuthContext, RequestContext
@@ -52,14 +57,6 @@ class RoutedTenant:
     target_ref: str
 
 
-@dataclass(frozen=True)
-class TenantRecordView:
-    """A tenant-resident record as the router returned it, before DTO composition."""
-
-    record_ref: str
-    fields: Dict[str, Optional[str]]
-
-
 class AuthenticationPort(Protocol):
     """Validate a client credential and check the carrier (IC-005)."""
 
@@ -81,23 +78,13 @@ class AccessControlPort(Protocol):
 
 
 class TenantRoutingPort(Protocol):
-    """Bind exactly one physical database, and read or write within it."""
+    """Bind exactly one physical database and report it as a reference.
+
+    Resolution only. The BFF never receives a connection grant (D-48 C-1), so there is no method
+    here through which it could read or write tenant data even if a future route tried.
+    """
 
     def resolve(self, context: RequestContext) -> RoutedTenant:
-        ...
-
-    def list_records(self, context: RequestContext, family: str, limit: int) -> List[TenantRecordView]:
-        ...
-
-    def read_record(self, context: RequestContext, family: str, record_ref: str) -> Optional[TenantRecordView]:
-        ...
-
-    def create_record(self, context: RequestContext, family: str, fields: Dict[str, Optional[str]]) -> TenantRecordView:
-        ...
-
-    def update_record(
-        self, context: RequestContext, family: str, record_ref: str, fields: Dict[str, Optional[str]]
-    ) -> TenantRecordView:
         ...
 
 
@@ -111,6 +98,19 @@ class ControlReadPort(Protocol):
         ...
 
     def get_directory_record(self, directory: str, record_ref: str) -> Optional[Dict[str, str]]:
+        ...
+
+
+class DomainServicePort(Protocol):
+    """Invoke one operation on one tenant-resident domain service.
+
+    Typed at the *BFF route*, not here: every enumerated operation declares its own Pydantic
+    request and response models and composes a contract-approved DTO from what this returns
+    (IC-013 §19). This port carries the call, not the contract — which is precisely why no BFF
+    route may hand a caller what it returns without composing.
+    """
+
+    def call(self, path: str, payload: Dict[str, Any]) -> Any:
         ...
 
 
@@ -139,7 +139,7 @@ __all__ = [
     "AuthorizationResult",
     "CarrierVerdict",
     "ControlReadPort",
+    "DomainServicePort",
     "RoutedTenant",
-    "TenantRecordView",
     "TenantRoutingPort",
 ]
