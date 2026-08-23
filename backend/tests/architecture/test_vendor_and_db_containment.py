@@ -64,6 +64,13 @@ REBUILD_DB_DRIVER_ALLOW = (
 # `[tool.importlinter].root_packages` (so it is not in the service graph).
 OPERATOR_TOOL_DB_ALLOW = ("tools/local/sp2_local.py",)
 
+#: The ONE module permitted to import the operator tooling. It is the Stage 6 consistency test,
+#: which compares the tool's constants against the service registry and the deployment manifest —
+#: the check that makes the tool's duplication of the service list safe. A single exact path, held
+#: to the same standard as the blessed crypto fixture: never a directory, prefix, glob or tuple
+#: widening. `test_operator_tool_importer_allowance_is_exact_and_nonvacuous` fails on any of those.
+OPERATOR_TOOL_IMPORTER_ALLOW = "tests/snackportal2/test_stage6_local_launch.py"
+
 # JWT/crypto vendor containment (PRD B5-5). The allowance below is ONE exact file — the
 # blessed runtime RS256 test fixture — and must stay a single plain path string forever
 # (widening it to a tuple, directory, package prefix, or wildcard is a containment breach;
@@ -226,14 +233,37 @@ def test_the_operator_tool_is_outside_the_service_graph_and_the_distribution() -
     root_packages = pyproject.split("root_packages = [", 1)[1].split("]", 1)[0]
     assert '"tools"' not in root_packages, "tools is an import-linter root package; it is in the service graph"
 
-    # And nothing imports it. A service importing an operator tool would be a driver back-channel
-    # that no contract mentions.
+    # And nothing imports it, with ONE exact-path exception: the Stage 6 consistency test, which
+    # imports the tool precisely to assert that its constants have not drifted from the service
+    # registry and the deployment manifest. That is the check which makes the tool's duplication of
+    # the service list safe rather than merely tolerated, and it cannot be written without the
+    # import. An exact file, never a directory or a blanket `tests/` allowance — a service
+    # importing an operator tool would be a driver back-channel that no contract mentions, and a
+    # prefix allowance here is how that would arrive.
     for f in _scan.py_files():
         rp = _scan.relposix(f)
-        if rp.startswith("tools/"):
+        if rp.startswith("tools/") or rp == OPERATOR_TOOL_IMPORTER_ALLOW:
             continue
         for mod in _scan.imported_modules(f):
             assert not (mod == "tools" or mod.startswith("tools.")), f"{rp} imports the operator tooling package"
+
+
+def test_operator_tool_importer_allowance_is_exact_and_nonvacuous() -> None:
+    """The importer allowance is ONE exact file, it exists, and it really does import the tool.
+
+    Two failure modes, both of which leave a guard green while it protects nothing: an allowance
+    naming a file that does not exist (the census never meets it), and one naming a file that does
+    not import the tool at all (the entry is dead and could be widened unnoticed).
+    """
+    assert isinstance(OPERATOR_TOOL_IMPORTER_ALLOW, str), "the allowance must be a single exact-path string"
+    assert "*" not in OPERATOR_TOOL_IMPORTER_ALLOW and "?" not in OPERATOR_TOOL_IMPORTER_ALLOW, "no wildcard forms"
+    assert not OPERATOR_TOOL_IMPORTER_ALLOW.endswith(("/", ".")), "no directory/prefix forms"
+    assert OPERATOR_TOOL_IMPORTER_ALLOW.startswith("tests/"), "only a test may import the operator tooling"
+
+    allowed = _scan.BACKEND_ROOT / OPERATOR_TOOL_IMPORTER_ALLOW
+    assert allowed.is_file(), f"the allowed importer does not exist: {OPERATOR_TOOL_IMPORTER_ALLOW}"
+    text = allowed.read_text(encoding="utf-8")
+    assert "tools.local.sp2_local" in text, "the allowance is dead — the named module does not import the operator tooling"
 
 
 def test_the_operator_tool_imports_no_service_module() -> None:
@@ -268,6 +298,7 @@ if __name__ == "__main__":
             test_jwt_crypto_allowance_is_exact_file_and_nonvacuous,
             test_rebuild_allowances_are_exact_files_and_nonvacuous,
             test_the_operator_tool_is_outside_the_service_graph_and_the_distribution,
+            test_operator_tool_importer_allowance_is_exact_and_nonvacuous,
             test_the_operator_tool_imports_no_service_module,
         ]
     )

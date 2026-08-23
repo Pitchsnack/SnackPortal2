@@ -381,8 +381,20 @@ def test_pyproject_dependencies_unchanged() -> None:
     # uvicorn for the single shared ASGI runtime). Both are vendor-neutral open source over the
     # standard ASGI interface, so the anti-vendor-lock-in constraint is unaffected. Any further
     # entry needs the same explicit review this list represents.
-    assert entries == ["pyjwt>=2", "cryptography", "psycopg[binary]>=3", "fastapi>=0.115", "uvicorn>=0.30"], (
-        f"backend dependencies must stay EXACTLY the five reviewed entries: {entries}"
+    #
+    # Stage 6 adds exactly one: `httpx`. It is not a new capability — five modules of the Option A
+    # rebuild already imported it to make their internal service-to-service calls, and it was
+    # declared only under the `dev` extra, described there as a test-only need of starlette's
+    # TestClient. So `pip install .` produced a backend that could not call anything, and did not
+    # even fail closed: in all five modules the `import httpx` sits outside the surrounding `try`,
+    # so ModuleNotFoundError escaped the fail-closed handler and surfaced as HTTP 500 rather than
+    # the canonical denial. This entry records the correction, not a widening.
+    #
+    # Anti-vendor-lock-in (CLAUDE.md #2) is unaffected: httpx is vendor-neutral open source
+    # speaking standard HTTP, ties the deployment to no cloud and no hosting provider, and is the
+    # client half of a stack whose server half (fastapi/uvicorn) was reviewed on the same grounds.
+    assert entries == ["pyjwt>=2", "cryptography", "psycopg[binary]>=3", "fastapi>=0.115", "uvicorn>=0.30", "httpx"], (
+        f"backend dependencies must stay EXACTLY the six reviewed entries: {entries}"
     )
 
 
