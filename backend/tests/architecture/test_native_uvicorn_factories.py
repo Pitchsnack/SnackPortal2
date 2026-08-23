@@ -200,13 +200,60 @@ def test_factory_creates_no_worker_subprocess_or_supervisor() -> None:
 def test_no_edge_imports_the_asgi_server_directly() -> None:
     # uvicorn stays confined to the shared containment-zone runtime; the native path reaches it
     # through the CLI, never through an edge import.
+    #
+    # SCOPE (D-46 / IC-013 sec.21). This rule governs the NINE LEGACY EDGES, whose contract is the
+    # shared `asgi_runtime` containment zone. It does NOT govern the Option A rebuild, where
+    # IC-013 sec.21 rules the other way and says so explicitly: "A service-level `import uvicorn`
+    # is permitted", and among the things "explicitly NOT mandated" is "a shared uvicorn runtime
+    # module that every service must route through". Applying the legacy rule to the rebuild would
+    # be enforcing the opposite of the ratified convention.
+    #
+    # The rebuild is therefore held to its own, narrower rule below: uvicorn may appear in a
+    # service's own `main.py` and nowhere else — in particular, not in the shared foundation,
+    # which is what "no shared uvicorn runtime module" actually means in practice.
     allowed = "shared/adapters/providers/asgi_runtime.py"
+    rebuild_prefix = "snackportal2/"
     for path in _scan.py_files():
         rel = _scan.relposix(path)
-        if rel == allowed or rel.startswith("tests/"):
+        if rel == allowed or rel.startswith("tests/") or rel.startswith(rebuild_prefix):
             continue
         for module in _scan.imported_modules(path):
             assert module.split(".")[0] != "uvicorn", f"{rel} must not import uvicorn; only {allowed} may"
+
+
+def test_rebuild_imports_uvicorn_only_in_service_entry_modules() -> None:
+    """The Option A counterpart rule (IC-013 sec.21).
+
+    Each rebuild service starts itself, so its `main.py` constructs the server. Nothing else may:
+    a uvicorn import in the shared foundation would BE the shared runtime module the contract
+    declines to mandate, and one in a non-entry service module would mean a service can be started
+    from somewhere other than its documented entry point.
+    """
+    entry_suffix = "/main.py"
+    rebuild_prefix = "snackportal2/services/"
+    offenders = []
+    for path in _scan.py_files():
+        rel = _scan.relposix(path)
+        if not rel.startswith("snackportal2/"):
+            continue
+        imports_uvicorn = any(module.split(".")[0] == "uvicorn" for module in _scan.imported_modules(path))
+        if not imports_uvicorn:
+            continue
+        if rel.startswith(rebuild_prefix) and rel.endswith(entry_suffix):
+            continue
+        offenders.append(rel)
+    assert offenders == [], f"uvicorn imported outside a rebuild service entry module: {offenders}"
+
+    # Non-vacuity: the census must actually be seeing entry modules that import uvicorn, or the
+    # emptiness above proves nothing.
+    entry_modules = [
+        _scan.relposix(p)
+        for p in _scan.py_files()
+        if _scan.relposix(p).startswith(rebuild_prefix)
+        and _scan.relposix(p).endswith(entry_suffix)
+        and any(m.split(".")[0] == "uvicorn" for m in _scan.imported_modules(p))
+    ]
+    assert len(entry_modules) >= 6, f"expected the rebuild's service entry modules to import uvicorn; found {entry_modules}"
 
 
 def _runbook_command_blocks() -> list[str]:
@@ -350,6 +397,7 @@ if __name__ == "__main__":
             test_factory_declares_no_route_of_its_own,
             test_factory_creates_no_worker_subprocess_or_supervisor,
             test_no_edge_imports_the_asgi_server_directly,
+            test_rebuild_imports_uvicorn_only_in_service_entry_modules,
             test_runbook_pins_every_command_block_with_all_canonical_flags,
             test_runbook_documents_both_port_maps_and_pins_each_to_its_source,
             test_runbook_port_map_guard_is_non_vacuous,
