@@ -45,7 +45,72 @@ _TESTS_ROOT = _scan.BACKEND_ROOT / "tests"
 
 # The ONLY allowed omissions from the CI loop — explicit, named, justified. Adding a key here is a
 # governed decision (it consciously keeps a live proof manual-only).
+# NOTE ON SHAPE. Seven boundary guards elsewhere in this directory read this dict with
+# ``ast.literal_eval``, so every value must be a plain string literal — a shared constant
+# referenced by name would make the whole mapping unreadable to them and take those guards
+# down. The Stage 4 entries below therefore repeat their common reason rather than factoring
+# it out. That is deliberate, not duplication that wants removing.
 MANUAL_ONLY_EXCEPTIONS = {
+    # --- Stage 4 (Live PostgreSQL & Migration Verification), Option A rebuild -----------------
+    # Every Stage 4 module needs FOUR physically distinct PostgreSQL clusters
+    # (SP2_STAGE4_CONTROL_DSN / _ACME_DSN / _ZETA_DSN / _NOVA_DSN) so that cross-tenant absence
+    # is a property of the topology rather than of one cluster's search path — the same B-7C-2
+    # exclusion that keeps test_b3a_multi_database_topology.py out of the loop. Enrollment is
+    # FORBIDDEN rather than deferred: all four EXPECTED_HARNESS_COUNT sites parse the loop TEXT
+    # and compare len(entries), so bumping the count while the loop is unchanged takes the
+    # default suite down. Run with the four DSNs exported:
+    #     python -m pytest tests/snackportal2/requires_pg -q
+    "tests/snackportal2/requires_pg/test_pg_a_migrations.py": (
+        "Stage 4A migration verification: applies the Control chain (M-1 included) and the tenant chain "
+        "to four disposable databases and creates two more from zero. Requires four physically distinct "
+        "clusters plus CREATE/DROP DATABASE rights, which the single ephemeral CI service does not "
+        "provide. Enrollment is forbidden, not deferred: the hosted 14-harness loop and the "
+        "EXPECTED_HARNESS_COUNT/b7c2-doc lockstep are deliberately unchanged by Stage 4 (no .github "
+        "changes in its authorized surface). Run: python -m pytest tests/snackportal2/requires_pg -q"
+    ),
+    "tests/snackportal2/requires_pg/test_pg_b_control_plane.py": (
+        "Stage 4B live Control Plane verification against the real Control database. Requires the Stage 4 "
+        "four-cluster fixture (SP2_STAGE4_* DSNs), which the single ephemeral CI service does not provide; "
+        "the hosted loop and the EXPECTED_HARNESS_COUNT/b7c2-doc lockstep are deliberately unchanged by "
+        "Stage 4. Run: python -m pytest tests/snackportal2/requires_pg -q"
+    ),
+    "tests/snackportal2/requires_pg/test_pg_c_database_router.py": (
+        "Stage 4C live Database Router and D-48 grant verification. Requires the Stage 4 four-cluster "
+        "fixture AND spawns real uvicorn processes for the Control Plane and the router, driving them over "
+        "loopback HTTP — a shape the workflow's per-harness `python <file>` invocation does not support. "
+        "The hosted loop and the EXPECTED_HARNESS_COUNT/b7c2-doc lockstep are deliberately unchanged by "
+        "Stage 4. Run: python -m pytest tests/snackportal2/requires_pg -q"
+    ),
+    "tests/snackportal2/requires_pg/test_pg_d_domain_services.py": (
+        "Stage 4D live tenant domain-service verification (Startup, Investor, Deal, Lineage, Import). "
+        "Requires the Stage 4 four-cluster fixture and six real uvicorn processes composed from the "
+        "environment; not runnable on the single ephemeral CI service. The hosted loop and the "
+        "EXPECTED_HARNESS_COUNT/b7c2-doc lockstep are deliberately unchanged by Stage 4. "
+        "Run: python -m pytest tests/snackportal2/requires_pg -q"
+    ),
+    "tests/snackportal2/requires_pg/test_pg_d2_audit.py": (
+        "Stage 4D section 6.6 live Audit Service verification against migration M-1's "
+        "control_ingress_audit table. Requires the Stage 4 Control database and a real uvicorn Audit "
+        "process; not runnable on the single ephemeral CI service. The hosted loop and the "
+        "EXPECTED_HARNESS_COUNT/b7c2-doc lockstep are deliberately unchanged by Stage 4. "
+        "Run: python -m pytest tests/snackportal2/requires_pg -q"
+    ),
+    "tests/snackportal2/requires_pg/test_pg_f_bff_end_to_end.py": (
+        "Stage 4F mandatory real BFF-to-PostgreSQL end-to-end path, plus the Stage 4E physical-isolation "
+        "proof. Runs ELEVEN real uvicorn services against four physically distinct clusters and measures "
+        "isolation with pg_stat_database.sessions inside each one; neither the topology nor the process "
+        "fleet exists on the single ephemeral CI service. The hosted loop and the "
+        "EXPECTED_HARNESS_COUNT/b7c2-doc lockstep are deliberately unchanged by Stage 4. "
+        "Run: python -m pytest tests/snackportal2/requires_pg -q"
+    ),
+    "tests/snackportal2/requires_pg/test_pg_z_gates.py": (
+        "Stage 4G/4H/4I standing gates re-run under a live-PostgreSQL configuration: all fourteen OpenAPI "
+        "documents regenerated in a configured subprocess and compared byte-for-byte against the "
+        "unconfigured ones. Requires the Stage 4 Control DSN to build that configuration, so it is bound "
+        "to the four-cluster fixture like the rest of the suite. The hosted loop and the "
+        "EXPECTED_HARNESS_COUNT/b7c2-doc lockstep are deliberately unchanged by Stage 4. "
+        "Run: python -m pytest tests/snackportal2/requires_pg -q"
+    ),
     "tests/control_plane/requires_pg/test_b3a_multi_database_topology.py": (
         "requires four physically distinct clusters (SP2_B3A_*_DSN, four distinct system_identifiers); "
         "cannot run on the single ephemeral CI service — the B-7C-2 exclusion, documented in the "

@@ -114,7 +114,18 @@ testpaths = ["tests"]
 # acceptance evidence; its tests receive `conn`/`admin_dsn` from _pg.run(), not a pytest
 # fixture). Run via `python tests/<svc>/requires_pg/test_pg_*.py` with SNACKPORTAL_TEST_DSN
 # set. PRD-P6-V1-E1 F4a; D15 distinctness evidence per PRD-D15-IMPL-01 §13.
-addopts = "--ignore=tests/lineage_service/requires_pg --ignore=tests/control_plane/requires_pg"
+#
+# tests/snackportal2/requires_pg is the Option A rebuild's Stage 4 live-PostgreSQL suite. It
+# IS pytest-shaped (and clean-skips without its DSNs), but it is excluded from the default run
+# for the same reason as its two predecessors: the default suite is hermetic, and a live suite
+# that quietly reports "skipped" inside it is how live verification stops being noticed. It is
+# run explicitly, against four disposable PostgreSQL clusters:
+#     python -m pytest tests/snackportal2/requires_pg -q
+addopts = """\
+  --ignore=tests/lineage_service/requires_pg \
+  --ignore=tests/control_plane/requires_pg \
+  --ignore=tests/snackportal2/requires_pg\
+"""
 
 # --- Dependency boundaries (governance: dependency DAG, rules 1-2) ------------
 [tool.importlinter]
