@@ -4,10 +4,10 @@
 #
 #     exactly one application service publishes a port, and it is the BFF.
 #
-# Every other service binds 0.0.0.0 *inside its own container network namespace* — which E-3
-# explicitly permits, because that binding reaches only the container network — and publishes
-# nothing. No `ports:` mapping, no `-p`. They are reachable by service-name DNS on the private
-# network and by nothing else.
+# Every other application service binds 0.0.0.0 *inside its own container network namespace* —
+# which E-3 explicitly permits, because that binding reaches only the container network — and
+# publishes nothing. No `ports:` mapping, no `-p`. They are reachable by service-name DNS on the
+# private network and by nothing else.
 #
 # The distinction is BIND versus PUBLISH, and conflating the two produces both false alarms (a
 # container binding 0.0.0.0 inside its namespace is normal and necessary) and real holes (a
@@ -19,20 +19,74 @@
 # The Access Control Service is the most consequential one to get wrong. A directly-reachable
 # authorizer can be asked for a decision that no BFF flow ever requested.
 #
-# Secret hygiene (D-14): no credential value appears here. Everything is interpolated from an
-# untracked env file. Run with:
-#   docker compose -f infrastructure/docker/docker-compose.rebuild.yml --env-file infrastructure/docker/.env.local up
+# ---------------------------------------------------------------------------------------------
+# STAGE 6 — what this file gained, and why the four databases are in it
+#
+# Until Stage 6 this manifest described fourteen application services and nothing else, so
+# `docker compose up` produced fourteen processes with no database to reach, no configured
+# identity, no tenant registry and no way to obtain a tenant connection: every request answered
+# 401 or 503, correctly and uselessly. Stage 6 does not change the architecture; it supplies the
+# configuration that was missing, and adds the four PostgreSQL clusters the topology has always
+# assumed.
+#
+# The databases live here rather than in a second manifest because the goal is ONE documented
+# developer procedure. They are named `*-postgres` and are **not application services** — the
+# exposure check classifies them by name and excludes them, exactly as it already excludes the
+# legacy fixture's clusters. They publish on 127.0.0.1 only, because a developer needs psql and
+# the migration tool to reach them from the host, and loopback publishing is not internet
+# exposure.
+#
+# Four SEPARATE clusters, not four databases in one. That is stronger than the contract demands
+# and is deliberate: a cross-tenant leak through a shared cluster (a search_path slip, a dblink,
+# an accidental fully-qualified name) is not merely forbidden, it is unreachable.
+#
+# Ports 5550-5553 are used rather than 5540-5543 so this stack can run ALONGSIDE the standing
+# `docker-compose.local.yml` fixture without a port collision. That fixture is untouched.
+#
+# ---------------------------------------------------------------------------------------------
+# Secret hygiene (D-14): no credential VALUE appears here. Every one is interpolated from an
+# untracked env file. Composite values (the router grant allowlist, the local principal map, the
+# audit credential directory, every DSN) are ASSEMBLED here from those variables, so a developer
+# sets short scalars and never hand-writes JSON or a connection string.
+#
+#   cp infrastructure/docker/.env.rebuild.template infrastructure/docker/.env.rebuild
+#   # edit .env.rebuild — see docs/Local_Development_Runbook.md
+#   docker compose -f infrastructure/docker/docker-compose.rebuild.yml \
+#                  --env-file infrastructure/docker/.env.rebuild up -d --wait
+#
+# `docker compose config` renders interpolated values, including the local throwaway password.
+# It is a debugging command; do not paste its output anywhere.
 
 name: snackportal2-rebuild-local
 
 x-service-common: &service-common
   build:
     context: ../../backend
+  image: snackportal2-rebuild:local
   restart: "no"
   environment: &service-env
     # E-3: binding 0.0.0.0 INSIDE the container namespace is permitted and necessary. It is not
     # a publish, and no clause below publishes it.
     SP2_BIND_HOST: "0.0.0.0"
+  networks:
+    - sp2_internal
+
+# Every application service answers the same unauthenticated liveness route (IC-013 §17), so the
+# probe is written once. `python` rather than `curl`, because the image installs no HTTP client
+# binary and adding one to satisfy a health check would enlarge the runtime attack surface for a
+# purely local convenience.
+x-service-health: &service-health
+  interval: 5s
+  timeout: 3s
+  retries: 20
+  start_period: 5s
+
+x-pg-common: &pg-common
+  image: postgres:17
+  restart: "no"
+  environment: &pg-env
+    POSTGRES_USER: ${SP2_LOCAL_PG_USER:-sp2_local}
+    POSTGRES_PASSWORD: ${SP2_LOCAL_PG_PASSWORD:?set SP2_LOCAL_PG_PASSWORD in an untracked infrastructure/docker/.env.rebuild}
   networks:
     - sp2_internal
 
@@ -42,10 +96,87 @@ networks:
     # issuer; no internal service is reachable from outside regardless, because none publishes.
     driver: bridge
 
+volumes:
+  sp2_rebuild_control_data:
+  sp2_rebuild_acme_data:
+  sp2_rebuild_zeta_data:
+  sp2_rebuild_nova_data:
+
 services:
 
   # ============================================================================================
-  # THE ONE PUBLIC APPLICATION INGRESS (E-1). This is the only `ports:` clause in the file.
+  # THE FOUR PHYSICALLY SEPARATE POSTGRESQL CLUSTERS.
+  #
+  # Not application services (IC-013 §21.1 speaks of a public *application* ingress). Published
+  # on loopback only, so the host-side migration tool and psql can reach them.
+  # ============================================================================================
+  control-postgres:
+    <<: *pg-common
+    container_name: sp2_rebuild_control_pg
+    environment:
+      <<: *pg-env
+      POSTGRES_DB: snackportal2_control
+    ports:
+      - "127.0.0.1:5550:5432"
+    volumes:
+      - sp2_rebuild_control_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${SP2_LOCAL_PG_USER:-sp2_local} -d snackportal2_control"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  acme-postgres:
+    <<: *pg-common
+    container_name: sp2_rebuild_acme_pg
+    environment:
+      <<: *pg-env
+      POSTGRES_DB: snackportal2_tenant_acme
+    ports:
+      - "127.0.0.1:5551:5432"
+    volumes:
+      - sp2_rebuild_acme_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${SP2_LOCAL_PG_USER:-sp2_local} -d snackportal2_tenant_acme"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  zeta-postgres:
+    <<: *pg-common
+    container_name: sp2_rebuild_zeta_pg
+    environment:
+      <<: *pg-env
+      POSTGRES_DB: snackportal2_tenant_zeta
+    ports:
+      - "127.0.0.1:5552:5432"
+    volumes:
+      - sp2_rebuild_zeta_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${SP2_LOCAL_PG_USER:-sp2_local} -d snackportal2_tenant_zeta"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  nova-postgres:
+    <<: *pg-common
+    container_name: sp2_rebuild_nova_pg
+    environment:
+      <<: *pg-env
+      POSTGRES_DB: snackportal2_tenant_nova
+    ports:
+      - "127.0.0.1:5553:5432"
+    volumes:
+      - sp2_rebuild_nova_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${SP2_LOCAL_PG_USER:-sp2_local} -d snackportal2_tenant_nova"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # ============================================================================================
+  # THE ONE PUBLIC APPLICATION INGRESS (E-1). This is the only `ports:` clause among the
+  # application services in this file.
   # ============================================================================================
   bff:
     <<: *service-common
@@ -68,9 +199,28 @@ services:
       SP2_BFF_CONTACTS_URL: "http://contacts:8011"
       SP2_BFF_AUDIT_URL: "http://audit:8013"
       SP2_BFF_SERVICE_CREDENTIAL: ${SP2_INTERNAL_SERVICE_CREDENTIAL:?set SP2_INTERNAL_SERVICE_CREDENTIAL in an untracked env file}
+      # Host-based tenant addressing is OFF unless a base domain is configured. Left empty for
+      # local development, so `X-Tenant-Id` is the only recognized carrier and `localhost` can
+      # never be mistaken for a tenant label.
       SP2_BFF_BASE_DOMAIN: ${SP2_BFF_BASE_DOMAIN:-}
     ports:
       - "127.0.0.1:8000:8000"
+    healthcheck:
+      <<: *service-health
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/health').read()"]
+    depends_on:
+      authentication:
+        condition: service_healthy
+      access-control:
+        condition: service_healthy
+      control-plane:
+        condition: service_healthy
+      database-router:
+        condition: service_healthy
+      startups:
+        condition: service_healthy
+      audit:
+        condition: service_healthy
 
   # ============================================================================================
   # INTERNAL SERVICES — bind inside the container, publish NOTHING (E-3).
@@ -84,9 +234,29 @@ services:
       <<: *service-env
       SP2_AUTHENTICATION_HOST: "0.0.0.0"
       SP2_AUTHENTICATION_PORT: "8001"
+      # Production posture. Set this to a pinned-issuer JSON object and it WINS over the local
+      # static map below, so a stray development variable in a production environment cannot
+      # widen the trust surface.
       SP2_AUTHENTICATION_ISSUERS: ${SP2_AUTHENTICATION_ISSUERS:-}
+      # Local-development posture (IC-005 StaticTokenVerifier). This is a SUPPORTED, explicitly
+      # selected verifier that already existed — Stage 6 configures it, it does not invent it.
+      # It is never reachable by omission: with both variables unset the service starts, reports
+      # healthy, and authenticates nobody.
+      #
+      # The map is assembled here from three throwaway local tokens so a developer never writes
+      # JSON. Each entry binds one opaque token to one principal reference, one platform role and
+      # one signed active-tenant claim. The claim is the sole routing authority; the token is
+      # never a tenant selector.
+      SP2_AUTHENTICATION_STATIC_PRINCIPALS: >-
+        {"${SP2_LOCAL_TOKEN_ACME_AGENT:-}":{"principal_ref":"local-agent-acme","role":"TENANT_AGENT","active_tenant":"acme"},
+         "${SP2_LOCAL_TOKEN_ZETA_AGENT:-}":{"principal_ref":"local-agent-zeta","role":"TENANT_AGENT","active_tenant":"zeta"},
+         "${SP2_LOCAL_TOKEN_NOVA_AGENT:-}":{"principal_ref":"local-agent-nova","role":"TENANT_AGENT","active_tenant":"nova"},
+         "${SP2_LOCAL_TOKEN_CONTROL:-}":{"principal_ref":"local-operator-control","role":"CONTROL","active_tenant":null}}
     expose:
       - "8001"
+    healthcheck:
+      <<: *service-health
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8001/health').read()"]
 
   access-control:
     <<: *service-common
@@ -96,10 +266,20 @@ services:
       <<: *service-env
       SP2_ACCESS_CONTROL_HOST: "0.0.0.0"
       SP2_ACCESS_CONTROL_PORT: "8002"
+      # Membership is read from the Control Plane, references only. The static map
+      # (SP2_ACCESS_CONTROL_STATIC_MEMBERSHIPS) is deliberately NOT set: the seeded Control
+      # database is the single source of membership truth locally, so a seed and a decision
+      # cannot disagree.
       SP2_ACCESS_CONTROL_CONTROL_PLANE_URL: "http://control-plane:8003"
       SP2_ACCESS_CONTROL_SERVICE_CREDENTIAL: ${SP2_INTERNAL_SERVICE_CREDENTIAL:?set SP2_INTERNAL_SERVICE_CREDENTIAL}
     expose:
       - "8002"
+    healthcheck:
+      <<: *service-health
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8002/health').read()"]
+    depends_on:
+      control-plane:
+        condition: service_healthy
 
   control-plane:
     <<: *service-common
@@ -109,9 +289,18 @@ services:
       <<: *service-env
       SP2_CONTROL_PLANE_HOST: "0.0.0.0"
       SP2_CONTROL_PLANE_PORT: "8003"
-      SP2_CONTROL_PLANE_DSN: ${SP2_CONTROL_PLANE_DSN:-}
+      # Unset selects the in-memory store, which starts empty and stays empty — every tenant
+      # unknown, every membership absent. Assembled from the local scalars so the Control DB is
+      # actually reached.
+      SP2_CONTROL_PLANE_DSN: "postgresql://${SP2_LOCAL_PG_USER:-sp2_local}:${SP2_LOCAL_PG_PASSWORD:?set SP2_LOCAL_PG_PASSWORD}@control-postgres:5432/snackportal2_control"
     expose:
       - "8003"
+    healthcheck:
+      <<: *service-health
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8003/health').read()"]
+    depends_on:
+      control-postgres:
+        condition: service_healthy
 
   database-router:
     <<: *service-common
@@ -123,11 +312,44 @@ services:
       SP2_DATABASE_ROUTER_PORT: "8004"
       SP2_DATABASE_ROUTER_CONTROL_PLANE_URL: "http://control-plane:8003"
       SP2_DATABASE_ROUTER_SERVICE_CREDENTIAL: ${SP2_INTERNAL_SERVICE_CREDENTIAL:?set SP2_INTERNAL_SERVICE_CREDENTIAL}
-      # D-48 C-1: the grant allowlist. The BFF and the Access Control Service are permanently
-      # excluded, and the service refuses to start if either is named here.
-      SP2_DATABASE_ROUTER_GRANTEES: ${SP2_DATABASE_ROUTER_GRANTEES:-}
+      # D-48 C-1: the grant allowlist, credential -> service reference. The BFF and the Access
+      # Control Service are permanently excluded, and the service REFUSES TO START if either is
+      # named here — the exclusion is enforced at configuration time, not per request.
+      #
+      # Each tenant-resident service therefore holds its OWN credential. A single shared value
+      # would mean any process holding it could ask for a grant as any granted service, which
+      # would make the allowlist a list of names rather than a control.
+      SP2_DATABASE_ROUTER_GRANTEES: >-
+        {"${SP2_STARTUPS_SERVICE_CREDENTIAL:?set SP2_STARTUPS_SERVICE_CREDENTIAL}":"startups",
+         "${SP2_INVESTORS_SERVICE_CREDENTIAL:?set SP2_INVESTORS_SERVICE_CREDENTIAL}":"investors",
+         "${SP2_DEALS_SERVICE_CREDENTIAL:?set SP2_DEALS_SERVICE_CREDENTIAL}":"deals",
+         "${SP2_LINEAGE_SERVICE_CREDENTIAL:?set SP2_LINEAGE_SERVICE_CREDENTIAL}":"lineage",
+         "${SP2_IMPORT_SERVICE_SERVICE_CREDENTIAL:?set SP2_IMPORT_SERVICE_SERVICE_CREDENTIAL}":"import_service"}
+      # The tenant DSNs. This is the ONLY service that may hold them, and the only place in the
+      # system where a secret-store REFERENCE becomes a credential.
+      #
+      # The variable NAME is not free: the router derives it from the association the Control
+      # registry returns, as SP2_TENANT_DSN_<upper(store_ref + "_" + version), non-alphanumerics
+      # replaced by "_">. The seed registers store_ref "assoc/<tenant>" at version "1", which is
+      # what produces the three names below. Renaming one without re-seeding the registry
+      # silently makes that tenant unresolvable.
+      SP2_TENANT_DSN_ASSOC_ACME_1: "postgresql://${SP2_LOCAL_PG_USER:-sp2_local}:${SP2_LOCAL_PG_PASSWORD:?set SP2_LOCAL_PG_PASSWORD}@acme-postgres:5432/snackportal2_tenant_acme"
+      SP2_TENANT_DSN_ASSOC_ZETA_1: "postgresql://${SP2_LOCAL_PG_USER:-sp2_local}:${SP2_LOCAL_PG_PASSWORD:?set SP2_LOCAL_PG_PASSWORD}@zeta-postgres:5432/snackportal2_tenant_zeta"
+      SP2_TENANT_DSN_ASSOC_NOVA_1: "postgresql://${SP2_LOCAL_PG_USER:-sp2_local}:${SP2_LOCAL_PG_PASSWORD:?set SP2_LOCAL_PG_PASSWORD}@nova-postgres:5432/snackportal2_tenant_nova"
     expose:
       - "8004"
+    healthcheck:
+      <<: *service-health
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8004/health').read()"]
+    depends_on:
+      control-plane:
+        condition: service_healthy
+      acme-postgres:
+        condition: service_healthy
+      zeta-postgres:
+        condition: service_healthy
+      nova-postgres:
+        condition: service_healthy
 
   startups:
     <<: *service-common
@@ -139,9 +361,15 @@ services:
       SP2_STARTUPS_PORT: "8005"
       SP2_STARTUPS_STORAGE: ${SP2_TENANT_STORAGE:-memory}
       SP2_STARTUPS_DATABASE_ROUTER_URL: "http://database-router:8004"
-      SP2_STARTUPS_SERVICE_CREDENTIAL: ${SP2_STARTUPS_SERVICE_CREDENTIAL:-}
+      SP2_STARTUPS_SERVICE_CREDENTIAL: ${SP2_STARTUPS_SERVICE_CREDENTIAL:?set SP2_STARTUPS_SERVICE_CREDENTIAL}
     expose:
       - "8005"
+    healthcheck:
+      <<: *service-health
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8005/health').read()"]
+    depends_on:
+      database-router:
+        condition: service_healthy
 
   investors:
     <<: *service-common
@@ -153,9 +381,15 @@ services:
       SP2_INVESTORS_PORT: "8006"
       SP2_INVESTORS_STORAGE: ${SP2_TENANT_STORAGE:-memory}
       SP2_INVESTORS_DATABASE_ROUTER_URL: "http://database-router:8004"
-      SP2_INVESTORS_SERVICE_CREDENTIAL: ${SP2_INVESTORS_SERVICE_CREDENTIAL:-}
+      SP2_INVESTORS_SERVICE_CREDENTIAL: ${SP2_INVESTORS_SERVICE_CREDENTIAL:?set SP2_INVESTORS_SERVICE_CREDENTIAL}
     expose:
       - "8006"
+    healthcheck:
+      <<: *service-health
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8006/health').read()"]
+    depends_on:
+      database-router:
+        condition: service_healthy
 
   deals:
     <<: *service-common
@@ -167,9 +401,15 @@ services:
       SP2_DEALS_PORT: "8007"
       SP2_DEALS_STORAGE: ${SP2_TENANT_STORAGE:-memory}
       SP2_DEALS_DATABASE_ROUTER_URL: "http://database-router:8004"
-      SP2_DEALS_SERVICE_CREDENTIAL: ${SP2_DEALS_SERVICE_CREDENTIAL:-}
+      SP2_DEALS_SERVICE_CREDENTIAL: ${SP2_DEALS_SERVICE_CREDENTIAL:?set SP2_DEALS_SERVICE_CREDENTIAL}
     expose:
       - "8007"
+    healthcheck:
+      <<: *service-health
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8007/health').read()"]
+    depends_on:
+      database-router:
+        condition: service_healthy
 
   sharing:
     <<: *service-common
@@ -179,8 +419,14 @@ services:
       <<: *service-env
       SP2_SHARING_HOST: "0.0.0.0"
       SP2_SHARING_PORT: "8008"
+      # No storage selector and no router URL: the Governed Sharing operations are
+      # authored-but-inert until IC-007 is Final (IC-013 §18), so this service holds no tenant
+      # data and must not be able to obtain a tenant connection.
     expose:
       - "8008"
+    healthcheck:
+      <<: *service-health
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8008/health').read()"]
 
   import-service:
     <<: *service-common
@@ -192,17 +438,29 @@ services:
       SP2_IMPORT_SERVICE_PORT: "8009"
       SP2_IMPORT_SERVICE_CONTROL_PLANE_URL: "http://control-plane:8003"
       # Also the credential presented to the Database Router when asking for a tenant grant, so
-      # with PostgreSQL storage enabled this same value must appear in
-      # SP2_DATABASE_ROUTER_GRANTEES mapped to "import_service".
-      SP2_IMPORT_SERVICE_SERVICE_CREDENTIAL: ${SP2_INTERNAL_SERVICE_CREDENTIAL:?set SP2_INTERNAL_SERVICE_CREDENTIAL}
+      # this same value appears in SP2_DATABASE_ROUTER_GRANTEES mapped to "import_service".
+      SP2_IMPORT_SERVICE_SERVICE_CREDENTIAL: ${SP2_IMPORT_SERVICE_SERVICE_CREDENTIAL:?set SP2_IMPORT_SERVICE_SERVICE_CREDENTIAL}
       SP2_IMPORT_SERVICE_STORAGE: ${SP2_TENANT_STORAGE:-memory}
       SP2_IMPORT_SERVICE_DATABASE_ROUTER_URL: "http://database-router:8004"
-      # D-23 per-tenant lineage chain keys reach this service as SP2_LINEAGE_KEY_<TENANT>, the
-      # same way the router's per-tenant DSNs do: from the untracked env file, never from here.
-      # None is enumerated in this file, and with none supplied every import fails closed rather
-      # than writing a tenant record without provenance.
+      # D-23 per-tenant lineage chain keys. One key per tenant, minimum 32 characters, no shared
+      # fallback and no default: a tenant whose key is absent, empty or placeholder-short cannot
+      # be imported into at all, rather than being written without provenance.
+      #
+      # ROTATION IS NOT DESIGNED (Action Tracker; out of Stage 6 scope). Changing a key here
+      # invalidates verification of every row already written under the previous one.
+      SP2_LINEAGE_KEY_ACME: ${SP2_LINEAGE_KEY_ACME:?set SP2_LINEAGE_KEY_ACME to at least 32 characters}
+      SP2_LINEAGE_KEY_ZETA: ${SP2_LINEAGE_KEY_ZETA:?set SP2_LINEAGE_KEY_ZETA to at least 32 characters}
+      SP2_LINEAGE_KEY_NOVA: ${SP2_LINEAGE_KEY_NOVA:?set SP2_LINEAGE_KEY_NOVA to at least 32 characters}
     expose:
       - "8009"
+    healthcheck:
+      <<: *service-health
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8009/health').read()"]
+    depends_on:
+      control-plane:
+        condition: service_healthy
+      database-router:
+        condition: service_healthy
 
   lineage:
     <<: *service-common
@@ -214,9 +472,15 @@ services:
       SP2_LINEAGE_PORT: "8010"
       SP2_LINEAGE_STORAGE: ${SP2_TENANT_STORAGE:-memory}
       SP2_LINEAGE_DATABASE_ROUTER_URL: "http://database-router:8004"
-      SP2_LINEAGE_SERVICE_CREDENTIAL: ${SP2_LINEAGE_SERVICE_CREDENTIAL:-}
+      SP2_LINEAGE_SERVICE_CREDENTIAL: ${SP2_LINEAGE_SERVICE_CREDENTIAL:?set SP2_LINEAGE_SERVICE_CREDENTIAL}
     expose:
       - "8010"
+    healthcheck:
+      <<: *service-health
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8010/health').read()"]
+    depends_on:
+      database-router:
+        condition: service_healthy
 
   contacts:
     <<: *service-common
@@ -226,8 +490,14 @@ services:
       <<: *service-env
       SP2_CONTACTS_HOST: "0.0.0.0"
       SP2_CONTACTS_PORT: "8011"
+      # No storage selector and no router URL, deliberately. IC-015 is reserved and unauthored
+      # and no contacts table exists in the accepted DDL, so this service has no business
+      # operation to serve. It boots and discloses the gap rather than inventing a schema.
     expose:
       - "8011"
+    healthcheck:
+      <<: *service-health
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8011/health').read()"]
 
   ai-agents:
     <<: *service-common
@@ -237,8 +507,13 @@ services:
       <<: *service-env
       SP2_AI_AGENTS_HOST: "0.0.0.0"
       SP2_AI_AGENTS_PORT: "8012"
+      # IC-006 is an all-TBD placeholder and the Part 4B governance gate is unwaived, so nothing
+      # here is wired to a model. `ai.invoke` is defined and granted to no principal.
     expose:
       - "8012"
+    healthcheck:
+      <<: *service-health
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8012/health').read()"]
 
   audit:
     <<: *service-common
@@ -248,7 +523,22 @@ services:
       <<: *service-env
       SP2_AUDIT_HOST: "0.0.0.0"
       SP2_AUDIT_PORT: "8013"
-      SP2_AUDIT_DSN: ${SP2_AUDIT_DSN:-}
-      SP2_AUDIT_CREDENTIALS: ${SP2_AUDIT_CREDENTIALS:-}
+      # Migration M-1's append-only table in the CONTROL database. Unset would select the
+      # in-memory sink, which is honest about being a development convenience but does not
+      # survive a restart — so a local launch that wants to inspect the ingress-edge audit trail
+      # must configure this.
+      SP2_AUDIT_DSN: "postgresql://${SP2_LOCAL_PG_USER:-sp2_local}:${SP2_LOCAL_PG_PASSWORD:?set SP2_LOCAL_PG_PASSWORD}@control-postgres:5432/snackportal2_control"
+      # Emitter identity is DERIVED from the credential presented, never claimed in a body. The
+      # BFF is the sole emitter of ingress-edge audit (IC-013 §10), so exactly one credential is
+      # granted `audit:write` here, and it is the BFF's. The read scope is granted alongside so a
+      # developer can inspect the trail through the service rather than only through psql.
+      SP2_AUDIT_CREDENTIALS: >-
+        {"${SP2_INTERNAL_SERVICE_CREDENTIAL:?set SP2_INTERNAL_SERVICE_CREDENTIAL}":{"emitter_ref":"bff","scopes":["audit:write","audit:read:all"]}}
     expose:
       - "8013"
+    healthcheck:
+      <<: *service-health
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8013/health').read()"]
+    depends_on:
+      control-postgres:
+        condition: service_healthy

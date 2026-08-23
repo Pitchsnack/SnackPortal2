@@ -50,6 +50,20 @@ REBUILD_DB_DRIVER_ALLOW = (
     "snackportal2/services/investors/repository.py",
 )
 
+# --- Local operator tooling (Stage 6) --------------------------------------------------------
+# Kept SEPARATE from REBUILD_DB_DRIVER_ALLOW rather than appended to it, because the two
+# allowances answer different questions and conflating them would quietly widen the meaning of
+# the service list. That list says "this is the one module of its SERVICE permitted to hold a
+# connection". This one says "this is not a service at all".
+#
+# `tools/local/sp2_local.py` is the supported local migration/seed command. Applying DDL is an
+# operations activity, never something a service does at runtime — so the tool categorically must
+# hold a driver, and equally must never be importable by a service. Two independent properties
+# keep that true and are asserted below: `tools` is absent from
+# `[tool.setuptools.packages.find]` (so it is not installed) and absent from
+# `[tool.importlinter].root_packages` (so it is not in the service graph).
+OPERATOR_TOOL_DB_ALLOW = ("tools/local/sp2_local.py",)
+
 # JWT/crypto vendor containment (PRD B5-5). The allowance below is ONE exact file — the
 # blessed runtime RS256 test fixture — and must stay a single plain path string forever
 # (widening it to a tuple, directory, package prefix, or wildcard is a containment breach;
@@ -81,8 +95,9 @@ def test_db_drivers_only_in_permitted_provider_zones() -> None:
         for mod in _scan.imported_modules(f):
             if _matches(mod, DB_PREFIXES):
                 assert _db_driver_allowed(rp), (
-                    f"database driver '{mod}' outside permitted provider zones {DB_PROVIDER_ZONES} "
-                    f"and rebuild driver modules {REBUILD_DB_DRIVER_ALLOW}: {rp}"
+                    f"database driver '{mod}' outside permitted provider zones {DB_PROVIDER_ZONES}, "
+                    f"rebuild driver modules {REBUILD_DB_DRIVER_ALLOW}, "
+                    f"and operator tooling {OPERATOR_TOOL_DB_ALLOW}: {rp}"
                 )
 
 
@@ -90,9 +105,10 @@ def _db_driver_allowed(rp: str) -> bool:
     """True iff `rp` may import a database driver.
 
     Legacy packages are matched by directory prefix (the hexagonal provider zones); the Option A
-    rebuild is matched by EXACT path equality, so a sibling module cannot inherit the allowance.
+    rebuild and the local operator tool are matched by EXACT path equality, so a sibling module
+    cannot inherit either allowance.
     """
-    return any(rp.startswith(zone) for zone in DB_PROVIDER_ZONES) or rp in REBUILD_DB_DRIVER_ALLOW
+    return any(rp.startswith(zone) for zone in DB_PROVIDER_ZONES) or rp in REBUILD_DB_DRIVER_ALLOW or rp in OPERATOR_TOOL_DB_ALLOW
 
 
 def _jwt_crypto_allowed(rp: str) -> bool:
@@ -155,7 +171,12 @@ def test_rebuild_allowances_are_exact_files_and_nonvacuous() -> None:
     file that does not exist (so the census never meets it), and an allowance naming a file that
     imports no vendor at all (so the entry is dead and could be widened without anyone noticing).
     """
-    for allowance, prefixes in ((REBUILD_DB_DRIVER_ALLOW, DB_PREFIXES), (REBUILD_JWT_CRYPTO_ALLOW, JWT_CRYPTO_PREFIXES)):
+    allowances = (
+        (REBUILD_DB_DRIVER_ALLOW, DB_PREFIXES),
+        (REBUILD_JWT_CRYPTO_ALLOW, JWT_CRYPTO_PREFIXES),
+        (OPERATOR_TOOL_DB_ALLOW, DB_PREFIXES),
+    )
+    for allowance, prefixes in allowances:
         assert isinstance(allowance, tuple) and allowance, "the allowance must be a non-empty tuple of exact paths"
         for entry in allowance:
             assert isinstance(entry, str), "each allowance entry must be a plain path string"
@@ -173,6 +194,9 @@ def test_rebuild_allowances_are_exact_files_and_nonvacuous() -> None:
         "snackportal2/services/startups/repository.py",  # reaches its tenant DB only via shared/tenant_data
         "snackportal2/services/",  # any directory widening
         "snackportal2/shared/config.py",
+        "tools/local/start-sp2-local.ps1",  # a sibling in the tool directory
+        "tools/local/",  # any directory widening of the operator allowance
+        "tools/",
     ):
         assert not _db_driver_allowed(rejected), f"driver allowance must not widen to {rejected}"
 
@@ -186,6 +210,55 @@ def test_rebuild_allowances_are_exact_files_and_nonvacuous() -> None:
         assert not _jwt_crypto_allowed(rejected), f"JWT allowance must not widen to {rejected}"
 
 
+def test_the_operator_tool_is_outside_the_service_graph_and_the_distribution() -> None:
+    """The two properties that make the operator-tool driver allowance safe.
+
+    Blessing a module to hold a driver is only defensible while nothing can reach it. Both halves
+    are configuration, so both are checked here rather than assumed: if `tools` were ever added to
+    the packaging or to the import graph, this allowance would silently become a way for a service
+    to acquire a driver through an import.
+    """
+    pyproject = (_scan.BACKEND_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    packages = pyproject.split("[tool.setuptools.packages.find]", 1)[1].split("[tool.ruff]", 1)[0]
+    assert '"tools' not in packages, "tools is enumerated for packaging; the operator tool would ship in the distribution"
+
+    root_packages = pyproject.split("root_packages = [", 1)[1].split("]", 1)[0]
+    assert '"tools"' not in root_packages, "tools is an import-linter root package; it is in the service graph"
+
+    # And nothing imports it. A service importing an operator tool would be a driver back-channel
+    # that no contract mentions.
+    for f in _scan.py_files():
+        rp = _scan.relposix(f)
+        if rp.startswith("tools/"):
+            continue
+        for mod in _scan.imported_modules(f):
+            assert not (mod == "tools" or mod.startswith("tools.")), f"{rp} imports the operator tooling package"
+
+
+def test_the_operator_tool_imports_no_service_module() -> None:
+    """The tool is a database and process operator, not a composition root.
+
+    It must not import a service: a tool that imported two of them would put the question "may
+    these two services see each other?" into a file the independence contract does not analyze.
+    """
+    tool = _scan.BACKEND_ROOT / OPERATOR_TOOL_DB_ALLOW[0]
+    forbidden = (
+        "snackportal2",
+        "api_gateway",
+        "auth_router",
+        "database_router",
+        "control_plane",
+        "import_service",
+        "lineage_service",
+        "shared",
+        "deployment",
+    )
+    for mod in _scan.imported_modules(tool):
+        top = mod.split(".")[0]
+        assert top not in forbidden, f"the operator tool imports {mod}; it must stay outside the service graph"
+
+
 if __name__ == "__main__":
     _scan.run(
         [
@@ -194,5 +267,7 @@ if __name__ == "__main__":
             test_jwt_crypto_vendors_only_in_providers_or_the_one_blessed_fixture,
             test_jwt_crypto_allowance_is_exact_file_and_nonvacuous,
             test_rebuild_allowances_are_exact_files_and_nonvacuous,
+            test_the_operator_tool_is_outside_the_service_graph_and_the_distribution,
+            test_the_operator_tool_imports_no_service_module,
         ]
     )
