@@ -1,7 +1,7 @@
 # Stage 6 — Frontend to BFF Integration
 
-**Status:** transport **VERIFIED**; authenticated in-browser journey **BLOCKED** on a local
-identity provider.
+**Status:** transport **VERIFIED** (Stage 6); authenticated in-browser journey **VERIFIED**
+(Stage 6A). The blocker recorded in §4 is **CLOSED** — see §4 for what closed it and how.
 
 The frontend is the Lovable **`snack-cosmos`** repository — a **separate repository**, not a
 directory of this one. `frontend/` here is an empty placeholder with zero tracked files, and there
@@ -121,7 +121,68 @@ Database Router → Startup Service → ACME PostgreSQL — carries real traffic
 
 ---
 
-## 4. What is BLOCKED, and exactly why
+## 4. What WAS blocked, and what closed it (Stage 6A)
+
+> **CLOSED, 2026-08-24.** Everything from here to the end of §4 is the Stage 6 record, kept
+> because it states the problem accurately. What follows immediately below is what changed.
+>
+> **The local identity provider now exists.** `infrastructure/docker/docker-compose.rebuild.yml`
+> runs Keycloak 26.4 with its realm imported **declaratively** from a committed template
+> (`infrastructure/docker/keycloak/realm-sp2-local.template.json`, password placeholders only),
+> and `python -m tools.local.sp2_local idp-up` renders it, starts the provider, and pins that
+> realm's own RS256 **public** key as the Authentication Service's trust anchor. Both halves were
+> supported configuration, exactly as §4 predicted — `JwtTokenVerifier` and
+> `KeycloakSnackPortalAuthAdapter` both already existed.
+>
+> **The claim contract, as the realm actually emits it.** The client's default scopes are exactly
+> one SP2 scope, which replaces Keycloak's built-ins — so the access token carries `sub`, `role`,
+> `aud`, `iss`, `exp` and nothing else. No `profile`, no `email`, therefore **no name, no address,
+> no PII of any kind**. `sub` is emitted explicitly (`oidc-sub-mapper`) because the built-in
+> `basic` scope that normally supplies it does not exist in this realm.
+>
+> The **active tenant is not in the principal token**. It arrives only on a token minted with the
+> optional scope `sp2:tenant:<tenant>`, whose mappers emit `active_tenant` (what the backend
+> verifier reads) and `tenant` (what this adapter match-or-rejects before storing anything). Two
+> readers, one value.
+>
+> **No seed changed.** The realm pins each Keycloak *user id* to the principal reference the
+> Control database's memberships are keyed by — `local-agent-acme`, not a UUID — and the user id
+> *is* the `sub` claim. `test_stage6_local_launch.py` fails if the realm and the seed drift.
+>
+> **The second blocker — `demoStartupRef: ""` — is also closed, and it was deeper than the empty
+> string.** Two things stood in the way:
+>
+> 1. *No way to obtain a real record reference.* The frontend's client called three operations and
+>    none of them listed or created anything, so the only reference available was a build-time
+>    constant. Closed by adding `listTenantStartups` (`GET /tenant/startups`) and
+>    `createTenantStartup` (`POST /tenant/startups`) to `SnackPortalGatewayClient`. **Both
+>    operations already existed on the BFF** (`listActiveTenantStartups`,
+>    `createActiveTenantStartup`) — no contract was invented, none was changed, and the OpenAPI
+>    operation count is unchanged at 80.
+> 2. *The tenant panels sat behind `signedIn`.* The adapter's sequential model **clears the
+>    principal token when a tenant token is stored** (§5.3/§5.4), so after the tenant callback
+>    `signedIn` is false by design — and the route rendered only an "awaiting Gateway confirmation.
+>    No tenant data has been requested" note. That note was true and was a dead end. The route now
+>    drives the tenant journey from the *resident tenant* — the value the callback match-or-rejected
+>    against the returned signed claim — so §6.3 and §6.4 are unchanged: a selector click may still
+>    only *start* authentication, and activation still requires a real tenant token.
+>
+> `decideTenantJourney` is **kept** and still gates every Startup request. What changed is where
+> the reference comes from: a server response instead of configuration.
+>
+> **Verified in a real browser**, from a logged-out state: sign in → Keycloak → callback →
+> `GET /memberships` → select workspace → second PKCE round with the tenant scope → list the
+> tenant's Startups → create one → read it → edit and save → sign out. Every application request
+> went to `http://localhost:5173/sp2-api/…`; the only other origin was the OIDC token exchange at
+> `http://localhost:8090`. No retired Gateway, no Supabase on that path. The created row exists in
+> the ACME database and in neither of the other two, and the Control database holds the
+> ingress-edge audit events with `source_service = bff` and `actor_ref = local-agent-acme`.
+>
+> Procedure: [`Local_Development_Runbook.md`](Local_Development_Runbook.md) §6, §9 and §10.
+
+---
+
+### 4.1 The Stage 6 record (historical) — what was blocked, and exactly why
 
 **The in-browser authenticated journey does not run.** Navigating to `/sp2-gateway` renders:
 
@@ -160,7 +221,7 @@ Stage 6 deliberately did **not** close this gap, for three reasons:
    … Stage 6 must not add an unauthenticated developer backdoor." Injecting a token into the
    frontend to bypass the adapter would be exactly that.
 
-### What would close it
+### 4.2 What would close it (written at Stage 6; all four were done at Stage 6A)
 
 Both halves are **supported configuration**, not new mechanisms:
 
@@ -181,19 +242,42 @@ Both halves are **supported configuration**, not new mechanisms:
 ## 5. Local procedure
 
 ```bash
-# 1. Backend stack up and seeded — see docs/Local_Development_Runbook.md
+# 1. Backend stack up, seeded, and the identity provider started and pinned:
+#    docs/Local_Development_Runbook.md steps 1-8 (step 6 is `sp2_local idp-up`)
 # 2. Frontend
 cd <path-to>/snack-cosmos
 bun install
 cp .env.example .env.local        # then fill it in; .env.local is gitignored
 #    VITE_SP2_GATEWAY_BASE_URL=http://localhost:5173/sp2-api
+#    VITE_SP2_OIDC_ISSUER=http://localhost:8090/realms/sp2-local
+#    VITE_SP2_OIDC_CLIENT_ID=sp2-local-web
+#    VITE_SP2_OIDC_REDIRECT_URI=http://localhost:5173/sp2-gateway/callback
+#    VITE_SP2_OIDC_POST_LOGOUT_REDIRECT_URI=http://localhost:5173/sp2-gateway
 #    VITE_SUPABASE_URL / VITE_SUPABASE_PUBLISHABLE_KEY must be present or the app cannot boot:
 #    src/integrations/supabase/client.ts THROWS when either is missing.
 bun run dev
 ```
 
-Then open `http://localhost:5173/sp2-gateway` and inspect the Network tab. Every request must
-target `localhost:5173`; the API calls appear as `/sp2-api/*`.
+All four OIDC values or none: partial configuration resolves to `fail_closed`, deliberately.
+
+Then open `http://localhost:5173/sp2-gateway`, sign in as `acme-agent` (password from the
+backend's untracked `.env.rebuild`), and inspect the Network tab. Every **application** request
+must target `localhost:5173` as `/sp2-api/*`; exactly one request goes to `localhost:8090`, and it
+is the OIDC token exchange.
+
+Quality gates in this repository:
+
+```bash
+bun run typecheck     # tsc --noEmit
+bun run test:sp2      # the SnackPortal2 client and adapter pins
+bun run test:arch     # the zero-direct-Supabase ratchet
+bun run build
+```
+
+`bun run lint` runs `eslint .` over the whole repository and reports a large **pre-existing**
+backlog (3,5xx prettier findings in files unrelated to SnackPortal2). Lint the SP2 surface
+directly — `npx eslint src/lib/sp2 src/routes/sp2-gateway test/sp2` — and compare against the same
+files at the base commit before concluding anything about a change.
 
 ---
 
@@ -202,7 +286,8 @@ target `localhost:5173`; the API calls appear as `/sp2-api/*`.
 These are recorded so they are decisions rather than omissions. None prevents the local backend
 launch, and none is a Stage 6 blocker.
 
-1. **A local identity provider** (§4). The single blocker for the in-browser journey.
+1. ~~**A local identity provider** (§4). The single blocker for the in-browser journey.~~
+   **CLOSED at Stage 6A** — see §4.
 2. **Gateway → BFF renaming.** 497 lines across 37 files, including identifiers, the
    `/sp2-gateway` route paths and user-visible strings. A deliberate, reviewable rename — not a
    side effect of a local-launch change.
@@ -214,8 +299,14 @@ launch, and none is a Stage 6 blocker.
    was tracked until `add2e5f`. Untracking fixed the tree, not the history: the publishable key and
    project URL remain retrievable from earlier commits. That is a **frontend-repository** matter
    and is named here only so it is not lost.
-5. **A `test:sp2` script.** Four test files exist under `test/sp2/` with no npm script and no CI
-   job; only `test:arch` runs.
+5. ~~**A `test:sp2` script.**~~ **CLOSED at Stage 6A** — `test:sp2` and `typecheck` are now npm
+   scripts. **No CI job runs them yet**; that remains outstanding.
+6. **The repository-wide `lint` script fails on a pre-existing backlog.** `eslint .` reports
+   ~3,5xx prettier findings across files with no SnackPortal2 involvement. Stage 6A did not
+   touch it, and did not add to it: the SP2 files it changed carry the *same* findings as their
+   base-commit copies (7 errors + 1 warning, all in `auth-context.tsx` and the pre-existing
+   `GatewayOutcome` comment alignment in `dto.ts`). A repository-wide `prettier --write` is a
+   deliberate, reviewable change of its own.
 
 ---
 
@@ -230,7 +321,9 @@ launch, and none is a Stage 6 blocker.
 | Stack | TanStack Start + React 19 + Vite 7, via `@lovable.dev/vite-tanstack-config` |
 | Package manager | **bun** (`bun.lock`; CI pins bun 1.3.14) |
 | Dev command | `bun run dev` → `vite dev` |
-| Files changed | `vite.config.ts` (proxy + strict port), `.env.example` (documentation only) |
+| Files changed (Stage 6) | `vite.config.ts` (proxy + strict port), `.env.example` (documentation only) |
+| Files changed (Stage 6A) | `src/lib/sp2/dto.ts`, `src/lib/sp2/gateway-client.ts`, `src/lib/sp2/mock-gateway.ts`, `src/routes/sp2-gateway/index.tsx`, `test/sp2/tenant-startups.test.ts` (new), `package.json`, `.env.example` |
+| Identity provider | Keycloak 26.4, realm `sp2-local`, public client `sp2-local-web`, run by the **backend** repository's compose stack |
 
 > Up-to-dateness against GitHub *right now* was not re-verified; the local refs were last fetched
 > 2026-08-06. Confirm with `git fetch origin` before relying on the commit identity above.

@@ -11,8 +11,11 @@ checkout.
 Target experience, and what this document delivers:
 
 ```
-fresh checkout -> configure -> start databases -> migrate -> seed -> start services
-               -> verify 14 OpenAPI 3.1 contracts -> run a real tenant Startup flow
+fresh checkout -> configure -> start databases -> migrate -> seed
+               -> start the identity provider and pin its key
+               -> start services -> verify 14 OpenAPI 3.1 contracts
+               -> start the frontend -> log in through a real browser
+               -> run a real tenant Startup flow
                -> confirm the row is in the correct physical tenant database
 ```
 
@@ -42,9 +45,12 @@ The split is not arbitrary: `tools` is deliberately not installed into the envir
 so the operator command resolves it from the current directory. CI does the same — its `validate`
 job sets `working-directory: backend`.
 
-> **Ports this procedure uses.** BFF `127.0.0.1:8000`; PostgreSQL `127.0.0.1:5550-5553`.
+> **Ports this procedure uses.** BFF `127.0.0.1:8000`; PostgreSQL `127.0.0.1:5550-5553`; the local
+> identity provider `127.0.0.1:8090`; the frontend dev server `localhost:5173`.
 > The 5550-5553 range is deliberately *not* 5540-5543, so this stack can run alongside the older
-> `docker-compose.local.yml` fixture without a collision. Nothing else is published.
+> `docker-compose.local.yml` fixture without a collision. Nothing else is published — and the two
+> things that *are* published beyond the BFF are not application services: a database and an
+> identity provider a **browser** has to be redirected to.
 
 ---
 
@@ -110,16 +116,24 @@ for what each group means. In short:
 | Internal service credentials (6) | yes | one shared, plus one per tenant-resident service |
 | Local development tokens (4) | yes | opaque tokens for the four synthetic local principals |
 | Per-tenant lineage keys (3) | yes | minimum 32 characters, no shared fallback |
-| `SP2_AUTHENTICATION_ISSUERS` | left empty | the production JWT posture; empty selects local tokens |
+| Local identity passwords (5) | yes | Keycloak admin + one per synthetic identity |
+| `SP2_LOCAL_IDP_ISSUER_ORIGIN` / `_PORT` | no — defaults | `http://localhost:8090` / `8090`; the two must agree |
+| `SP2_AUTHENTICATION_ISSUERS` | left empty | written by `idp-up` in §6, never by hand |
 | `SP2_BFF_BASE_DOMAIN` | left empty | host-based tenant addressing off; `X-Tenant-Id` is the only carrier |
 
-**Authentication.** With `SP2_AUTHENTICATION_ISSUERS` empty and the four local tokens set, the
-Authentication Service selects `StaticTokenVerifier` — a **supported verifier that already
-existed**, explicitly configured. It is not a bypass and not a new mechanism: with *both*
-unset the service starts, reports healthy, and authenticates nobody. Setting the production
-issuer configuration always wins over the local tokens.
+**Authentication has two postures, and exactly one is live at a time.**
 
-The four local principals:
+| `SP2_AUTHENTICATION_ISSUERS` | Verifier selected | Credentials that work |
+|---|---|---|
+| set (after §6) | `JwtTokenVerifier` — RS256 against the pinned realm key | real OIDC tokens from the local Keycloak |
+| empty, local tokens set | `StaticTokenVerifier` | the four opaque `SP2_LOCAL_TOKEN_*` values |
+| both unset | `DenyAllVerifier` | none — the service is healthy and authenticates nobody |
+
+Both verifiers **already existed** in the Authentication Service (IC-005); this configures them.
+Neither is a bypass, neither is reachable by omission, and the precedence is deliberate: a pinned
+issuer always wins, so a stray development variable cannot widen the trust surface.
+
+The four local static principals (the second posture only):
 
 | Token variable | Principal | Role | Active tenant |
 |---|---|---|---|
@@ -206,7 +220,75 @@ cd backend
 
 ---
 
-## 6. Start the backend
+## 6. Start the identity provider
+
+```powershell
+cd backend
+.venv\Scripts\python.exe -m tools.local.sp2_local idp-up
+```
+
+This one command does three things, and the order matters:
+
+1. **Renders the realm.** `infrastructure/docker/keycloak/realm-sp2-local.template.json` is
+   committed and carries password *placeholders*; the command substitutes the generated local
+   passwords into `infrastructure/docker/keycloak/import/realm-sp2-local.json`, which is
+   **gitignored** and is what the container mounts. A fresh checkout therefore reproduces realm,
+   client, scopes, claim mappers and users without anyone clicking through an admin console.
+2. **Starts Keycloak** and waits for its health check — which asks for the *realm*, not merely for
+   the server, because a Keycloak that started and imported nothing passes a liveness probe and
+   fails every login.
+3. **Pins the trust anchor.** It reads that realm's own RS256 **public** key from the public realm
+   endpoint and writes `SP2_AUTHENTICATION_ISSUERS` into your untracked env file. Asking the
+   provider for the key — rather than generating one here — is what makes it impossible for the
+   anchor and the signer to disagree.
+
+Expected output ends with:
+
+```
+IDP: READY — http://localhost:8090/realms/sp2-local
+        client sp2-local-web (public, Authorization Code + PKCE S256), audience snackportal2-bff
+        redirect http://localhost:5173/sp2-gateway/callback
+        sign in as: acme-agent, control-operator, nova-agent, zeta-agent
+```
+
+**The four local identities.** The Keycloak *user id* is the `sub` claim, and `sub` is the
+principal reference the Control database's memberships are keyed by — which is why Stage 6A
+changed no seed:
+
+| Log in as | `sub` (principal) | `role` | Active tenant |
+|---|---|---|---|
+| `acme-agent` | `local-agent-acme` | `TENANT_AGENT` | `acme` |
+| `zeta-agent` | `local-agent-zeta` | `TENANT_AGENT` | `zeta` |
+| `nova-agent` | `local-agent-nova` | `TENANT_AGENT` | `nova` |
+| `control-operator` | `local-operator-control` | `CONTROL` | none (tenantless) |
+
+Their passwords are generated by `init-env` into `infrastructure/docker/.env.rebuild` under
+`SP2_LOCAL_IDP_PASSWORD_<TENANT>` / `_CONTROL`. **No command in this runbook prints them.**
+
+> **The active tenant is not in the principal token.** It arrives only on a token minted with the
+> optional scope `sp2:tenant:<tenant>`, and requesting that scope is not permission to use it:
+> membership is decided by the Access Control Service against the Control database. An ACME
+> identity *can* ask Keycloak for a ZETA-scoped token; the BFF answers `403`.
+
+> ⚠️ **This switches the Authentication Service's posture.** A pinned issuer WINS over the four
+> opaque local tokens, deliberately — a deployment must never hold two live trust anchors. From
+> here the `SP2_LOCAL_TOKEN_*` values authenticate nobody, and `smoke` notices and obtains a real
+> OIDC token through the same Authorization Code + PKCE flow the browser uses.
+
+To import the realm from scratch — which you need after `init-env --force`, because an
+already-imported realm keeps its old passwords:
+
+```powershell
+cd backend
+.venv\Scripts\python.exe -m tools.local.sp2_local idp-up --reset
+```
+
+The admin console is at `http://localhost:8090/admin/` (`SP2_LOCAL_IDP_ADMIN_USER`, default
+`sp2-local-admin`). No documented step needs it; it exists for inspection.
+
+---
+
+## 7. Start the backend
 
 ```bash
 docker compose -f infrastructure/docker/docker-compose.rebuild.yml --env-file infrastructure/docker/.env.rebuild up -d --wait
@@ -223,14 +305,14 @@ not a convenience.
 
 ---
 
-## 7. Verify the backend
+## 8. Verify the backend
 
 ```powershell
 cd backend
 .venv\Scripts\python.exe -m tools.local.sp2_local verify
 ```
 
-This checks four things and prints each:
+This checks five things and prints each:
 
 1. the BFF answers `/health`, `/readiness` and `/openapi.json` **from the host**;
 2. all **fourteen** services answer health, readiness and `/openapi.json` **from inside the
@@ -239,7 +321,10 @@ This checks four things and prints each:
 3. exactly one **application** service publishes a port, read from the *running* stack rather
    than from the manifest — the manifest already has a static gate, and this answers the
    different question of what is actually listening;
-4. no internal service port answers on `127.0.0.1`.
+4. no internal service port answers on `127.0.0.1`;
+5. the identity provider serves the realm, advertises **PKCE S256**, stamps the issuer it was
+   pinned to, and is the **only** issuer the Authentication Service trusts. An anchor for a
+   different issuer authenticates nobody, and the symptom is a `401` that says nothing about why.
 
 Expected: `14/14`, **80 operationIds, 80 unique**, `VERIFY: PASS`.
 
@@ -256,7 +341,7 @@ cd backend
 
 ---
 
-## 8. Start the frontend
+## 9. Start the frontend
 
 The frontend is the Lovable **`snack-cosmos`** repository — a **separate repository**, not a
 directory of this one. `frontend/` here is an empty placeholder.
@@ -265,28 +350,78 @@ directory of this one. `frontend/` here is an empty placeholder.
 git clone https://github.com/Pitchsnack/snack-cosmos.git
 cd snack-cosmos
 bun install          # the repository has a bun.lock
+cp .env.example .env.local
+```
+
+Then fill in `.env.local` — it is gitignored. Five SnackPortal2 values, and they must match the
+realm §6 imported **byte for byte**:
+
+```
+VITE_SP2_GATEWAY_BASE_URL=http://localhost:5173/sp2-api
+VITE_SP2_OIDC_ISSUER=http://localhost:8090/realms/sp2-local
+VITE_SP2_OIDC_CLIENT_ID=sp2-local-web
+VITE_SP2_OIDC_REDIRECT_URI=http://localhost:5173/sp2-gateway/callback
+VITE_SP2_OIDC_POST_LOGOUT_REDIRECT_URI=http://localhost:5173/sp2-gateway
+```
+
+**All four OIDC values or none.** The bootstrap resolver has exactly three outcomes — `real`,
+`dev_mock` (every real-integration variable absent), and `fail_closed` for anything in between.
+Partial configuration is forbidden on purpose: mixed mock/real configuration is what lets a mock
+answer a request someone believes went to the backend.
+
+`VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` must also be present or the app cannot
+boot at all — `src/integrations/supabase/client.ts` throws when either is missing. That is the
+interim data layer (D-7), untouched by this procedure and unused by the tested Startup path.
+
+```bash
 bun run dev
 ```
 
-Point its API client at the BFF. See
-[`Stage6_Frontend_To_BFF_Integration.md`](Stage6_Frontend_To_BFF_Integration.md) for the exact
-variable names, the values to use, and what must change — it is written against the real
-`snack-cosmos` source, not from assumption.
+The dev server is pinned to `localhost:5173` with `strictPort`, so it refuses to start rather
+than silently moving — a moved dev server breaks the fixed OIDC `redirect_uri`, which is
+registered against one exact origin.
+
+See [`Stage6_Frontend_To_BFF_Integration.md`](Stage6_Frontend_To_BFF_Integration.md) for what
+changed in the frontend and why — it is written against the real `snack-cosmos` source.
 
 ---
 
-## 9. Verify frontend-to-BFF
+## 10. Log in through the browser
 
-With the dev server running, in the browser's Network tab confirm that every API request goes to
-the BFF's origin (`http://127.0.0.1:8000`, or the dev-server proxy path that forwards there) and
-that **no request goes to a retired Gateway port** (`8080`, `8820`) or to Supabase.
+Open **`http://localhost:5173/sp2-gateway`** and walk the journey:
+
+1. The panel says **Sign in** (not "Configuration unavailable" — that is the fail-closed state and
+   means one of the five values above is missing or malformed). Click **Sign in**.
+2. The browser is redirected to `http://localhost:8090/…` — the local Keycloak login page, titled
+   *Sign in to SnackPortal2 local development*.
+3. Sign in as **`acme-agent`** with `SP2_LOCAL_IDP_PASSWORD_ACME` from your untracked env file.
+4. The callback returns to `/sp2-gateway`. **Memberships** lists `acme` with role `TENANT_AGENT` —
+   that answer came from the Control database, through the BFF.
+5. Click **Select**. A *second* Authorization Code + PKCE round runs with the optional scope
+   `sp2:tenant:acme`, and its token carries the signed `active_tenant` claim. Keycloak's SSO
+   session means no second password prompt.
+6. **Startups — acme** lists that tenant's records. Pick one with **Open**, or type a name and
+   **Create** — a create returns the record reference the *server* minted, and the journey opens
+   it. The browser holds no hard-coded tenant record reference and never fabricates one.
+7. Edit **Short description** and **Save**. That is a `PATCH` through the BFF, and it emits an
+   ingress-edge audit event in the Control database.
+8. **Sign out** ends the Keycloak session and returns to `/sp2-gateway`.
+
+To see isolation from the browser: sign out, sign in as **`zeta-agent`**, select `zeta`, and the
+Startups panel is empty. The ACME records are not merely hidden — they are in another database.
+
+**What the Network tab must show.** Every application API request goes to
+`http://localhost:5173/sp2-api/…`, the dev-server proxy that forwards to the BFF. Exactly one
+request goes elsewhere: the OIDC token exchange to `http://localhost:8090`, which is the browser
+talking to its identity provider and never passes through the BFF. **No request to a retired
+Gateway port** (`8080`, `8820`), and none to Supabase on this path.
 
 A request that reaches the BFF without a bearer token is answered `401 unauthenticated` — that is
 the correct response, not a misconfiguration.
 
 ---
 
-## 10. Run one sample request
+## 11. Run one sample request
 
 The supported check runs the whole flow and proves physical isolation:
 
@@ -296,12 +431,27 @@ cd backend
 ```
 
 It creates a Startup in ACME through the BFF, reads it back, presents the same record reference
-with the **ZETA** token (expecting `404` — a reference minted for another tenant is not found),
+with the **ZETA** identity (expecting `404` — a reference minted for another tenant is not found),
 queries all three tenant databases directly, checks the Control database holds the ingress-edge
 audit event and no tenant table, and then imports a global directory record and checks the
 lineage row carries a real keyed D-23 marker.
 
-By hand, if you prefer — take the ACME token from your untracked env file:
+**It follows whichever posture is live.** With a pinned issuer configured (§6) it obtains real
+OIDC tokens through the *same* Authorization Code + PKCE flow the browser uses — same public
+client, same redirect URI, same exchange; no password grant, no client secret, no admin API — and
+first checks the claim contract:
+
+```
+0. Credentials — whichever posture the Authentication Service is actually in
+  -> pinned issuer configured -> obtaining real OIDC tokens (Authorization Code + PKCE S256)
+  -> ACME token claim names: sub, role, active_tenant, aud, iss, exp
+  ->   sub=local-agent-acme  role=TENANT_AGENT  active_tenant=acme
+  -> principal-only token (no tenant scope) carries active_tenant: None
+```
+
+With no pinned issuer it uses the four opaque local tokens instead.
+
+By hand, if you prefer — take the ACME token from your untracked env file (static posture only):
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8000/tenant/startups \
@@ -316,7 +466,7 @@ stored, it is simply never surfaced.
 
 ---
 
-## 11. Inspect a tenant database
+## 12. Inspect a tenant database
 
 ```bash
 docker compose -f infrastructure/docker/docker-compose.rebuild.yml exec acme-postgres psql -U sp2_local -d snackportal2_tenant_acme -c "SELECT id, company_name, company_url, global_startup_id FROM startups ORDER BY id;"
@@ -332,32 +482,41 @@ docker compose -f infrastructure/docker/docker-compose.rebuild.yml exec control-
 The ingress-edge audit trail is Control-resident and append-only:
 
 ```bash
-docker compose -f infrastructure/docker/docker-compose.rebuild.yml exec control-postgres psql -U sp2_local -d snackportal2_control -c "SELECT action, outcome, source_service, tenant_ref FROM control_ingress_audit ORDER BY 1;"
+docker compose -f infrastructure/docker/docker-compose.rebuild.yml exec control-postgres psql -U sp2_local -d snackportal2_control -c "SELECT action, outcome, source_service, actor_ref, tenant_ref, record_ref FROM control_ingress_audit ORDER BY 1;"
 ```
+
+After the browser journey the `actor_ref` values are the OIDC `sub` claims — `local-agent-acme`,
+not a Keycloak UUID — because the realm pins each user's id to the principal reference the
+Control database's memberships are keyed by. Every row carries `source_service = bff`, and the
+table has no column that could hold a token, a password or a DSN.
 
 ---
 
-## 12. Stop the services
+## 13. Stop the frontend and the services
+
+Stop the dev server with `Ctrl+C` in its terminal, then:
 
 ```bash
 docker compose -f infrastructure/docker/docker-compose.rebuild.yml --env-file infrastructure/docker/.env.rebuild stop
 ```
 
-`stop` leaves the containers and volumes in place; `start` brings them back with the data intact.
+`stop` leaves the containers and volumes in place; `start` brings them back with the data intact —
+including the identity provider's realm and its signing key, so the pinned anchor stays valid.
 
 ---
 
-## 13. Stop the databases and remove the stack
+## 14. Stop the databases and remove the stack
 
 ```bash
 docker compose -f infrastructure/docker/docker-compose.rebuild.yml --env-file infrastructure/docker/.env.rebuild down
 ```
 
-Containers and the network are removed; **named volumes survive**, so your data does too.
+Containers and the network are removed; **named volumes survive**, so your data does too — and so
+does the identity provider's realm, including the RSA key the pinned anchor was taken from.
 
 ---
 
-## 14. Reset local data
+## 15. Reset local data
 
 Two levels, from cheapest to most complete:
 
@@ -374,17 +533,32 @@ cd backend
 docker compose -f infrastructure/docker/docker-compose.rebuild.yml --env-file infrastructure/docker/.env.rebuild down -v
 ```
 
-Then repeat steps 4-6.
+Then repeat steps 4-7.
 
-> **Regenerating the env file invalidates lineage.** Key rotation is **not designed** (it is
-> explicitly out of Stage 6 scope). Changing `SP2_LINEAGE_KEY_<TENANT>` means every lineage row
-> already written under the previous key can no longer be verified — the row keeps its marker,
-> but the marker no longer recomputes. For a disposable local stack this is fine: if you run
-> `init-env --force`, also run `bootstrap --reset`.
+**Identity-provider level** — reimports the realm from scratch with the current passwords and
+re-pins the trust anchor:
+
+```powershell
+cd backend
+.venv\Scripts\python.exe -m tools.local.sp2_local idp-up --reset
+```
+
+> **Regenerating the env file invalidates lineage, and desynchronises the realm.** Key rotation is
+> **not designed** (it is explicitly out of Stage 6 scope). Changing `SP2_LINEAGE_KEY_<TENANT>`
+> means every lineage row already written under the previous key can no longer be verified — the
+> row keeps its marker, but the marker no longer recomputes. And an *already-imported* realm keeps
+> the passwords it was imported with, so new `SP2_LOCAL_IDP_PASSWORD_*` values will not work until
+> the realm is reimported. If you run `init-env --force`, also run `bootstrap --reset` **and**
+> `idp-up --reset`.
+>
+> **A volume-level reset changes the realm's signing key.** `down -v` destroys the identity
+> provider's data, so the next start generates a new RSA key and every token it issues is signed
+> with it. Run `idp-up` again — it re-reads the key and rewrites the anchor. Skipping it produces
+> a successful login followed by `401` on every request.
 
 ---
 
-## 15. Troubleshooting
+## 16. Troubleshooting
 
 **`docker compose up` fails immediately naming a variable**
 The manifest uses `${VAR:?message}` for everything a launch cannot proceed without, so the error
@@ -392,10 +566,42 @@ names the missing variable. Run `init-env`, or check you passed
 `--env-file infrastructure/docker/.env.rebuild`.
 
 **Every request returns `401 unauthenticated`**
-The Authentication Service has no trust anchor and is running its fail-closed deny-all verifier.
-Check that the four `SP2_LOCAL_TOKEN_*` values are set and that `SP2_AUTHENTICATION_ISSUERS` is
-**empty** (a non-empty issuer configuration wins over the local tokens). Recreate the container
-after changing them — the verifier is resolved once, at import.
+The Authentication Service is not accepting the credential you presented. Three causes, in order
+of likelihood:
+
+- *The anchor and the signer disagree.* The realm's key changed (a `down -v`, or a first launch)
+  and `SP2_AUTHENTICATION_ISSUERS` still holds the old one. Run `idp-up`.
+- *The container has not picked the anchor up.* The verifier is resolved **once, at import**, so
+  the Authentication Service must be recreated after the variable changes. `idp-up` does that for
+  you when the service is already running.
+- *You are mixing postures.* A non-empty issuer configuration WINS over the four
+  `SP2_LOCAL_TOKEN_*` values, so those tokens stop working the moment §6 runs. Use a real OIDC
+  token (or clear the issuer variable and recreate the container).
+
+With **neither** set, the service runs its fail-closed deny-all verifier: healthy, and
+authenticating nobody.
+
+**The browser shows "Configuration unavailable"**
+That is the frontend's `fail_closed` posture, not a backend failure. It means the five
+`VITE_SP2_*` values are partially set or one is malformed — all four OIDC values plus the base URL
+must be present, and the base URL must be an absolute `http(s)` URL. Restart the dev server after
+editing `.env.local`; Vite reads env at startup.
+
+**Sign-in reaches Keycloak and is refused, or the callback fails**
+The `redirect_uri` must match the realm registration byte for byte, including the `localhost`
+spelling — `127.0.0.1:5173` is a different origin to a browser and is not registered. Confirm
+the dev server really is on `5173` (it is `strictPort`, so it fails rather than moves).
+
+**Login succeeds and every tenant request returns `403 access_denied`**
+Authentication worked and authorization did not — the token's `sub` has no membership for the
+tenant it named. `sub` is the Keycloak *user id*, which the realm pins to the principal reference
+(`local-agent-acme`), so this means the realm and the seed have drifted. Run `seed`, and
+`test_stage6_local_launch.py` if you changed either — it fails when they disagree.
+
+**A tenant request returns `403 carrier_mismatch`**
+The `X-Tenant-Id` header disagrees with the token's signed `active_tenant` claim. That is the
+carrier check working: a carrier is match-or-reject only and never selects anything. Requesting a
+`sp2:tenant:<other>` scope is likewise not permission to use it — membership decides.
 
 **Every request returns `403 access_denied`**
 Authentication worked and authorization did not. Almost always a missing membership: run `seed`,
@@ -474,7 +680,8 @@ against the databases directly and do not depend on session counts.
 | `python -m tools.local.sp2_local migrate [--reset]` | apply the accepted migration chains to all four databases |
 | `python -m tools.local.sp2_local seed` | write the minimum Control rows (idempotent) |
 | `python -m tools.local.sp2_local bootstrap [--reset]` | migrate, then seed |
-| `python -m tools.local.sp2_local verify` | 14 services healthy, OpenAPI 3.1, BFF-only ingress |
+| `python -m tools.local.sp2_local idp-up [--reset]` | render the realm, start the identity provider, pin its key as the trust anchor |
+| `python -m tools.local.sp2_local verify` | 14 services healthy, OpenAPI 3.1, BFF-only ingress, IdP realm + anchor |
 | `python -m tools.local.sp2_local smoke` | one real authenticated Startup flow + isolation evidence |
 | `docker compose -f infrastructure/docker/docker-compose.rebuild.yml --env-file infrastructure/docker/.env.rebuild up -d --wait` | start everything |
 | `... stop` / `... down` / `... down -v` | stop / remove / remove with volumes |
@@ -483,6 +690,15 @@ against the databases directly and do not depend on session counts.
 
 - `infrastructure/docker/.env.rebuild` is **gitignored** and holds local throwaway values only.
 - The committed template holds **placeholders only**, and its secret lines are empty.
+- `infrastructure/docker/keycloak/realm-sp2-local.template.json` is **committed** and carries
+  password *placeholders* (`__SP2_LOCAL_IDP_PASSWORD_*__`). The rendered realm — the one with real
+  values — is written to `infrastructure/docker/keycloak/import/`, which is **gitignored**. The
+  browser client is **public and has no secret**, so there is none to leak.
+- `SP2_AUTHENTICATION_ISSUERS` holds a **public** key and an issuer URL. Not a secret, but written
+  by `idp-up` rather than by hand, because it must match the running realm exactly.
+- The frontend's `.env.local` is **gitignored**. Everything a `VITE_` variable holds ships to the
+  browser, so nothing secret may go in one — the OIDC issuer, client id and redirect URI are all
+  public values by design.
 - No DSN, password, token or lineage key is printed by any command in this runbook.
 - `docker compose config` **does** render interpolated values, including the local password. It
   is a debugging command; do not paste its output anywhere.
