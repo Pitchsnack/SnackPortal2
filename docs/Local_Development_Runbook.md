@@ -31,7 +31,16 @@ The Python commands are shown in the form that works in **Windows PowerShell**, 
 active development environment; on macOS/Linux substitute `python` for
 `.\.venv\Scripts\python.exe` and forward slashes for backslashes.
 
-Everything below is run from the **repository root** unless a step says otherwise.
+**Two working directories, and every command block below says which.**
+
+| Run from | What |
+|---|---|
+| repository root | every `docker compose …` command |
+| `backend/` | every `python -m tools.local.sp2_local …` command, and pytest |
+
+The split is not arbitrary: `tools` is deliberately not installed into the environment (see §2),
+so the operator command resolves it from the current directory. CI does the same — its `validate`
+job sets `working-directory: backend`.
 
 > **Ports this procedure uses.** BFF `127.0.0.1:8000`; PostgreSQL `127.0.0.1:5550-5553`.
 > The 5550-5553 range is deliberately *not* 5540-5543, so this stack can run alongside the older
@@ -49,6 +58,7 @@ cd SnackPortal2
 Create the Python environment the operator command and the test suites use:
 
 ```powershell
+# from the REPOSITORY ROOT
 python -m venv backend\.venv
 backend\.venv\Scripts\python.exe -m pip install -e "backend[dev]"
 ```
@@ -63,17 +73,15 @@ You do **not** fill it in by hand. Generate a filled, untracked copy with fresh 
 
 ```powershell
 cd backend
-..\backend\.venv\Scripts\python.exe -m tools.local.sp2_local init-env
-cd ..
+.venv\Scripts\python.exe -m tools.local.sp2_local init-env
 ```
 
-Or, equivalently, from the repository root:
-
-```powershell
-backend\.venv\Scripts\python.exe -m tools.local.sp2_local init-env
-```
-
-> The module is importable from either directory; the commands below use the repository root.
+> **The operator command runs from `backend/`, and only from there.** `tools` is deliberately
+> excluded from `[tool.setuptools.packages.find]`, so it is never installed into the environment
+> — that exclusion is what keeps an operator tool holding a database driver out of the service
+> graph and out of the distribution. `python -m tools.local.sp2_local` therefore resolves `tools`
+> from the current directory, and from the repository root it fails with
+> `No module named 'tools'`.
 
 This writes `infrastructure/docker/.env.rebuild` — **gitignored, never committed** — with 14
 freshly generated local throwaway values. It refuses to overwrite an existing file unless you
@@ -147,7 +155,8 @@ accidental fully-qualified name) is not merely forbidden, it is unreachable.
 ## 5. Migrate and bootstrap
 
 ```powershell
-backend\.venv\Scripts\python.exe -m tools.local.sp2_local bootstrap
+cd backend
+.venv\Scripts\python.exe -m tools.local.sp2_local bootstrap
 ```
 
 `bootstrap` = `migrate` then `seed`. Expected output:
@@ -191,7 +200,8 @@ which is the only path that proves the request path works.
 To start over from an empty schema:
 
 ```powershell
-backend\.venv\Scripts\python.exe -m tools.local.sp2_local bootstrap --reset
+cd backend
+.venv\Scripts\python.exe -m tools.local.sp2_local bootstrap --reset
 ```
 
 ---
@@ -216,7 +226,8 @@ not a convenience.
 ## 7. Verify the backend
 
 ```powershell
-backend\.venv\Scripts\python.exe -m tools.local.sp2_local verify
+cd backend
+.venv\Scripts\python.exe -m tools.local.sp2_local verify
 ```
 
 This checks four things and prints each:
@@ -280,7 +291,8 @@ the correct response, not a misconfiguration.
 The supported check runs the whole flow and proves physical isolation:
 
 ```powershell
-backend\.venv\Scripts\python.exe -m tools.local.sp2_local smoke
+cd backend
+.venv\Scripts\python.exe -m tools.local.sp2_local smoke
 ```
 
 It creates a Startup in ACME through the BFF, reads it back, presents the same record reference
@@ -352,7 +364,8 @@ Two levels, from cheapest to most complete:
 **Schema-level** — keeps the containers, reapplies every migration from zero, reseeds:
 
 ```powershell
-backend\.venv\Scripts\python.exe -m tools.local.sp2_local bootstrap --reset
+cd backend
+.venv\Scripts\python.exe -m tools.local.sp2_local bootstrap --reset
 ```
 
 **Volume-level** — destroys the clusters entirely:
@@ -451,6 +464,9 @@ against the databases directly and do not depend on session counts.
 ---
 
 ## Appendix — the supported command set
+
+**Run every `python -m tools.local.sp2_local` command from `backend/`.** Run every
+`docker compose` command from the repository root.
 
 | Command | What it does |
 |---|---|
