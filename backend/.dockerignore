@@ -1,0 +1,43 @@
+# SnackPortal2 — build context exclusions for backend/Dockerfile.
+#
+# Without this file the context is ~1.1 GB, because `backend/.venv` alone is ~871 MB. The
+# daemon receives the whole context before the first instruction runs, so the cost is paid on
+# every build whether or not a layer uses the files — and on this repository it was large
+# enough to take the Docker Desktop WSL engine down mid-build (0xc00000fd) rather than merely
+# make the build slow.
+#
+# The Dockerfile COPYs named directories rather than `COPY . .`, so nothing below could reach
+# the image in any case. This file is about what crosses the wire, not about what lands.
+
+# Virtual environments — the single largest offender.
+.venv/
+venv/
+env/
+
+# Tooling caches. Machine-local, never reproducible, never wanted in an image.
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.import_linter_cache/
+__pycache__/
+*.py[cod]
+
+# setuptools build artifacts. `pip install .[dev]` leaves these in-tree; a stale copy inside
+# the image would shadow the freshly installed package.
+build/
+dist/
+*.egg-info/
+
+# Tests are not installed into the runtime image. They run on the host and in CI, against the
+# source tree, and shipping them would put the live-PostgreSQL harness inside a service image.
+tests/
+
+# Local operator tooling and documentation — not runtime.
+tools/
+migrations/README.md
+
+# Version control and editor state.
+.git/
+.gitignore
+.idea/
+.vscode/

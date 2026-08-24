@@ -19,12 +19,22 @@ requires-python = ">=3.10"
 #     sanctioned containment zone. Both are open-source and vendor-neutral (ASGI is a standard
 #     interface; neither ties the deployment to a cloud or a hosting provider), satisfying the
 #     CLAUDE.md anti-vendor-lock-in constraint.
+#   - Stage 6 adds httpx as a RUNTIME dependency. It was previously declared only under the
+#     `dev` extra, described there as a test-only need of starlette's TestClient — but five
+#     modules of the Option A rebuild import it to make their internal service-to-service
+#     calls (bff/clients.py, shared/tenant_data.py, access_control/membership.py,
+#     database_router/resolver.py, import_service/main.py). A `pip install .` therefore
+#     produced a backend that could not call anything. It did not even fail closed: in every
+#     one of those modules the `import httpx` sits *outside* the surrounding `try`, so the
+#     ModuleNotFoundError escaped the fail-closed handler and surfaced as HTTP 500 rather than
+#     the canonical denial. Proven by building the image and probing it (Stage 6 §19).
 dependencies = [
   "pyjwt>=2",
   "cryptography",
   "psycopg[binary]>=3",
   "fastapi>=0.115",
   "uvicorn>=0.30",
+  "httpx",
 ]
 
 [project.optional-dependencies]
@@ -33,9 +43,10 @@ dev = [
   "mypy",
   "pytest",
   "import-linter",
-  # starlette's TestClient (used by the snackportal2 route + OpenAPI contract tests)
-  # requires httpx. Declared explicitly rather than relied on transitively.
-  "httpx",
+  # httpx is NOT listed here any more. starlette's TestClient does need it, but so does the
+  # running backend, and a dependency named only in the test extra is a dependency the
+  # production install does not get. It now sits in `[project].dependencies` above, which the
+  # `dev` install inherits — so the test need is still met, from the honest place.
 ]
 
 [build-system]
