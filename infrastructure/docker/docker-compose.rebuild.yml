@@ -36,6 +36,22 @@
 # the migration tool to reach them from the host, and loopback publishing is not internet
 # exposure.
 #
+# ---------------------------------------------------------------------------------------------
+# STAGE 6A — the local identity provider
+#
+# Stage 6 left one thing unrunnable: the browser could reach the BFF but could not log in, because
+# the frontend's only real authentication adapter is Authorization Code + PKCE against an OIDC
+# issuer and the local stack had none. Stage 6A adds `keycloak` below.
+#
+# It changes no architecture and adds no code path. The Authentication Service's pinned-issuer
+# verifier (IC-005 `JwtTokenVerifier`) already existed and is simply configured; the frontend's
+# `KeycloakSnackPortalAuthAdapter` already existed and is simply pointed at a realm. Keycloak is
+# named as the controlled-local provider by IC-005 and is NOT a production-provider decision.
+#
+# Like the databases it is infrastructure, not an application service: the exposure census
+# classifies `keycloak` by name and excludes it, exactly as it excludes `postgres`.
+# ---------------------------------------------------------------------------------------------
+#
 # Four SEPARATE clusters, not four databases in one. That is stronger than the contract demands
 # and is deliberate: a cross-tenant leak through a shared cluster (a search_path slip, a dblink,
 # an accidental fully-qualified name) is not merely forbidden, it is unreachable.
@@ -101,6 +117,7 @@ volumes:
   sp2_rebuild_acme_data:
   sp2_rebuild_zeta_data:
   sp2_rebuild_nova_data:
+  sp2_rebuild_keycloak_data:
 
 services:
 
@@ -175,6 +192,67 @@ services:
       retries: 20
 
   # ============================================================================================
+  # THE LOCAL IDENTITY PROVIDER (Stage 6A).
+  #
+  # Not an application service either — it is the OIDC issuer the browser authenticates against,
+  # the same classification the exposure census already gives `keycloak` by name. It publishes on
+  # loopback because a BROWSER has to reach it: an identity provider the user cannot be redirected
+  # to is not an identity provider.
+  #
+  # No SnackPortal2 service calls it. The Authentication Service verifies tokens against a PINNED
+  # PUBLIC KEY (IC-005), not by fetching JWKS, so the trust relationship is one-way and offline:
+  # Keycloak signs, the backend verifies, and the two never talk. That is why this service is on
+  # the network purely for tidiness and why nothing `depends_on` it.
+  #
+  # `start-dev` is Keycloak's own development mode — embedded H2, no TLS, no clustering. It is
+  # named that way for a reason and this file is local-only.
+  #
+  # THE REALM IS IMPORTED DECLARATIVELY. `./keycloak/import/realm-sp2-local.json` is GENERATED,
+  # UNTRACKED, and written by `sp2_local init-env` from the committed template, which carries
+  # password PLACEHOLDERS and no usable credential. A fresh checkout therefore reproduces the
+  # realm without anyone clicking through the admin console, and the repository holds no password.
+  #
+  # The data volume keeps the realm's generated RSA signing key stable across restarts. Remove it
+  # (`sp2_local idp-up --reset`) and the key changes, which is why the trust anchor is re-pinned
+  # by that same command rather than written by hand.
+  # ============================================================================================
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.4
+    container_name: sp2_rebuild_keycloak
+    restart: "no"
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${SP2_LOCAL_IDP_ADMIN_USER:-sp2-local-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${SP2_LOCAL_IDP_ADMIN_PASSWORD:?set SP2_LOCAL_IDP_ADMIN_PASSWORD in an untracked infrastructure/docker/.env.rebuild}
+      KC_HTTP_ENABLED: "true"
+      # Pinned so the `iss` claim is one fixed string no matter which host name a request arrives
+      # under. An issuer derived from the request would mean the token the browser obtains and the
+      # anchor the backend pinned could disagree by a host name and fail with no useful message.
+      KC_HOSTNAME: ${SP2_LOCAL_IDP_ISSUER_ORIGIN:-http://localhost:8090}
+    ports:
+      - "127.0.0.1:${SP2_LOCAL_IDP_PORT:-8090}:8080"
+    volumes:
+      # The whole data directory, not just `data/h2`. A named volume mounted at a path the image
+      # does not contain is created empty and ROOT-OWNED, and Keycloak runs as uid 1000 — the
+      # symptom is an AccessDeniedException on the embedded database at first start. `data` DOES
+      # exist in the image (keycloak:root, 775), so a volume there inherits that ownership.
+      # The read-only import bind nests inside it and is applied after, by mount depth.
+      - sp2_rebuild_keycloak_data:/opt/keycloak/data
+      - ./keycloak/import:/opt/keycloak/data/import:ro
+    networks:
+      - sp2_internal
+    healthcheck:
+      # The realm endpoint, not `/health/ready`: it proves the server is serving AND that the
+      # realm import actually produced this realm. A Keycloak that started but imported nothing
+      # passes a liveness probe and fails every login. The image ships no HTTP client, so the
+      # request is made with bash's /dev/tcp. Verified to fail on a realm that does not exist.
+      test: ['CMD-SHELL', 'exec 3<>/dev/tcp/127.0.0.1/8080; printf "GET /realms/sp2-local HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3; head -1 <&3 | grep -q " 200 "']
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 15s
+
+  # ============================================================================================
   # THE ONE PUBLIC APPLICATION INGRESS (E-1). This is the only `ports:` clause among the
   # application services in this file.
   # ============================================================================================
@@ -234,9 +312,23 @@ services:
       <<: *service-env
       SP2_AUTHENTICATION_HOST: "0.0.0.0"
       SP2_AUTHENTICATION_PORT: "8001"
-      # Production posture. Set this to a pinned-issuer JSON object and it WINS over the local
-      # static map below, so a stray development variable in a production environment cannot
-      # widen the trust surface.
+      # Pinned-issuer posture. Set this to a JSON object keyed by the exact `iss` claim and it
+      # WINS over the local static map below, so a stray development variable in a production
+      # environment cannot widen the trust surface.
+      #
+      # STAGE 6A writes it, from the local Keycloak's own realm public key:
+      #
+      #     python -m tools.local.sp2_local idp-up
+      #
+      # which starts the identity provider, waits for the realm, reads the public key from the
+      # public realm endpoint, and pins it here. The key is the IdP's, not one this repository
+      # generated, so the anchor cannot drift from what actually signs the tokens.
+      #
+      # THE PRECEDENCE IS THE POINT, and it has a local consequence worth stating plainly: while
+      # this is set, the four opaque local tokens below authenticate NOBODY. That is correct — a
+      # deployment must not hold two live trust anchors — and it is why `sp2_local smoke` obtains
+      # a real OIDC token through the same Authorization Code + PKCE flow the browser uses rather
+      # than falling back to a static one.
       SP2_AUTHENTICATION_ISSUERS: ${SP2_AUTHENTICATION_ISSUERS:-}
       # Local-development posture (IC-005 StaticTokenVerifier). This is a SUPPORTED, explicitly
       # selected verifier that already existed — Stage 6 configures it, it does not invent it.

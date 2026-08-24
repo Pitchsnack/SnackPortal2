@@ -8,6 +8,7 @@ The supported command set for running the Option A rebuild locally from a fresh 
     migrate     apply the accepted migration chains to the four local databases
     seed        write the minimum Control-database rows a real request needs
     bootstrap   migrate, then seed
+    idp-up      start the local identity provider and pin its realm key as the trust anchor
     verify      prove all fourteen services are up and that only the BFF is published
     smoke       run one real authenticated Startup flow and prove physical tenant isolation
 
@@ -34,18 +35,23 @@ tools happen to exist.
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
+import http.cookiejar
 import json
 import os
 import re
 import secrets
 import subprocess
 import sys
+import textwrap
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
-from urllib.parse import urlsplit, urlunsplit
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
+from urllib.parse import parse_qs, urlencode, urlparse, urlsplit, urlunsplit
 
 # --- repository geography --------------------------------------------------------------------
 
@@ -57,6 +63,10 @@ DOCKER_DIR = REPO_ROOT / "infrastructure" / "docker"
 COMPOSE_FILE = DOCKER_DIR / "docker-compose.rebuild.yml"
 ENV_TEMPLATE = DOCKER_DIR / ".env.rebuild.template"
 ENV_FILE = DOCKER_DIR / ".env.rebuild"
+
+#: The compose project name, declared by the manifest's own ``name:`` key. Named volumes are
+#: prefixed with it, so removing one by name needs this to be right; a test asserts it matches.
+COMPOSE_PROJECT = "snackportal2-rebuild-local"
 
 #: The legacy DDL corpus, reused unchanged by the rebuild (``backend/migrations/README.md``).
 INFRA_DB = REPO_ROOT / "infrastructure" / "db"
@@ -151,6 +161,62 @@ TOKEN_VARIABLES: Mapping[str, str] = {
     "SP2_LOCAL_TOKEN_CONTROL": "local-operator-control",
 }
 
+# --- the local identity provider (Stage 6A) ----------------------------------------------------
+#
+# These are FACTS about the local realm, not knobs. Each one also appears in the committed realm
+# template, and `tests/snackportal2/test_stage6_local_launch.py` asserts the two agree — the same
+# "duplication made safe by a check" arrangement the service list above uses. A knob would invite
+# a value to be changed in one place and not the other, and the failure mode is a browser that
+# authenticates and a backend that rejects, with nothing in either log saying why.
+
+#: The committed realm template, and the generated file the container actually imports.
+KEYCLOAK_DIR = DOCKER_DIR / "keycloak"
+REALM_TEMPLATE = KEYCLOAK_DIR / "realm-sp2-local.template.json"
+REALM_IMPORT_DIR = KEYCLOAK_DIR / "import"
+REALM_FILE = REALM_IMPORT_DIR / "realm-sp2-local.json"
+
+IDP_SERVICE = "keycloak"
+IDP_REALM = "sp2-local"
+IDP_CLIENT_ID = "sp2-local-web"
+
+#: The audience the realm stamps into every access token, and the one the pinned anchor requires.
+IDP_AUDIENCE = "snackportal2-bff"
+
+#: The frontend dev server's origin, and the exact registered callback. Byte-equality matters:
+#: an authorization request whose `redirect_uri` differs by one character is refused by the IdP.
+FRONTEND_ORIGIN = "http://localhost:5173"
+IDP_REDIRECT_URI = FRONTEND_ORIGIN + "/sp2-gateway/callback"
+
+#: The optional client scope that mints a tenant-scoped token. Requesting one is not permission to
+#: use it: the claim is a routing input, and membership is decided by Access Control.
+IDP_TENANT_SCOPE_PREFIX = "sp2:tenant:"
+
+#: Only RS256 is enabled on the realm, and the verifier accepts asymmetric algorithms only.
+IDP_ALGORITHM = "RS256"
+
+#: Placeholder in the committed realm template -> the env variable that replaces it. The template
+#: is committed and therefore carries no usable credential; `init-env` renders the real file.
+IDP_PASSWORD_PLACEHOLDERS: Mapping[str, str] = {
+    "__SP2_LOCAL_IDP_PASSWORD_ACME__": "SP2_LOCAL_IDP_PASSWORD_ACME",
+    "__SP2_LOCAL_IDP_PASSWORD_ZETA__": "SP2_LOCAL_IDP_PASSWORD_ZETA",
+    "__SP2_LOCAL_IDP_PASSWORD_NOVA__": "SP2_LOCAL_IDP_PASSWORD_NOVA",
+    "__SP2_LOCAL_IDP_PASSWORD_CONTROL__": "SP2_LOCAL_IDP_PASSWORD_CONTROL",
+}
+
+#: Login name -> (principal reference == Keycloak user id == `sub`, password variable, tenant).
+#: The Keycloak user id is pinned to the principal reference in the realm template, which is what
+#: makes the OIDC identity and the seeded Control-database membership the same principal without
+#: changing the seed. `None` marks the tenantless CONTROL operator, which holds no membership.
+IDP_IDENTITIES: Mapping[str, Tuple[str, str, Optional[str]]] = {
+    "acme-agent": ("local-agent-acme", "SP2_LOCAL_IDP_PASSWORD_ACME", "acme"),
+    "zeta-agent": ("local-agent-zeta", "SP2_LOCAL_IDP_PASSWORD_ZETA", "zeta"),
+    "nova-agent": ("local-agent-nova", "SP2_LOCAL_IDP_PASSWORD_NOVA", "nova"),
+    "control-operator": ("local-operator-control", "SP2_LOCAL_IDP_PASSWORD_CONTROL", None),
+}
+
+#: The Authentication Service's pinned-issuer variable. Written by `idp-up`, never by hand.
+ENV_AUTHENTICATION_ISSUERS = "SP2_AUTHENTICATION_ISSUERS"
+
 #: Variables `init-env` fills with freshly generated local throwaway values.
 GENERATED_VARIABLES: Sequence[str] = (
     "SP2_LOCAL_PG_PASSWORD",
@@ -167,6 +233,11 @@ GENERATED_VARIABLES: Sequence[str] = (
     "SP2_LOCAL_TOKEN_ZETA_AGENT",
     "SP2_LOCAL_TOKEN_NOVA_AGENT",
     "SP2_LOCAL_TOKEN_CONTROL",
+    "SP2_LOCAL_IDP_ADMIN_PASSWORD",
+    "SP2_LOCAL_IDP_PASSWORD_ACME",
+    "SP2_LOCAL_IDP_PASSWORD_ZETA",
+    "SP2_LOCAL_IDP_PASSWORD_NOVA",
+    "SP2_LOCAL_IDP_PASSWORD_CONTROL",
 )
 
 
@@ -354,6 +425,280 @@ def reset_database(dsn: str, label: str) -> None:
         raise LocalError("reset FAILED on database '" + label + "'\n     " + str(exc).strip().splitlines()[0]) from None
 
 
+# --- the local identity provider (Stage 6A) -----------------------------------------------------
+
+
+def idp_origin(env: Mapping[str, str]) -> str:
+    """The origin the identity provider is published on, and stamps into every ``iss``."""
+    return (env.get("SP2_LOCAL_IDP_ISSUER_ORIGIN", "").strip() or "http://localhost:8090").rstrip("/")
+
+
+def idp_issuer(env: Mapping[str, str]) -> str:
+    """The exact `iss` claim value. This string is the key of the pinned trust anchor."""
+    return idp_origin(env) + "/realms/" + IDP_REALM
+
+
+def render_realm_file(env: Mapping[str, str]) -> Path:
+    """Render the committed realm template into the untracked file the container imports.
+
+    The template is committed and carries password PLACEHOLDERS, for the same reason the env
+    template's secret lines are empty: a placeholder that works is a credential in the repository.
+    Rendering fails closed — a missing placeholder means the template and this tool have drifted,
+    and an unset password means ``init-env`` has not run.
+    """
+    if not REALM_TEMPLATE.exists():
+        raise LocalError("the committed realm template is missing at " + str(REALM_TEMPLATE))
+
+    text = REALM_TEMPLATE.read_text(encoding="utf-8")
+    for placeholder, variable in IDP_PASSWORD_PLACEHOLDERS.items():
+        if placeholder not in text:
+            raise LocalError("the realm template no longer carries " + placeholder + " — template and tool have drifted")
+        value = env.get(variable, "").strip()
+        if not value:
+            raise LocalError(variable + " is not set in " + str(ENV_FILE) + "\n     Run:  python -m tools.local.sp2_local init-env")
+        # JSON-escaped, so a password containing a quote or a backslash cannot break the document.
+        text = text.replace(placeholder, json.dumps(value)[1:-1])
+
+    leftover = sorted(set(re.findall(r"__SP2_[A-Z0-9_]+__", text)))
+    if leftover:
+        raise LocalError("the rendered realm still holds unresolved placeholders: " + ", ".join(leftover))
+    try:
+        json.loads(text)
+    except Exception as exc:
+        raise LocalError("the rendered realm file is not valid JSON: " + str(exc).splitlines()[0]) from None
+
+    REALM_IMPORT_DIR.mkdir(parents=True, exist_ok=True)
+    REALM_FILE.write_text(text, encoding="utf-8")
+    return REALM_FILE
+
+
+def _http_text(url: str, timeout: int = 15) -> Tuple[int, str]:
+    """One GET against the identity provider's public endpoints. stdlib only."""
+    request = urllib.request.Request(url, method="GET")
+    request.add_header("Accept", "application/json")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - fixed loopback URL
+            return int(response.status), response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        return int(exc.code), exc.read().decode("utf-8", "replace")
+    except urllib.error.URLError as exc:
+        raise LocalError("cannot reach " + url + " (" + str(exc.reason) + ")") from None
+
+
+def realm_public_key_pem(env: Mapping[str, str], attempts: int = 60, delay: float = 2.0) -> str:
+    """Wait for the realm, then return its signing public key as a PEM.
+
+    The key is read from the identity provider itself rather than generated here, so the anchor
+    the backend pins cannot drift from the key that actually signs the tokens. It is regenerated
+    whenever the provider's volume is destroyed, which is why this is a command and not a constant.
+    """
+    url = idp_issuer(env)
+    last = ""
+    for _attempt in range(attempts):
+        try:
+            status, body = _http_text(url)
+        except LocalError as exc:
+            last = str(exc)
+            status, body = 0, ""
+        if status == 200:
+            try:
+                realm = json.loads(body)
+            except Exception:
+                raise LocalError("the realm endpoint returned something that is not JSON") from None
+            if realm.get("realm") != IDP_REALM:
+                raise LocalError("the issuer serves realm " + repr(realm.get("realm")) + ", expected " + repr(IDP_REALM))
+            key = str(realm.get("public_key", ""))
+            if not key:
+                raise LocalError("the realm published no public key")
+            return "-----BEGIN PUBLIC KEY-----\n" + "\n".join(textwrap.wrap(key, 64)) + "\n-----END PUBLIC KEY-----\n"
+        last = "HTTP " + str(status) if status else last
+        time.sleep(delay)
+    raise LocalError("the identity provider never served realm '" + IDP_REALM + "' at " + url + " (" + last + ")")
+
+
+def issuer_anchor_json(env: Mapping[str, str], public_key_pem: str) -> str:
+    """The single-line ``SP2_AUTHENTICATION_ISSUERS`` value, exactly as the env file holds it.
+
+    Single line on purpose: an env file has no multi-line value, so the PEM's newlines travel as
+    JSON ``\\n`` escapes and become real newlines again when the service parses the JSON.
+    """
+    return json.dumps(
+        {
+            idp_issuer(env): {
+                "audience": IDP_AUDIENCE,
+                "algorithms": [IDP_ALGORITHM],
+                "public_key_pem": public_key_pem,
+            }
+        }
+    )
+
+
+def write_env_value(key: str, value: str, path: Path = ENV_FILE) -> None:
+    """Replace exactly one ``KEY=`` line in the untracked env file, preserving everything else.
+
+    Rewriting the whole file from the template would discard the generated secrets; appending
+    would leave two lines for one key and let the later one win silently.
+    """
+    if not path.exists():
+        raise LocalError("no local environment file at " + str(path) + "\n     Create one with:  python -m tools.local.sp2_local init-env")
+    lines = path.read_text(encoding="utf-8").splitlines()
+    replaced = 0
+    for index, raw in enumerate(lines):
+        stripped = raw.strip()
+        if stripped.startswith("#") or "=" not in stripped:
+            continue
+        if stripped.split("=", 1)[0].strip() == key:
+            lines[index] = key + "=" + value
+            replaced += 1
+    if replaced == 0:
+        raise LocalError(key + " is not declared in " + str(path) + "; the template and the tool have drifted")
+    if replaced > 1:
+        raise LocalError(key + " is declared " + str(replaced) + " times in " + str(path) + "; remove the duplicates")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def key_fingerprint(public_key_pem: str) -> str:
+    """A short, non-secret identity for a PUBLIC key, so a change is visible without printing it."""
+    body = "".join(line for line in public_key_pem.splitlines() if "-----" not in line)
+    return hashlib.sha256(base64.b64decode(body)).hexdigest()[:16]
+
+
+# --- the browser's own login flow, driven headlessly --------------------------------------------
+#
+# Authorization Code + PKCE S256, exactly as the frontend adapter performs it: the same client,
+# the same redirect URI, the same code challenge, the same token exchange. Nothing here is a
+# shortcut around authentication — there is no password grant, no client secret, no admin API and
+# no minted token. It exists so `smoke` can keep proving the request path once the pinned-issuer
+# posture is active, and so the claim contract can be checked without a human at a keyboard.
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Stop urllib following the authorization redirect: the redirect IS the result."""
+
+    def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> None:
+        return None
+
+
+class _LoopbackCookiePolicy(http.cookiejar.DefaultCookiePolicy):
+    """Send Keycloak's ``SameSite=None; Secure`` session cookies over loopback HTTP.
+
+    A browser does this already: ``http://localhost`` is a secure context, so a ``Secure`` cookie
+    is accepted and returned there. ``http.cookiejar`` has no notion of secure contexts and would
+    silently withhold the authentication-session cookie, which arrives as a bare 400 from the
+    login POST. This restores the browser's behaviour for loopback only.
+    """
+
+    def return_ok_secure(self, cookie: Any, request: Any) -> bool:
+        host = (urlparse(request.full_url).hostname or "").lower()
+        return host in {"localhost", "127.0.0.1", "::1"}
+
+
+def _b64url(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def oidc_access_token(env: Mapping[str, str], username: str, scope: str) -> str:
+    """Obtain one real access token through Authorization Code + PKCE. Never prints it."""
+    if username not in IDP_IDENTITIES:
+        raise LocalError("unknown local identity " + repr(username))
+    _principal, password_variable, _tenant = IDP_IDENTITIES[username]
+    password = require(env, password_variable)
+    issuer = idp_issuer(env)
+
+    jar = http.cookiejar.CookieJar(_LoopbackCookiePolicy())
+    follow = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+    halt = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar), _NoRedirect)
+
+    verifier = _b64url(secrets.token_bytes(32))
+    challenge = _b64url(hashlib.sha256(verifier.encode("ascii")).digest())
+    state = _b64url(secrets.token_bytes(16))
+    authorize = (
+        issuer
+        + "/protocol/openid-connect/auth?"
+        + urlencode(
+            {
+                "response_type": "code",
+                "client_id": IDP_CLIENT_ID,
+                "redirect_uri": IDP_REDIRECT_URI,
+                "scope": scope,
+                "state": state,
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+            }
+        )
+    )
+
+    location: Optional[str] = None
+    try:
+        with halt.open(authorize, timeout=20) as response:  # noqa: S310 - fixed loopback URL
+            page = response.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        if exc.code not in (301, 302, 303, 307, 308):
+            raise LocalError("the authorization endpoint answered " + str(exc.code)) from None
+        # An existing single sign-on session: no login form, straight back to the callback.
+        location, page = exc.headers.get("Location"), ""
+
+    if location is None:
+        form = re.search(r'<form[^>]*id="kc-form-login"[^>]*action="([^"]+)"', page)
+        if form is None:
+            raise LocalError("the identity provider did not render the expected login form")
+        action = form.group(1).replace("&amp;", "&")
+        body = urlencode({"username": username, "password": password, "credentialId": ""}).encode("utf-8")
+        request = urllib.request.Request(action, data=body, method="POST")
+        request.add_header("Content-Type", "application/x-www-form-urlencoded")
+        try:
+            with halt.open(request, timeout=20) as response:  # noqa: S310 - fixed loopback URL
+                raise LocalError("the login did not redirect (HTTP " + str(response.status) + "); the credentials were rejected")
+        except urllib.error.HTTPError as exc:
+            if exc.code not in (301, 302, 303, 307, 308):
+                raise LocalError("the login was refused (HTTP " + str(exc.code) + ") for " + username) from None
+            location = exc.headers.get("Location")
+
+    parameters = parse_qs(urlparse(location or "").query)
+    if parameters.get("state", [""])[0] != state:
+        raise LocalError("the authorization response carried the wrong state")
+    if "code" not in parameters:
+        raise LocalError("no authorization code was returned for " + username)
+
+    exchange = urlencode(
+        {
+            "grant_type": "authorization_code",
+            "client_id": IDP_CLIENT_ID,
+            "code": parameters["code"][0],
+            "redirect_uri": IDP_REDIRECT_URI,
+            "code_verifier": verifier,
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(issuer + "/protocol/openid-connect/token", data=exchange, method="POST")
+    request.add_header("Content-Type", "application/x-www-form-urlencoded")
+    try:
+        with follow.open(request, timeout=20) as response:  # noqa: S310 - fixed loopback URL
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise LocalError("the token exchange failed (HTTP " + str(exc.code) + ")") from None
+
+    token = payload.get("access_token")
+    if not isinstance(token, str) or not token:
+        raise LocalError("the token response carried no access token")
+    if str(payload.get("token_type", "")).lower() != "bearer":
+        raise LocalError("the token response was not a bearer token")
+    return token
+
+
+def token_claims(token: str) -> Dict[str, Any]:
+    """The token's claims, decoded STRUCTURALLY and without verifying anything.
+
+    Used only to report the claim CONTRACT — which names are present and what shape they have.
+    The signature authority is the Authentication Service; nothing here is a verification, and
+    no claim read here is ever treated as permission.
+    """
+    parts = token.split(".")
+    if len(parts) != 3:
+        raise LocalError("the credential is not a three-part JWT")
+    body = parts[1] + "=" * (-len(parts[1]) % 4)
+    return dict(json.loads(base64.urlsafe_b64decode(body)))
+
+
 # --- commands ------------------------------------------------------------------------------------
 
 
@@ -402,6 +747,14 @@ def command_init_env(force: bool) -> int:
     say("Wrote " + str(ENV_FILE))
     say("  " + str(len(filled)) + " values generated (" + str(len(GENERATED_VARIABLES)) + " expected). No value is printed here.")
     say("  This file is gitignored. It contains local throwaway secrets and must never be committed.")
+
+    # The identity provider's realm is configuration, and configuration a developer has to click
+    # through an admin console is configuration a fresh checkout does not reproduce. Rendered here
+    # from the committed template so `docker compose up` imports it declaratively.
+    realm = render_realm_file(parse_env_file(ENV_FILE.read_text(encoding="utf-8")))
+    say("Wrote " + str(realm))
+    say("  The local Keycloak realm, rendered from " + REALM_TEMPLATE.name + " with the generated passwords.")
+    say("  Also gitignored. The committed template carries placeholders and no usable credential.")
     return 0
 
 
@@ -503,6 +856,68 @@ def command_bootstrap(reset: bool) -> int:
     return command_seed()
 
 
+def command_idp_up(reset: bool) -> int:
+    """Start the local identity provider and pin its realm key as the Authentication trust anchor.
+
+    Two halves, and the order is the point. The realm is imported from a file this command
+    renders, so a fresh checkout reproduces the whole identity configuration; then the realm's own
+    PUBLIC key is read back from the provider and written into the untracked env file. Pinning a
+    key we asked the provider for — rather than one this repository generated — is what makes it
+    impossible for the anchor and the signer to disagree.
+
+    From this point the four opaque local tokens authenticate nobody: a pinned issuer WINS over
+    the static development map, deliberately, so a deployment never holds two live trust anchors.
+    """
+    env = load_env()
+    issuer = idp_issuer(env)
+
+    say("1. Realm configuration")
+    realm_path = render_realm_file(env)
+    step("rendered " + realm_path.name + " from the committed template (passwords substituted, none printed)")
+
+    if reset:
+        say("2. Reset — remove the identity provider and its data")
+        _run(_compose_command() + ["rm", "--stop", "--force", "--volumes", IDP_SERVICE], timeout=180)
+        volume = COMPOSE_PROJECT + "_sp2_rebuild_keycloak_data"
+        code, output = _run(["docker", "volume", "rm", volume], timeout=120)
+        step(("removed volume " + volume) if code == 0 else ("volume " + volume + " was not present"))
+        del output
+    else:
+        say("2. Reset — not requested (an already-imported realm keeps its existing passwords)")
+
+    say("3. Start the identity provider")
+    code, output = _run(_compose_command() + ["up", "-d", "--wait", IDP_SERVICE], timeout=600)
+    if code != 0:
+        raise LocalError("could not start the identity provider.\n     " + output.strip()[-500:])
+    step("compose service '" + IDP_SERVICE + "' is up and its realm health check passes")
+
+    say("4. Read the realm signing key and pin it")
+    public_key_pem = realm_public_key_pem(env)
+    step("realm '" + IDP_REALM + "' served at " + issuer)
+    step("RS256 public key fingerprint " + key_fingerprint(public_key_pem) + " (PUBLIC; the private half never leaves the provider)")
+    write_env_value(ENV_AUTHENTICATION_ISSUERS, issuer_anchor_json(env, public_key_pem))
+    step("wrote " + ENV_AUTHENTICATION_ISSUERS + " into " + ENV_FILE.name + ": issuer, audience " + IDP_AUDIENCE + ", " + IDP_ALGORITHM)
+
+    say("5. Apply it to the Authentication Service")
+    running = _compose_service_names()
+    if "authentication" in running:
+        code, output = _run(_compose_command() + ["up", "-d", "--wait", "authentication"], timeout=600)
+        if code != 0:
+            raise LocalError("the Authentication Service did not come back up with the new anchor.\n     " + output.strip()[-500:])
+        step("recreated the Authentication Service; the verifier is resolved once, at import, so a restart is required")
+    else:
+        step("the Authentication Service is not running yet — it will pick the anchor up when you start the stack")
+
+    say("")
+    say("IDP: READY — " + issuer)
+    say("        client " + IDP_CLIENT_ID + " (public, Authorization Code + PKCE S256), audience " + IDP_AUDIENCE)
+    say("        redirect " + IDP_REDIRECT_URI)
+    say("        sign in as: " + ", ".join(sorted(IDP_IDENTITIES)) + "  (passwords are in " + ENV_FILE.name + ", never printed)")
+    say("")
+    say("Next:   docker compose -f " + str(COMPOSE_FILE.relative_to(REPO_ROOT)).replace(chr(92), "/") + " --env-file ... up -d --wait")
+    return 0
+
+
 # --- verification ----------------------------------------------------------------------------
 
 
@@ -520,7 +935,14 @@ def _run(argv: Sequence[str], timeout: int = 120) -> Tuple[int, str]:
     return completed.returncode, (completed.stdout or "") + (completed.stderr or "")
 
 
-def _http_json(url: str, *, token: Optional[str] = None, method: str = "GET", body: Optional[Mapping[str, Any]] = None) -> Tuple[int, Any]:
+def _http_json(
+    url: str,
+    *,
+    token: Optional[str] = None,
+    method: str = "GET",
+    body: Optional[Mapping[str, Any]] = None,
+    tenant: Optional[str] = None,
+) -> Tuple[int, Any]:
     """One HTTP call against the BFF's published loopback port. stdlib only."""
     data = None if body is None else json.dumps(body).encode("utf-8")
     request = urllib.request.Request(url, data=data, method=method)
@@ -529,6 +951,11 @@ def _http_json(url: str, *, token: Optional[str] = None, method: str = "GET", bo
         request.add_header("Content-Type", "application/json")
     if token is not None:
         request.add_header("Authorization", "Bearer " + token)
+    if tenant is not None:
+        # The one recognized carrier header (IC-013 §5), sent exactly as the browser sends it.
+        # A carrier is match-or-reject only: it never grants tenant access and never selects a
+        # database, so sending it exercises the comparison rather than obtaining anything.
+        request.add_header("X-Tenant-Id", tenant)
     try:
         with urllib.request.urlopen(request, timeout=20) as response:  # noqa: S310 - fixed loopback URL
             payload = response.read().decode("utf-8")
@@ -540,6 +967,24 @@ def _http_json(url: str, *, token: Optional[str] = None, method: str = "GET", bo
         raise LocalError("the BFF is not reachable at " + url + " (" + str(exc.reason) + "). Is the stack up?") from None
 
 
+def _compose_rows() -> List[Dict[str, Any]]:
+    """The RUNNING stack, as compose reports it. Empty when nothing is up."""
+    code, output = _run(_compose_command() + ["ps", "--format", "json"])
+    if code != 0:
+        return []
+    rows: List[Dict[str, Any]] = []
+    for line in output.splitlines():
+        line = line.strip()
+        if line.startswith("{"):
+            rows.append(json.loads(line))
+    return rows
+
+
+def _compose_service_names() -> Set[str]:
+    """Which compose services currently have a container."""
+    return {str(row.get("Service", "")) for row in _compose_rows()}
+
+
 def _published_services() -> Dict[str, List[str]]:
     """Compose service name -> published host ports, read from the RUNNING stack.
 
@@ -548,15 +993,11 @@ def _published_services() -> Dict[str, List[str]]:
     which is what a `-p` on a `docker compose run`, a stale container, or a local override would
     change without touching a tracked file.
     """
-    code, output = _run(_compose_command() + ["ps", "--format", "json"])
-    if code != 0:
-        raise LocalError("could not read the running stack. Is it up?\n     " + output.strip().splitlines()[0] if output.strip() else "")
+    rows = _compose_rows()
+    if not rows:
+        raise LocalError("could not read the running stack. Is it up?")
     published: Dict[str, List[str]] = {}
-    for line in output.splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        row = json.loads(line)
+    for row in rows:
         name = str(row.get("Service", ""))
         ports = str(row.get("Publishers") or row.get("Ports") or "")
         entries: List[str] = []
@@ -675,13 +1116,46 @@ def command_verify() -> int:
             step("127.0.0.1:" + str(port) + " (" + name + ") ANSWERED — check what is listening; this manifest publishes nothing there")
     step("checked " + str(len(SERVICES) - 1) + " internal ports on 127.0.0.1")
 
-    del env
+    say("5. Local identity provider — the browser's login")
+    issuer = idp_issuer(env)
+    anchor = env.get(ENV_AUTHENTICATION_ISSUERS, "").strip()
+    if IDP_SERVICE not in _compose_service_names():
+        step("not running. Start it with:  python -m tools.local.sp2_local idp-up   <-- browser login unavailable")
+        failures.append("identity provider not running")
+    else:
+        status, body = _http_text(issuer)
+        realm_ok = status == 200 and json.loads(body or "{}").get("realm") == IDP_REALM
+        step("realm '" + IDP_REALM + "' at " + issuer + ": " + str(status) + (" ok" if realm_ok else "  <-- FAIL"))
+        if not realm_ok:
+            failures.append("identity provider realm")
+
+        status, body = _http_text(issuer + "/.well-known/openid-configuration")
+        discovery = json.loads(body or "{}") if status == 200 else {}
+        pkce = "S256" in (discovery.get("code_challenge_methods_supported") or [])
+        stamped = discovery.get("issuer") == issuer
+        step("discovery: PKCE S256 " + ("advertised" if pkce else "MISSING") + ", issuer " + ("as pinned" if stamped else "DIFFERENT"))
+        if not (pkce and stamped):
+            failures.append("identity provider discovery")
+
+        # The anchor is compared, never printed. What matters is that the Authentication Service
+        # trusts exactly this issuer: an anchor for a different one authenticates nobody, and the
+        # symptom is a 401 that says nothing about why.
+        if not anchor:
+            step(ENV_AUTHENTICATION_ISSUERS + " is EMPTY — the browser's OIDC tokens will be rejected. Run: idp-up")
+            failures.append("no pinned trust anchor")
+        else:
+            trusted = sorted(json.loads(anchor))
+            step("pinned trust anchors: " + ", ".join(trusted) + ("  ok" if trusted == [issuer] else "  <-- FAIL, expected only " + issuer))
+            if trusted != [issuer]:
+                failures.append("pinned trust anchor does not match the local issuer")
+
     if failures:
         say("")
         say("VERIFY: FAIL — " + "; ".join(failures))
         return 1
     say("")
-    say("VERIFY: PASS — 14/14 services healthy, OpenAPI 3.1, BFF is the only public application ingress.")
+    say("VERIFY: PASS — 14/14 services healthy, OpenAPI 3.1, BFF is the only public application ingress,")
+    say("        and the local identity provider serves the realm the Authentication Service pins.")
     return 0
 
 
@@ -694,15 +1168,48 @@ def command_smoke() -> int:
     in the right physical database" are different claims and only the second one is isolation.
     """
     env = load_env()
-    acme_token = require(env, "SP2_LOCAL_TOKEN_ACME_AGENT")
-    zeta_token = require(env, "SP2_LOCAL_TOKEN_ZETA_AGENT")
     failures: List[str] = []
+
+    say("0. Credentials — whichever posture the Authentication Service is actually in")
+    if env.get(ENV_AUTHENTICATION_ISSUERS, "").strip():
+        # The pinned-issuer posture. Obtain real tokens the way the browser does: Authorization
+        # Code + PKCE S256, same public client, same redirect URI, same exchange. No password
+        # grant, no client secret, no admin API — there is no shortcut around authentication here.
+        step("pinned issuer configured -> obtaining real OIDC tokens (Authorization Code + PKCE S256)")
+        acme_token = oidc_access_token(env, "acme-agent", "openid " + IDP_TENANT_SCOPE_PREFIX + "acme")
+        zeta_token = oidc_access_token(env, "zeta-agent", "openid " + IDP_TENANT_SCOPE_PREFIX + "zeta")
+        tenant_claims = token_claims(acme_token)
+        present = [name for name in ("sub", "role", "active_tenant", "aud", "iss", "exp") if name in tenant_claims]
+        step("ACME token claim names: " + ", ".join(present))
+        step(
+            "  sub="
+            + str(tenant_claims.get("sub"))
+            + "  role="
+            + str(tenant_claims.get("role"))
+            + "  active_tenant="
+            + str(tenant_claims.get("active_tenant"))
+        )
+        expected_claims = {"sub": "local-agent-acme", "role": "TENANT_AGENT", "active_tenant": "acme"}
+        for name, wanted in expected_claims.items():
+            if tenant_claims.get(name) != wanted:
+                failures.append("the ACME token's " + name + " claim is " + repr(tenant_claims.get(name)) + ", expected " + repr(wanted))
+        # A token minted WITHOUT a tenant scope must carry no active tenant. If it did, every
+        # principal-level request would silently arrive pre-bound to a tenant database.
+        principal_claims = token_claims(oidc_access_token(env, "acme-agent", "openid"))
+        step("principal-only token (no tenant scope) carries active_tenant: " + repr(principal_claims.get("active_tenant")))
+        if principal_claims.get("active_tenant") is not None:
+            failures.append("a token minted without a tenant scope carried an active tenant")
+    else:
+        step("no pinned issuer -> using the local static development tokens")
+        acme_token = require(env, "SP2_LOCAL_TOKEN_ACME_AGENT")
+        zeta_token = require(env, "SP2_LOCAL_TOKEN_ZETA_AGENT")
 
     say("1. Create a Startup in ACME, through the BFF")
     company = "Local Smoke Ltd " + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
     status, created = _http_json(
         BFF_BASE_URL + "/tenant/startups",
         token=acme_token,
+        tenant="acme",
         method="POST",
         body={
             "display_name": company,
@@ -714,6 +1221,14 @@ def command_smoke() -> int:
             "headquarters_city": "London",
         },
     )
+    if status == 401:
+        raise LocalError(
+            "create returned 401 unauthenticated.\n"
+            "     The Authentication Service is not accepting this credential. The usual cause is a\n"
+            "     pinned trust anchor the running container has not picked up: the verifier is resolved\n"
+            "     once, at import, so the container must be recreated after " + ENV_AUTHENTICATION_ISSUERS + " changes.\n"
+            "     Run:  python -m tools.local.sp2_local idp-up"
+        )
     if status != 201 or not isinstance(created, dict):
         raise LocalError("create returned " + str(status) + ": " + json.dumps(created)[:300])
     record_ref = str(created.get("record_ref", ""))
@@ -727,14 +1242,14 @@ def command_smoke() -> int:
         failures.append("the tenant Startup DTO surfaced a URL; the contract-pinned shape excludes it")
 
     say("2. Read it back, as the same ACME principal")
-    status, read_back = _http_json(BFF_BASE_URL + "/tenant/startups/" + record_ref, token=acme_token)
+    status, read_back = _http_json(BFF_BASE_URL + "/tenant/startups/" + record_ref, token=acme_token, tenant="acme")
     ok = status == 200 and isinstance(read_back, dict) and read_back.get("display_name") == company
     step("GET /tenant/startups/{record_ref}: " + str(status) + (" ok" if ok else "  <-- FAIL"))
     if not ok:
         failures.append("read-back")
 
     say("3. The SAME record reference, presented by the ZETA principal")
-    status, _denied = _http_json(BFF_BASE_URL + "/tenant/startups/" + record_ref, token=zeta_token)
+    status, _denied = _http_json(BFF_BASE_URL + "/tenant/startups/" + record_ref, token=zeta_token, tenant="zeta")
     step("GET with the ZETA token: " + str(status) + (" (not found — correct)" if status == 404 else "  <-- FAIL, expected 404"))
     if status != 404:
         failures.append("cross-tenant read returned " + str(status) + ", expected 404")
@@ -774,14 +1289,14 @@ def command_smoke() -> int:
 
     say("6. Import — a global directory record becomes an INDEPENDENT tenant copy with lineage")
     source_ref = SEED_DIRECTORY[0][1]
-    status, first = _http_json(BFF_BASE_URL + "/import/startups/" + source_ref, token=acme_token, method="POST")
+    status, first = _http_json(BFF_BASE_URL + "/import/startups/" + source_ref, token=acme_token, tenant="acme", method="POST")
     if status != 201 or not isinstance(first, dict):
         failures.append("import returned " + str(status))
         step("POST /import/startups/" + source_ref + ": " + str(status) + "  <-- FAIL")
     else:
         step("outcome " + str(first.get("outcome")) + ", tenant record " + str(first.get("tenant_record_ref")))
         # Idempotent per source and tenant: a repeat must REPLAY, not make a second copy.
-        _status, again = _http_json(BFF_BASE_URL + "/import/startups/" + source_ref, token=acme_token, method="POST")
+        _status, again = _http_json(BFF_BASE_URL + "/import/startups/" + source_ref, token=acme_token, tenant="acme", method="POST")
         replayed = isinstance(again, dict) and again.get("tenant_record_ref") == first.get("tenant_record_ref")
         step(
             "repeat import: outcome "
@@ -853,6 +1368,9 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("bootstrap", help="migrate, then seed").add_argument(
         "--reset", action="store_true", help="drop each schema first, so the chain applies from zero"
     )
+    subparsers.add_parser("idp-up", help="start the local identity provider and pin its realm key as the trust anchor").add_argument(
+        "--reset", action="store_true", help="destroy the identity provider's data first, so the realm is imported from scratch"
+    )
     subparsers.add_parser("verify", help="prove all fourteen services are up and only the BFF is published")
     subparsers.add_parser("smoke", help="run one real authenticated Startup flow and prove physical isolation")
     return parser
@@ -865,6 +1383,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "migrate": lambda: command_migrate(bool(getattr(arguments, "reset", False))),
         "seed": command_seed,
         "bootstrap": lambda: command_bootstrap(bool(getattr(arguments, "reset", False))),
+        "idp-up": lambda: command_idp_up(bool(getattr(arguments, "reset", False))),
         "verify": command_verify,
         "smoke": command_smoke,
     }

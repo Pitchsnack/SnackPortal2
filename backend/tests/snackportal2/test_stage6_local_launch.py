@@ -44,6 +44,10 @@ _COMPOSE = _DOCKER / "docker-compose.rebuild.yml"
 _TEMPLATE = _DOCKER / ".env.rebuild.template"
 _RUNBOOK = _REPO_ROOT / "docs" / "Local_Development_Runbook.md"
 
+#: Stage 6A — the committed local identity-provider realm. Placeholders only; the file the
+#: container imports is generated from it into an untracked directory.
+_REALM_TEMPLATE = _DOCKER / "keycloak" / "realm-sp2-local.template.json"
+
 _COMPOSE_TEXT = _COMPOSE.read_text(encoding="utf-8")
 _TEMPLATE_TEXT = _TEMPLATE.read_text(encoding="utf-8")
 
@@ -393,6 +397,257 @@ def test_the_lineage_key_variables_reach_only_the_import_service() -> None:
         assert offenders == [], key + " is given a lineage chain key: " + repr(offenders)
 
 
+# --- Stage 6A: the local identity provider ------------------------------------------------------
+#
+# The browser's login is described in four places too — the committed realm template, the compose
+# service that imports it, the operator tool that renders it and pins the trust anchor, and the
+# Control-database seed whose membership principals the token's `sub` must equal. The failure mode
+# is the same shape as the one above and just as quiet: a realm that authenticates a user the
+# Control database has never heard of produces a successful login followed by 403 on everything.
+
+
+def _realm() -> Dict[str, Any]:
+    """The committed realm template, parsed."""
+    parsed = json.loads(_REALM_TEMPLATE.read_text(encoding="utf-8"))
+    assert isinstance(parsed, dict)
+    return parsed
+
+
+def _client(realm: Dict[str, Any]) -> Dict[str, Any]:
+    clients = [entry for entry in realm.get("clients", []) if entry.get("clientId")]
+    assert len(clients) == 1, "expected exactly one client in the local realm, found " + str(len(clients))
+    return dict(clients[0])
+
+
+def _scope(realm: Dict[str, Any], name: str) -> Dict[str, Any]:
+    matches = [entry for entry in realm.get("clientScopes", []) if entry.get("name") == name]
+    assert len(matches) == 1, "expected exactly one client scope named " + name
+    return dict(matches[0])
+
+
+def _claims_emitted(scope: Dict[str, Any]) -> Dict[str, str]:
+    """``claim name -> hardcoded value`` for the hardcoded mappers on one scope."""
+    emitted: Dict[str, str] = {}
+    for mapper in scope.get("protocolMappers", []):
+        config = mapper.get("config", {})
+        if mapper.get("protocolMapper") == "oidc-hardcoded-claim-mapper":
+            emitted[str(config.get("claim.name"))] = str(config.get("claim.value"))
+    return emitted
+
+
+def test_the_realm_template_and_the_operator_tool_agree_on_every_identity_fact() -> None:
+    """Realm name, client, audience, redirect and web origin are duplicated on purpose."""
+    module = _tool()
+    realm = _realm()
+    client = _client(realm)
+
+    assert realm["realm"] == module.IDP_REALM, "the realm template names a different realm than the tool"
+    assert client["clientId"] == module.IDP_CLIENT_ID, "the realm registers a different client id than the tool uses"
+    assert client["redirectUris"] == [module.IDP_REDIRECT_URI], "the registered redirect URI is not the one the tool sends"
+    assert client["webOrigins"] == [module.FRONTEND_ORIGIN], "the registered web origin is not the frontend origin"
+    assert module.IDP_REDIRECT_URI.startswith(module.FRONTEND_ORIGIN + "/"), "the redirect URI is not on the frontend origin"
+
+    audiences = {
+        mapper["config"]["included.custom.audience"]
+        for mapper in _scope(realm, "sp2-principal")["protocolMappers"]
+        if mapper.get("protocolMapper") == "oidc-audience-mapper"
+    }
+    assert audiences == {module.IDP_AUDIENCE}, "the realm stamps an audience the pinned anchor will not accept: " + repr(audiences)
+
+
+def test_the_realm_emits_exactly_the_claims_the_authentication_service_reads() -> None:
+    """`sub`, `role` and `active_tenant` — and nothing that carries a name, an email or PII.
+
+    Declaring `clientScopes` REPLACES Keycloak's built-in set, so `sub` is NOT automatic here: it
+    arrives via the built-in `basic` scope, which this realm does not have. A missing `sub` mapper
+    produces a token the verifier rejects for a reason no log states.
+    """
+    from snackportal2.services.authentication.verifier import CLAIM_ACTIVE_TENANT, CLAIM_PRINCIPAL, CLAIM_ROLE
+    from snackportal2.shared.types import PlatformRole
+
+    module = _tool()
+    realm = _realm()
+    principal_scope = _scope(realm, "sp2-principal")
+    mappers = {mapper["protocolMapper"] for mapper in principal_scope["protocolMappers"]}
+
+    assert "oidc-sub-mapper" in mappers, "the realm emits no " + CLAIM_PRINCIPAL + " claim; the verifier requires it"
+    assert "oidc-audience-mapper" in mappers, "the realm emits no audience claim"
+
+    role_mappers = [m for m in principal_scope["protocolMappers"] if m["config"].get("claim.name") == CLAIM_ROLE]
+    assert len(role_mappers) == 1, "expected exactly one " + CLAIM_ROLE + " mapper"
+    assert role_mappers[0]["config"]["user.attribute"] == "sp2_role", "the role claim is not sourced from the users' own attribute"
+
+    # The client's default scopes are exactly the SP2 one. `profile` and `email` are deliberately
+    # absent: a references-only architecture must not receive a token carrying a person's name.
+    assert _client(realm)["defaultClientScopes"] == ["sp2-principal"], "the client carries default scopes beyond the SP2 one"
+
+    # Every tenant gets exactly one optional scope, emitting BOTH claims with the tenant's value:
+    # `active_tenant` for the backend verifier, `tenant` for the browser adapter's claim binding.
+    optional = set(_client(realm)["optionalClientScopes"])
+    assert optional == {module.IDP_TENANT_SCOPE_PREFIX + ref for ref in module.TENANTS}, "tenant scopes and local tenants disagree"
+    for tenant_ref in module.TENANTS:
+        emitted = _claims_emitted(_scope(realm, module.IDP_TENANT_SCOPE_PREFIX + tenant_ref))
+        assert emitted.get(CLAIM_ACTIVE_TENANT) == tenant_ref, "the " + tenant_ref + " scope does not emit the right active tenant"
+        assert emitted.get("tenant") == tenant_ref, "the " + tenant_ref + " scope does not emit the browser's tenant claim"
+
+    # A role the platform does not recognize authenticates nobody, so an unknown one here would
+    # produce a user who can log in to Keycloak and to nothing else.
+    known = {role.value for role in PlatformRole}
+    for user in realm["users"]:
+        declared = user["attributes"]["sp2_role"]
+        assert declared and declared[0] in known, str(user["username"]) + " carries an unrecognized platform role"
+
+
+def test_every_realm_user_is_a_principal_the_control_database_seed_knows() -> None:
+    """The Keycloak user id IS the `sub` claim IS the seeded membership principal.
+
+    This is why Stage 6A changed no seed: pinning the user id to the principal reference makes the
+    OIDC identity and the membership row the same principal. If they drift, the browser logs in
+    successfully and every tenant request is denied 403, with nothing naming the disagreement.
+    """
+    module = _tool()
+    realm = _realm()
+
+    by_principal = {str(user["id"]): user for user in realm["users"]}
+    assert len(by_principal) == len(realm["users"]), "two realm users share an id, so two identities share a `sub`"
+
+    seeded = {principal: tenant for principal, tenant, _role in module.SEED_MEMBERSHIPS}
+    for principal, tenant in seeded.items():
+        assert principal in by_principal, principal + " holds a seeded membership but no realm identity can present it"
+        assert by_principal[principal]["attributes"]["sp2_role"] == ["TENANT_AGENT"], principal + " is not a tenant agent in the realm"
+        # The tenant scope that would mint this principal's active tenant must exist.
+        assert module.IDP_TENANT_SCOPE_PREFIX + tenant in {entry["name"] for entry in realm["clientScopes"]}
+
+    # The tool's login-name map and the realm must describe the same four identities.
+    assert {str(user["username"]) for user in realm["users"]} == set(module.IDP_IDENTITIES), "the tool and the realm list different logins"
+    for username, (principal, _variable, tenant) in module.IDP_IDENTITIES.items():
+        user = [entry for entry in realm["users"] if entry["username"] == username][0]
+        assert str(user["id"]) == principal, username + " has a realm id that is not its principal reference"
+        if tenant is None:
+            # A tenantless CONTROL operator holds no membership, by design: CONTROL authority is
+            # Control-resident and reaches no tenant database.
+            assert user["attributes"]["sp2_role"] == ["CONTROL"], username + " is tenantless but is not CONTROL"
+            assert principal not in seeded, "a tenantless CONTROL principal must not hold a membership"
+        else:
+            assert seeded.get(principal) == tenant, username + " is bound to a different tenant than its seeded membership"
+
+
+def test_the_realm_template_carries_no_usable_credential() -> None:
+    """Committed, therefore placeholders only — the same rule as the env template's empty lines."""
+    module = _tool()
+    text = _REALM_TEMPLATE.read_text(encoding="utf-8")
+    realm = _realm()
+
+    found = set(re.findall(r"__SP2_[A-Z0-9_]+__", text))
+    assert found == set(module.IDP_PASSWORD_PLACEHOLDERS), "the template's placeholders and the tool's substitution map disagree"
+    assert found, "no placeholders found; this check would be vacuous"
+
+    declared = template_keys(_TEMPLATE_TEXT)
+    for placeholder, variable in module.IDP_PASSWORD_PLACEHOLDERS.items():
+        assert variable in module.GENERATED_VARIABLES, variable + " substitutes a realm password but is not generated"
+        assert declared.get(variable) == "", "the committed env template carries a value for " + variable
+        del placeholder
+
+    # Every credential in the committed realm is a placeholder, never a value.
+    for user in realm["users"]:
+        for credential in user.get("credentials", []):
+            assert credential["value"] in found, str(user["username"]) + " carries a credential value that is not a placeholder"
+
+    # A public browser client has no secret, and none may appear here even as a field. Checked
+    # STRUCTURALLY — over the JSON keys — rather than by searching the text for the word: the
+    # client's own description says "there is no client secret", and a substring rule would both
+    # flag that and miss a secret stored under a differently-named key.
+    client = _client(realm)
+    assert client["publicClient"] is True, "the browser client is not public"
+
+    credential_keys = {"secret", "clientsecret", "privatekey", "password", "value"}
+    offenders: List[str] = []
+
+    def walk(node: Any, path: str) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                here = path + "." + str(key)
+                if str(key).lower().replace("_", "").replace("-", "") in credential_keys:
+                    # The only permitted credential-shaped values are the placeholders.
+                    if not (isinstance(value, str) and value in found):
+                        offenders.append(here + "=" + repr(value)[:60])
+                walk(value, here)
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                walk(value, path + "[" + str(index) + "]")
+
+    walk(realm, "realm")
+    assert offenders == [], "the committed realm carries credential-shaped values: " + repr(offenders)
+    del text
+
+
+def test_the_browser_client_permits_only_authorization_code_with_pkce() -> None:
+    """PKCE is REQUIRED by the registration, not merely offered.
+
+    Without `pkce.code.challenge.method`, a public client still accepts a plain code exchange, and
+    an intercepted authorization code becomes sufficient on its own.
+    """
+    client = _client(_realm())
+    assert client["attributes"]["pkce.code.challenge.method"] == "S256", "PKCE S256 is not required by the client registration"
+    assert client["standardFlowEnabled"] is True, "the authorization-code flow is disabled"
+    assert client["implicitFlowEnabled"] is False, "the implicit flow is enabled"
+    assert client["directAccessGrantsEnabled"] is False, "the password grant is enabled on a browser client"
+    assert client["serviceAccountsEnabled"] is False, "service accounts are enabled on a browser client"
+
+
+def test_the_manifest_runs_the_identity_provider_the_tool_talks_to() -> None:
+    """The compose service, its published port, and the realm its health check proves."""
+    module = _tool()
+    environment = service_environment(_COMPOSE_TEXT, module.IDP_SERVICE)
+    assert environment, "the manifest declares no " + module.IDP_SERVICE + " service"
+
+    assert "${SP2_LOCAL_IDP_ISSUER_ORIGIN:-" in environment.get("KC_HOSTNAME", ""), (
+        "the identity provider's issuer origin is not pinned; `iss` would vary with the request host"
+    )
+    assert "SP2_LOCAL_IDP_ADMIN_PASSWORD" in environment.get("KC_BOOTSTRAP_ADMIN_PASSWORD", ""), (
+        "the admin password is not read from the untracked env file"
+    )
+
+    # The health check must prove the REALM imported, not merely that a server answers: a Keycloak
+    # that started and imported nothing passes a liveness probe and fails every login.
+    assert "/realms/" + module.IDP_REALM in _COMPOSE_TEXT, "the manifest's health check does not name the realm"
+
+    # The generated realm file is what the container mounts, and it is never committed.
+    assert "./keycloak/import:/opt/keycloak/data/import:ro" in _COMPOSE_TEXT, "the generated realm directory is not mounted read-only"
+    ignore_rules = (_DOCKER / ".gitignore").read_text(encoding="utf-8")
+    assert "keycloak/import/" in ignore_rules, "the generated realm file is not gitignored"
+    assert str(_REALM_TEMPLATE.name) not in ignore_rules, "the committed realm template is ignored and would never be committed"
+
+    # The compose project name is used to remove the identity provider's named volume by name.
+    assert "\nname: " + module.COMPOSE_PROJECT + "\n" in _COMPOSE_TEXT, "the tool's compose project name has drifted from the manifest"
+
+    # Origin and published port are two halves of one fact.
+    declared = template_keys(_TEMPLATE_TEXT)
+    assert declared["SP2_LOCAL_IDP_ISSUER_ORIGIN"].endswith(":" + declared["SP2_LOCAL_IDP_PORT"]), (
+        "the issuer origin and the published port disagree: "
+        + declared["SP2_LOCAL_IDP_ISSUER_ORIGIN"]
+        + " vs "
+        + declared["SP2_LOCAL_IDP_PORT"]
+    )
+
+
+def test_only_the_identity_provider_publishes_outside_the_service_and_database_ports() -> None:
+    """It publishes because a BROWSER must reach it — and it is not an application service."""
+    from snackportal2.shared.config import SERVICE_REGISTRY
+
+    module = _tool()
+    declared = template_keys(_TEMPLATE_TEXT)
+    idp_port = int(declared["SP2_LOCAL_IDP_PORT"])
+
+    service_ports = {descriptor.default_port for descriptor in SERVICE_REGISTRY.values()}
+    assert idp_port not in service_ports, "the identity provider is published on a service port"
+    database_ports = {int(default) for _variable, default in module.PORT_VARIABLES.values()}
+    assert idp_port not in database_ports, "the identity provider is published on a database port"
+
+    # The exposure census classifies it as infrastructure by NAME, exactly as it does `postgres`.
+    assert module.INFRASTRUCTURE_SERVICE.search(module.IDP_SERVICE), "the identity provider would be counted as an application ingress"
+
+
 # --- the runbook -------------------------------------------------------------------------------
 
 
@@ -457,6 +712,13 @@ def _self_test() -> None:
         test_the_grant_allowlist_excludes_the_bff_and_access_control_and_names_only_tenant_services,
         test_the_audit_write_scope_is_granted_to_exactly_one_emitter,
         test_the_lineage_key_variables_reach_only_the_import_service,
+        test_the_realm_template_and_the_operator_tool_agree_on_every_identity_fact,
+        test_the_realm_emits_exactly_the_claims_the_authentication_service_reads,
+        test_every_realm_user_is_a_principal_the_control_database_seed_knows,
+        test_the_realm_template_carries_no_usable_credential,
+        test_the_browser_client_permits_only_authorization_code_with_pkce,
+        test_the_manifest_runs_the_identity_provider_the_tool_talks_to,
+        test_only_the_identity_provider_publishes_outside_the_service_and_database_ports,
         test_the_runbook_exists_and_names_the_supported_commands,
         test_the_environment_scanner_reads_a_planted_document,
     ]

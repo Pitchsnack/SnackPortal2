@@ -8,3 +8,8 @@
 !.env.rebuild.template
 .runtime/
 *.log
+
+# Stage 6A — the local Keycloak realm. The committed artefact is the TEMPLATE, which carries
+# password placeholders; `sp2_local init-env` renders the real file into keycloak/import/ with
+# generated local throwaway passwords, and that directory is what the container mounts.
+keycloak/import/
